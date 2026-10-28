@@ -1,5 +1,14 @@
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 storage/
+.cache/
+coverage/
+packages/db/src/generated/
+infra/instances/
+*.log
+*.tsbuildinfo
 .DS_Store
+

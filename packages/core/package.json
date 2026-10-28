@@ -1,0 +1,6 @@
+{
+  "name": "@qorloop/core",
+  "private": true,
+  "type": "module",
+  "version": "0.2.0"
+}

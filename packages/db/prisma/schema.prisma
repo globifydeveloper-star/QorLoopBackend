@@ -1,0 +1,187 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  owner
+  admin
+  catalogue_manager
+  analyst
+}
+
+model Tenant {
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String
+  slug           String   @unique
+  hostname       String   @unique
+  status         String   @default("active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  users          User[]
+  memberships    Membership[]
+  sessions       Session[]
+  invitations    Invitation[]
+  resetTokens    PasswordReset[]
+  recoveryCodes  RecoveryCode[]
+  stores         Store[]
+  settings       TenantSettings?
+  auditEvents    AuditEvent[]
+  outbox         EmailOutbox[]
+  @@map("tenants")
+}
+
+model User {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  tenant              Tenant    @relation(fields: [tenantId], references: [id])
+  email               String
+  name                String
+  passwordHash        String    @map("password_hash")
+  emailVerifiedAt     DateTime  @map("email_verified_at") @db.Timestamptz
+  mfaSecret           String?   @map("mfa_secret")
+  pendingMfaSecret    String?   @map("pending_mfa_secret")
+  pendingMfaExpiresAt DateTime? @map("pending_mfa_expires_at") @db.Timestamptz
+  lastTotpStep        Int?      @map("last_totp_step")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  memberships         Membership[]
+  sessions            Session[]
+  resetTokens         PasswordReset[]
+  recoveryCodes       RecoveryCode[]
+  @@unique([tenantId, email])
+  @@unique([tenantId, id])
+  @@map("users")
+}
+
+model Membership {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [tenantId, userId], references: [tenantId, id])
+  role      Role
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  @@unique([tenantId, userId])
+  @@unique([tenantId, id])
+  @@index([tenantId, role, active])
+  @@map("memberships")
+}
+
+model Invitation {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  email        String
+  pendingEmail String?   @map("pending_email")
+  role         Role
+  tokenHash    String    @unique @map("token_hash")
+  invitedBy    String?   @map("invited_by") @db.Uuid
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  @@unique([tenantId, pendingEmail])
+  @@index([tenantId, email])
+  @@map("invitations")
+}
+
+model Session {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  userId        String   @map("user_id") @db.Uuid
+  user          User     @relation(fields: [tenantId, userId], references: [tenantId, id])
+  tokenHash     String   @unique @map("token_hash")
+  csrfHash      String   @map("csrf_hash")
+  assurance     String
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz
+  lastSeenAt    DateTime @default(now()) @map("last_seen_at") @db.Timestamptz
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  @@index([tenantId, userId])
+  @@map("sessions")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  userId    String    @map("user_id") @db.Uuid
+  user      User      @relation(fields: [tenantId, userId], references: [tenantId, id])
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  @@index([tenantId, userId])
+  @@map("password_resets")
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  userId    String    @map("user_id") @db.Uuid
+  user      User      @relation(fields: [tenantId, userId], references: [tenantId, id])
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  @@unique([tenantId, userId, codeHash])
+  @@map("recovery_codes")
+}
+
+model Store {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @unique @map("tenant_id") @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  @@map("stores")
+}
+
+model TenantSettings {
+  id                String  @id @default(uuid()) @db.Uuid
+  tenantId          String  @unique @map("tenant_id") @db.Uuid
+  tenant            Tenant  @relation(fields: [tenantId], references: [id])
+  mfaRequiredForAll Boolean @default(false) @map("mfa_required_for_all")
+  analystCanExport  Boolean @default(true) @map("analyst_can_export")
+  priceTolerance   Decimal @default(0) @map("price_tolerance") @db.Decimal(12, 3)
+  stockThreshold   Int     @default(0) @map("stock_threshold")
+  staleHours       Int     @default(12) @map("stale_hours")
+  @@map("tenant_settings")
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  actorId   String?  @map("actor_id") @db.Uuid
+  action    String
+  entityId  String?  @map("entity_id") @db.Uuid
+  requestId String?  @map("request_id")
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  @@index([tenantId, createdAt])
+  @@map("audit_events")
+}
+
+model EmailOutbox {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  dedupeKey     String    @map("dedupe_key")
+  sealedMessage String    @map("sealed_message")
+  attempts      Int       @default(0)
+  availableAt   DateTime  @default(now()) @map("available_at") @db.Timestamptz
+  deliveredAt   DateTime? @map("delivered_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  @@unique([tenantId, dedupeKey])
+  @@index([deliveredAt, availableAt])
+  @@map("email_outbox")
+}
