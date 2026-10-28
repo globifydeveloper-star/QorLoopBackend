@@ -13,7 +13,8 @@ const EnvSchema = z.object({
   STORAGE_DIR: z.string().default('./storage'),
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
-  CORS_ORIGIN: z.string().default('http://localhost:3000')
+  CORS_ORIGIN: z.string().default('http://localhost:3000'),
+  BASE_DOMAIN: z.string().default('qorloop.globify.ae')
 });
 
 export type Env = z.infer<typeof EnvSchema>;

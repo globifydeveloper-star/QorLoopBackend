@@ -14,5 +14,6 @@ export function roundMoney(amount: number, rounding: RoundingOption = 'exact'): 
   }
   const step = parseFloat(rounding);
   if (isNaN(step) || step <= 0) return Math.round(amount * 100) / 100;
-  return Math.round(amount / step) * step;
+  const rounded = Math.round(amount / step) * step;
+  return Math.round(rounded * 100) / 100;
 }
