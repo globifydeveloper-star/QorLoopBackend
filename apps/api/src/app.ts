@@ -43,8 +43,11 @@ class ErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const req = host.switchToHttp().getRequest<FastifyRequest>();
     const reply = host.switchToHttp().getResponse<FastifyReply>();
-    const status = error instanceof HttpException ? error.getStatus() : 500;
-    const response = error instanceof HttpException ? error.getResponse() : undefined;
+    // @fastify/rate-limit throws the plain object from errorResponseBuilder (not an HttpException).
+    const plain = error as { statusCode?: unknown; error?: { message?: string } } | null;
+    const plainStatus = typeof plain?.statusCode === 'number' && plain.statusCode >= 400 && plain.statusCode < 500 ? plain.statusCode : undefined;
+    const status = error instanceof HttpException ? error.getStatus() : plainStatus ?? 500;
+    const response = error instanceof HttpException ? error.getResponse() : plainStatus ? { message: plain?.error?.message } : undefined;
     const detail = typeof response === 'object' && response !== null ? response as { message?: string | string[]; details?: unknown } : {};
     const message = status >= 500 ? (status === 503 ? 'Service unavailable' : 'Internal server error') : typeof response === 'string' ? response : detail.message ?? 'Request failed';
     if (status >= 500) {

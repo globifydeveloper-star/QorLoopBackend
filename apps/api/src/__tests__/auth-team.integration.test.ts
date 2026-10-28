@@ -103,7 +103,7 @@ describe('Foundation and tenant routing', () => {
     await pinned.app.close();
   });
   it('uses tenant foreign keys to reject a cross-tenant membership', async () => {
-    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id } });
+    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, email: 'owner@example.test' } });
     await expect(fixture.prisma.membership.create({ data: { tenantId: b.id, userId: user.id, role: 'analyst' } })).rejects.toThrow();
   });
   it('publishes contracts without a signup path', async () => {
@@ -168,7 +168,7 @@ describe('Invitation-only accounts and MFA', () => {
     const login1 = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }));
     const login2 = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }));
     expect((await request('POST', '/api/auth/mfa/verify', a, login1, { code: 'abcdef' })).statusCode).toBe(400);
-    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id } });
+    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, email: 'owner@example.test' } });
     const secret = await unseal<string>(user.mfaSecret!, config.AUTH_SECRET);
     await fixture.prisma.user.update({ where: { id: user.id }, data: { lastTotpStep: Math.floor(Date.now() / 30_000) - 1 } });
     const code = await generate({ secret });

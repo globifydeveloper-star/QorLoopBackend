@@ -36,7 +36,7 @@ export class Database {
   }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.slug}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.slug}))`;
       const prior = await tx.tenant.findUnique({ where: { slug: input.slug } });
       if (prior) {
         if (prior.name !== input.name || prior.hostname !== input.hostname || prior.status !== 'active') throw new Error('Existing store configuration differs; explicit operations review required');
