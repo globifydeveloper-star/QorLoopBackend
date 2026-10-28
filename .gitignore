@@ -3,3 +3,8 @@ dist/
 .env
 storage/
 .DS_Store
+
+*.tsbuildinfo
+packages/db/src/generated/
+.env
+.cache/

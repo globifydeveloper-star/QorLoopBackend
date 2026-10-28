@@ -1,0 +1,21 @@
+{
+  "name": "@qorloop/db",
+  "version": "0.2.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "prisma"],
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "prisma migrate deploy",
+    "migrate:dev": "prisma migrate dev",
+    "seed": "tsx src/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@qorloop/shared": "*",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": { "prisma": "7.10.1", "@types/pg": "^8.15.0" }
+}

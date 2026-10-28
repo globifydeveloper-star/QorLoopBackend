@@ -1,0 +1,556 @@
+// Qorloop Phase 1 schema. Conventions (docs/04-data-model.md):
+//  - uuid primary keys, timestamptz audit columns, snake_case columns
+//  - every customer-owned table carries tenant_id and includes it in its unique keys
+//  - money is numeric(12,3)
+// Tables WITHOUT tenant_id are global: identity (Better Auth), tenants, marketplaces, built-in templates.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────── Identity (managed by Better Auth) ─────────────────────────
+
+model User {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  name             String
+  email            String       @unique
+  emailVerified    Boolean      @default(false) @map("email_verified")
+  image            String?
+  twoFactorEnabled Boolean?     @default(false) @map("two_factor_enabled")
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+  sessions         Session[]
+  accounts         Account[]
+  twoFactors       TwoFactor[]
+  memberships      Membership[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  token     String   @unique
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  userId                String    @map("user_id") @db.Uuid
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at") @db.Timestamptz
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at") @db.Timestamptz
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+model TwoFactor {
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  secret                  String
+  backupCodes             String    @map("backup_codes")
+  userId                  String    @map("user_id") @db.Uuid
+  verified                Boolean?  @default(true)
+  failedVerificationCount Int?      @default(0) @map("failed_verification_count")
+  lockedUntil             DateTime? @map("locked_until") @db.Timestamptz
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([secret])
+  @@index([userId])
+  @@map("two_factors")
+}
+
+// ───────────────────────── Tenancy ─────────────────────────
+
+model Tenant {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  name                  String
+  slug                  String    @unique
+  subdomain             String    @unique
+  country               String    @default("QA")
+  currency              String    @default("QAR")
+  timezone              String    @default("Asia/Qatar")
+  erpName               String?   @map("erp_name")
+  status                String    @default("active") // active | suspended
+  onboardingStep        String    @default("store") @map("onboarding_step")
+  onboardingCompletedAt DateTime? @map("onboarding_completed_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  stores            Store[]
+  memberships       Membership[]
+  invitations       Invitation[]
+  settings          TenantSetting?
+  tenantMarketplaces TenantMarketplace[]
+
+  @@map("tenants")
+}
+
+model Store {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("stores")
+}
+
+model Membership {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      String   // owner | admin | catalogue_manager | analyst
+  status    String   @default("active") // active | invited
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([tenantId, role])
+  @@map("memberships")
+}
+
+model Invitation {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  email       String
+  role        String
+  tokenHash   String    @map("token_hash")
+  invitedById String?   @map("invited_by_id") @db.Uuid
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz
+  acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, tokenHash])
+  @@index([tenantId, email])
+  @@map("invitations")
+}
+
+model TenantSetting {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @unique @map("tenant_id") @db.Uuid
+  priceTolerance    Decimal  @default(0) @map("price_tolerance") @db.Decimal(12, 3)
+  stockThreshold    Int      @default(0) @map("stock_threshold")
+  staleHours        Int      @default(12) @map("stale_hours")
+  mfaRequiredForAll Boolean  @default(false) @map("mfa_required_for_all")
+  analystCanExport  Boolean  @default(true) @map("analyst_can_export")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
+}
+
+// ───────────────────────── Marketplaces (global reference + per-tenant switch) ─────────────────────────
+
+model Marketplace {
+  id        String   @id // talabat | snoonu | rafeeq | keeta
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenantMarketplaces TenantMarketplace[]
+
+  @@map("marketplaces")
+}
+
+model TenantMarketplace {
+  id            String      @id @default(uuid(7)) @db.Uuid
+  tenantId      String      @map("tenant_id") @db.Uuid
+  marketplaceId String      @map("marketplace_id")
+  enabled       Boolean     @default(true)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  marketplace   Marketplace @relation(fields: [marketplaceId], references: [id])
+
+  @@unique([tenantId, marketplaceId])
+  @@map("tenant_marketplaces")
+}
+
+// ───────────────────────── Catalogue ─────────────────────────
+
+model Category {
+  id        String     @id @default(uuid(7)) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  parentId  String?    @map("parent_id") @db.Uuid
+  nameEn    String     @map("name_en")
+  nameAr    String?    @map("name_ar")
+  sort      Int        @default(0)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+
+  @@unique([tenantId, parentId, nameEn])
+  @@index([tenantId, parentId])
+  @@map("categories")
+}
+
+model CategoryMapping {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  categoryId          String   @map("category_id") @db.Uuid
+  marketplaceId       String   @map("marketplace_id")
+  marketplaceCategory String   @map("marketplace_category")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, categoryId, marketplaceId])
+  @@map("category_mappings")
+}
+
+model Product {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  barcode           String
+  normalizedBarcode String   @map("normalized_barcode")
+  sku               String?
+  // owned by the ERP file (overwritten on every ERP upload)
+  nameEn            String   @map("name_en")
+  brand             String?
+  size              String?
+  erpCategory       String?  @map("erp_category")
+  erpPrice          Decimal  @map("erp_price") @db.Decimal(12, 3)
+  costPrice         Decimal? @map("cost_price") @db.Decimal(12, 3)
+  erpStock          Int      @default(0) @map("erp_stock")
+  erpActive         Boolean  @default(true) @map("erp_active")
+  inLatestErpFile   Boolean  @default(true) @map("in_latest_erp_file")
+  // owned by Qorloop (never overwritten by an upload)
+  nameAr            String?  @map("name_ar")
+  categoryId        String?  @map("category_id") @db.Uuid
+  subcategoryId     String?  @map("subcategory_id") @db.Uuid
+  imageKey          String?  @map("image_key")
+  status            String   @default("new") // active | inactive | new
+  updatedBy         String?  @map("updated_by")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  listings          Listing[]
+
+  @@unique([tenantId, normalizedBarcode])
+  @@index([tenantId, sku])
+  @@index([tenantId, status])
+  @@map("products")
+}
+
+model Listing {
+  id                   String   @id @default(uuid(7)) @db.Uuid
+  tenantId             String   @map("tenant_id") @db.Uuid
+  productId            String?  @map("product_id") @db.Uuid
+  marketplaceId        String   @map("marketplace_id")
+  marketplaceProductId String   @map("marketplace_product_id")
+  barcodes             String[]
+  name                 String?
+  price                Decimal  @db.Decimal(12, 3)
+  available            Boolean
+  uploadId             String?  @map("upload_id") @db.Uuid
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  product              Product? @relation(fields: [productId], references: [id])
+
+  @@unique([tenantId, marketplaceId, marketplaceProductId])
+  @@index([tenantId, marketplaceId, productId])
+  @@map("listings")
+}
+
+// ───────────────────────── Pricing ─────────────────────────
+
+model PricingSetting {
+  id                    String   @id @default(uuid(7)) @db.Uuid
+  tenantId              String   @unique @map("tenant_id") @db.Uuid
+  defaultRuleMode       String   @default("same") @map("default_rule_mode")
+  defaultRuleValue      Decimal  @default(0) @map("default_rule_value") @db.Decimal(12, 3)
+  rounding              String   @default("exact")
+  perMarketplaceEnabled Boolean  @default(false) @map("per_marketplace_enabled")
+  compareReferenceDefault String @default("marketplace") @map("compare_reference_default")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("pricing_settings")
+}
+
+model CategoryPriceRule {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  categoryId    String   @map("category_id") @db.Uuid
+  subcategoryId String?  @map("subcategory_id") @db.Uuid
+  mode          String
+  value         Decimal  @db.Decimal(12, 3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, categoryId, subcategoryId])
+  @@map("category_price_rules")
+}
+
+model ProductPriceRule {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  mode      String
+  value     Decimal  @db.Decimal(12, 3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, productId])
+  @@map("product_price_rules")
+}
+
+model ProductOffer {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  productId  String    @map("product_id") @db.Uuid
+  price      Decimal   @db.Decimal(12, 3)
+  validFrom  DateTime? @map("valid_from") @db.Timestamptz
+  validUntil DateTime? @map("valid_until") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([tenantId, productId])
+  @@map("product_offers")
+}
+
+model MarketplacePriceRule {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  marketplaceId String   @map("marketplace_id")
+  productId     String?  @map("product_id") @db.Uuid
+  mode          String
+  value         Decimal  @db.Decimal(12, 3)
+  rounding      String   @default("exact")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, marketplaceId, productId])
+  @@map("marketplace_price_rules")
+}
+
+// ───────────────────────── Uploads ─────────────────────────
+
+model InputTemplate {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String?  @map("tenant_id") @db.Uuid // null = built-in
+  source    String   // erp | marketplace id
+  name      String
+  version   Int      @default(1)
+  fields    Json     // Qorloop field -> source header
+  signature String[] // headers that identify the layout
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, source, name, version])
+  @@index([tenantId, source])
+  @@map("input_templates")
+}
+
+model Upload {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  source         String    // erp | talabat | snoonu | ...
+  fileName       String    @map("file_name")
+  contentType    String?   @map("content_type")
+  size           Int       // declared size in bytes, re-verified on confirm
+  storageKey     String    @map("storage_key")
+  checksumSha256 String?   @map("checksum_sha256")
+  contains       String    @default("full") // full | partial
+  templateId     String?   @map("template_id") @db.Uuid
+  templateVersion Int?     @map("template_version")
+  uploadedById   String    @map("uploaded_by_id") @db.Uuid
+  status         String    @default("uploading")
+  step           String?   // scan | check | detect | read | review | apply
+  progress       Int       @default(0)
+  headers        Json?     // detected header row
+  sheetName      String?   @map("sheet_name")
+  mappingSuggestion Json?  @map("mapping_suggestion")
+  summary        Json?
+  errorMessage   String?   @map("error_message")
+  appliedAt      DateTime? @map("applied_at") @db.Timestamptz
+  expiresAt      DateTime? @map("expires_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  rows   UploadRow[]
+  errors UploadError[]
+
+  @@unique([tenantId, storageKey])
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([tenantId, source, status])
+  @@map("uploads")
+}
+
+model UploadRow {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  uploadId         String   @map("upload_id") @db.Uuid
+  rowNumber        Int      @map("row_number")
+  parsed           Json
+  matchProductId   String?  @map("match_product_id") @db.Uuid
+  changeType       String   @default("none") @map("change_type") // new | price | stock | availability | none | unmatched
+  upload           Upload   @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadId, rowNumber])
+  @@index([tenantId, uploadId, changeType])
+  @@map("upload_rows")
+}
+
+model UploadError {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  tenantId  String  @map("tenant_id") @db.Uuid
+  uploadId  String  @map("upload_id") @db.Uuid
+  row       Int
+  column    String?
+  value     String?
+  reason    String
+  upload    Upload  @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, uploadId])
+  @@map("upload_errors")
+}
+
+// ───────────────────────── Recon & generated files ─────────────────────────
+
+model ReconRow {
+  id                         String   @id @default(uuid(7)) @db.Uuid
+  tenantId                   String   @map("tenant_id") @db.Uuid
+  productId                  String   @map("product_id") @db.Uuid
+  marketplaceId              String   @map("marketplace_id")
+  marketplacePrice           Decimal? @map("marketplace_price") @db.Decimal(12, 3)
+  marketplacePriceSource     String?  @map("marketplace_price_source")
+  erpPrice                   Decimal? @map("erp_price") @db.Decimal(12, 3)
+  actualPrice                Decimal? @map("actual_price") @db.Decimal(12, 3)
+  erpAvailable               Boolean? @map("erp_available")
+  actualAvailable            Boolean? @map("actual_available")
+  priceMismatchVsErp         Boolean  @default(false) @map("price_mismatch_vs_erp")
+  priceMismatchVsMarketplace Boolean  @default(false) @map("price_mismatch_vs_marketplace")
+  stockIssue                 String?  @map("stock_issue")
+  status                     String
+  lastUpdated                DateTime @default(now()) @map("last_updated") @db.Timestamptz
+
+  @@unique([tenantId, productId, marketplaceId])
+  @@index([tenantId, marketplaceId, status])
+  @@map("recon_rows")
+}
+
+model ReconSummary {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  marketplaceId String    @map("marketplace_id")
+  listed        Int       @default(0)
+  stock         Int       @default(0)
+  price         Int       @default(0)
+  total         Int       @default(0)
+  hasData       Boolean   @default(false) @map("has_data")
+  lastUploadAt  DateTime? @map("last_upload_at") @db.Timestamptz
+  stale         Boolean   @default(false)
+
+  @@unique([tenantId, marketplaceId])
+  @@map("recon_summaries")
+}
+
+model OutputTemplate {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  marketplaceId String   @map("marketplace_id")
+  name          String
+  version       Int      @default(1)
+  columns       String[]
+  configured    Boolean  @default(false) // false until the real marketplace format is confirmed (open question Q10)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([marketplaceId, name, version])
+  @@map("output_templates")
+}
+
+model GeneratedFile {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  marketplaceId String   @map("marketplace_id")
+  kind          String   // stock | price | stock_price | new_products
+  scope         String   // mismatches | all
+  reference     String   // erp | marketplace
+  fileName      String   @map("file_name")
+  storageKey    String   @map("storage_key")
+  productCount  Int      @map("product_count")
+  generatedById String   @map("generated_by_id") @db.Uuid
+  generatedAt   DateTime @default(now()) @map("generated_at") @db.Timestamptz
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz
+
+  @@index([tenantId, generatedAt(sort: Desc)])
+  @@map("generated_files")
+}
+
+// ───────────────────────── Audit & notifications ─────────────────────────
+
+model ActivityLog {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  at          DateTime @default(now()) @db.Timestamptz
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String?  @map("entity_type")
+  entityId    String?  @map("entity_id")
+  field       String?
+  oldValue    String?  @map("old_value")
+  newValue    String?  @map("new_value")
+  source      String?
+  requestId   String?  @map("request_id")
+  metadata    Json?
+
+  @@index([tenantId, at(sort: Desc)])
+  @@index([tenantId, entityType, entityId])
+  @@map("activity_log")
+}
+
+model Notification {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String
+  payload   Json
+  readAt    DateTime? @map("read_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([tenantId, userId, readAt])
+  @@map("notifications")
+}

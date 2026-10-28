@@ -1,0 +1,17 @@
+{
+  "name": "@qorloop/worker",
+  "version": "0.2.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": { "dev": "tsx watch src/main.ts", "start": "node dist/main.js" },
+  "dependencies": {
+    "@qorloop/core": "*",
+    "@qorloop/db": "*",
+    "@qorloop/shared": "*",
+    "@aws-sdk/client-s3": "^3.900.0",
+    "@sentry/node": "^10.0.0",
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.7.0",
+    "pino": "^9.9.0"
+  }
+}
