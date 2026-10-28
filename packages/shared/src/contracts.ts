@@ -13,3 +13,21 @@ export const mfaRecovery = z.object({ code: token }).strict();
 export const inviteMember = z.object({ email, role }).strict();
 export const changeRole = z.object({ role }).strict();
 
+
+// ───────── Uploads ─────────
+export const uploadSource = z.enum(['erp', 'talabat', 'snoonu', 'rafeeq', 'keeta']);
+export const createUpload = z.object({
+  source: uploadSource,
+  fileName: z.string().trim().min(1).max(200).refine(v => !/[\\/\u0000-\u001f]/.test(v), 'Invalid file name'),
+  size: z.number().int().min(1).max(25 * 1024 * 1024),
+  contains: z.enum(['full', 'partial']).default('full'),
+}).strict();
+export const confirmMapping = z.object({
+  fields: z.record(z.string().max(60), z.string().max(300)),
+  saveAs: z.string().trim().min(1).max(100).optional(),
+}).strict();
+export const reviewQuery = z.object({
+  tab: z.enum(['price', 'stock', 'availability', 'new', 'unmatched', 'all']).default('all'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+}).strict();

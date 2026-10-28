@@ -460,6 +460,8 @@ model Upload {
   progress          Int           @default(0)
   headers           Json?
   sheetName         String?       @map("sheet_name")
+  mapping           Json? // field -> header confirmed by the user (or from a detected file mapping)
+  revision          Int           @default(0)
   mappingSuggestion Json?         @map("mapping_suggestion")
   summary           Json?
   errorMessage      String?       @map("error_message")

@@ -2,6 +2,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Prisma } from './generated/client.js';
 import { randomUUID } from 'node:crypto';
 import type { Role } from './generated/enums.js';
+import { UploadRepository } from './uploads.js';
+
+export { UploadRepository };
 
 export { PrismaClient };
 export type { Role };
@@ -48,6 +51,13 @@ export class Database {
     });
   }
   // Control-plane enumeration returns only routing coordinates, never user data.
+  async tenantsWithStuckUploads(olderThan: Date) {
+    const rows = await this.client.upload.findMany({
+      where: { status: 'processing', updatedAt: { lt: olderThan }, tenant: { status: 'active' } },
+      select: { tenantId: true }, distinct: ['tenantId'], take: 100,
+    });
+    return rows.map(r => r.tenantId);
+  }
   async dueMail() {
     return this.client.emailOutbox.findMany({
       where: { deliveredAt: null, availableAt: { lte: new Date() }, attempts: { lt: 10 }, tenant: { status: 'active' } },
@@ -57,7 +67,10 @@ export class Database {
 }
 
 export class TenantData {
-  constructor(readonly tenantId: string, private readonly tx: Transaction) {}
+  readonly uploads: UploadRepository;
+  constructor(readonly tenantId: string, private readonly tx: Transaction) {
+    this.uploads = new UploadRepository(tenantId, tx);
+  }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }
   userById(id: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, id } }); }
