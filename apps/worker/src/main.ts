@@ -5,6 +5,9 @@ import pino from 'pino';
 import { Database } from '../../../packages/db/src/database.js';
 import { loadConfig } from '../../../packages/shared/src/config.js';
 import { unseal } from '../../../packages/shared/src/security.js';
+import { S3Storage } from '../../../packages/shared/src/storage.js';
+import { JOB_DEFAULTS, QUEUES, type ProcessUploadJob } from '../../../packages/shared/src/queue.js';
+import { markFailed, processUpload, recoverStuckUploads } from './process-upload.js';
 
 const config = loadConfig();
 const log = pino();
@@ -34,14 +37,34 @@ const worker = new Worker('email-outbox', async () => {
   }
 }, { connection, concurrency: 1 });
 worker.on('error', () => log.error('Email worker failed'));
+
+// Upload processing: parse, detect layout, validate and build the review for 25 MB / 50,000-row files.
+const storage = new S3Storage({
+  bucket: config.S3_BUCKET, region: config.S3_REGION, endpoint: config.S3_ENDPOINT, forcePathStyle: config.S3_FORCE_PATH_STYLE,
+  accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
+});
+const deps = { database, storage, log };
+const uploadQueue = new Queue(QUEUES.uploads, { connection, defaultJobOptions: JOB_DEFAULTS });
+const uploadWorker = new Worker<ProcessUploadJob>(QUEUES.uploads, job => processUpload(deps, job.data), { connection, concurrency: 2, lockDuration: 120_000 });
+uploadWorker.on('failed', (job, err) => {
+  log.error({ jobId: job?.id, errorType: err.name }, 'Upload processing attempt failed');
+  if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) void markFailed(deps, job.data).catch(() => log.error('Could not mark upload failed'));
+});
+uploadWorker.on('error', () => log.error('Upload worker failed'));
+const sweep = setInterval(() => {
+  recoverStuckUploads(deps, async j => { await uploadQueue.add('process-upload', j, { jobId: `process-${j.tenantId}-${j.uploadId}-${j.revision}` }); })
+    .then(n => n && log.info({ requeued: n }, 'Re-queued stuck uploads'))
+    .catch(() => log.error('Upload recovery sweep failed'));
+}, 5 * 60_000);
 connection.on('error', () => log.error('Redis connection failed'));
 let stopping = false;
 async function stop() {
   if (stopping) return;
   stopping = true;
-  await worker.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
+  clearInterval(sweep);
+  await worker.close(); await uploadWorker.close(); await uploadQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
 }
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());
-log.info('Email worker ready; inventory processing is a later milestone');
+log.info('Email and upload workers ready');
 

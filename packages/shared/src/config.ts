@@ -19,6 +19,13 @@ const schema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   MAIL_FROM: z.string().email().default('noreply@qorloop.globify.ae'),
+  S3_BUCKET: z.string().default('qorloop-private'),
+  S3_REGION: z.string().default('me-central-1'),
+  S3_ENDPOINT: z.string().url().optional(),
+  S3_FORCE_PATH_STYLE: z.enum(['true', 'false']).default('false').transform(v => v === 'true'),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
   SENTRY_DSN: z.string().url().optional(),
 }).superRefine((v, ctx) => {
   if (v.NODE_ENV === 'production') {

@@ -1,5 +1,5 @@
 import type { MarketplaceId, RoundingOption, RuleMode } from './constants.js';
-import { roundMoney } from './money.js';
+import { roundFils, toFils, toQar } from './money.js';
 
 export interface PriceRule {
   mode: RuleMode;
@@ -35,25 +35,34 @@ export interface CategoryRuleItem {
   rule: PriceRule;
 }
 
+/** Unrounded result of a rule, in QAR. Prefer priceFromRule, which also rounds. */
 export function applyRule(erpPrice: number, rule: PriceRule): number {
   switch (rule.mode) {
-    case 'percent':
-      return erpPrice * (1 + rule.value / 100);
-    case 'amount':
-      return erpPrice + rule.value;
-    case 'fixed':
-      return rule.value;
+    case 'percent': return toQar(toFils(erpPrice) * (1 + rule.value / 100));
+    case 'amount': return toQar(toFils(erpPrice) + toFils(rule.value));
+    case 'fixed': return rule.value;
     case 'same':
-    default:
-      return erpPrice;
+    default: return erpPrice;
   }
 }
 
+/**
+ * Calculated prices (percent, amount) are rounded to the tenant step; fixed, same and offers are used
+ * exactly as entered. Maths is done in integer fils to avoid float noise.
+ */
 export function priceFromRule(erpPrice: number, rule: PriceRule, rounding: RoundingOption): number {
-  if (rule.mode === 'fixed' || rule.mode === 'same') {
-    return roundMoney(applyRule(erpPrice, rule), 'exact');
+  const erp = toFils(erpPrice);
+  switch (rule.mode) {
+    case 'percent':
+      return toQar(roundFils(erp * (1 + rule.value / 100), rounding));
+    case 'amount':
+      return toQar(roundFils(erp + toFils(rule.value), rounding));
+    case 'fixed':
+      return toQar(toFils(rule.value));
+    case 'same':
+    default:
+      return toQar(erp);
   }
-  return roundMoney(applyRule(erpPrice, rule), rounding);
 }
 
 export function resolveMarketplacePrice(
@@ -64,7 +73,7 @@ export function resolveMarketplacePrice(
 ): ResolvedPrice {
   // 1. Offer
   if (product.offerPrice !== undefined && product.offerPrice !== null) {
-    return { price: roundMoney(product.offerPrice, 'exact'), source: 'offer' };
+    return { price: toQar(toFils(product.offerPrice)), source: 'offer' };
   }
 
   // 2. Product Rule

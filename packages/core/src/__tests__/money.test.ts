@@ -36,3 +36,14 @@ describe('Money and Currency Handling (Fils & QAR)', () => {
   });
 });
 
+
+describe('integer-fils pricing (no float noise)', () => {
+  it('5.5 +15% is 6.33, not 6.3249999', async () => {
+    const { priceFromRule } = await import('../pricing.js');
+    expect(priceFromRule(5.5, { mode: 'percent', value: 15 }, 'exact')).toBe(6.33);
+  });
+  it('half-up on exact halves', async () => {
+    const { roundMoney } = await import('../money.js');
+    expect(roundMoney(1.005, 'exact')).toBe(1.01);
+  });
+});

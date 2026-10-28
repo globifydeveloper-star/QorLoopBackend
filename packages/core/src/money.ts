@@ -1,5 +1,6 @@
 import type { RoundingOption } from './constants.js';
 
+/** All money maths runs in integer fils (QAR x 1000) so 5.5 x 1.15 never becomes 6.3249999. */
 export function toFils(qar: number): number {
   return Math.round(qar * 1000);
 }
@@ -8,12 +9,16 @@ export function toQar(fils: number): number {
   return fils / 1000;
 }
 
-export function roundMoney(amount: number, rounding: RoundingOption = 'exact'): number {
-  if (rounding === 'exact') {
-    return Math.round(amount * 100) / 100;
-  }
-  const step = parseFloat(rounding);
-  if (isNaN(step) || step <= 0) return Math.round(amount * 100) / 100;
-  const rounded = Math.round(amount / step) * step;
-  return Math.round(rounded * 100) / 100;
+/** Round a (possibly fractional) fils amount to the tenant rounding step. 'exact' = nearest 0.01 QAR. */
+export function roundFils(fils: number, rounding: RoundingOption = 'exact'): number {
+  const clean = Math.round(fils * 1e6) / 1e6; // strip float noise before rounding half-up
+  const stepFils = rounding === 'exact' ? 10 : Math.round(parseFloat(rounding) * 1000);
+  if (!Number.isFinite(stepFils) || stepFils <= 0) return Math.round(clean / 10) * 10;
+  return Math.round(clean / stepFils) * stepFils;
 }
+
+export function roundMoney(amount: number, rounding: RoundingOption = 'exact'): number {
+  return toQar(roundFils(toFils(amount), rounding));
+}
+
+export const round2 = (qar: number) => roundMoney(qar, 'exact');

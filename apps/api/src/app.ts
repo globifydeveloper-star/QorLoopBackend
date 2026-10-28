@@ -17,7 +17,11 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG } from './tokens.js';
+import { CONFIG, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { UploadsController } from './uploads/uploads.controller.js';
+import { UploadsService } from './uploads/uploads.service.js';
+import { S3Storage, type ObjectStorage } from '../../../packages/shared/src/storage.js';
+import { BullUploadQueue, type UploadQueue } from '../../../packages/shared/src/queue.js';
 
 @Controller()
 class SystemController {
@@ -43,8 +47,11 @@ class ErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const req = host.switchToHttp().getRequest<FastifyRequest>();
     const reply = host.switchToHttp().getResponse<FastifyReply>();
-    const status = error instanceof HttpException ? error.getStatus() : 500;
-    const response = error instanceof HttpException ? error.getResponse() : undefined;
+    // @fastify/rate-limit throws the plain object from errorResponseBuilder (not an HttpException).
+    const plain = error as { statusCode?: unknown; error?: { message?: string } } | null;
+    const plainStatus = typeof plain?.statusCode === 'number' && plain.statusCode >= 400 && plain.statusCode < 500 ? plain.statusCode : undefined;
+    const status = error instanceof HttpException ? error.getStatus() : plainStatus ?? 500;
+    const response = error instanceof HttpException ? error.getResponse() : plainStatus ? { message: plain?.error?.message } : undefined;
     const detail = typeof response === 'object' && response !== null ? response as { message?: string | string[]; details?: unknown } : {};
     const message = status >= 500 ? (status === 503 ? 'Service unavailable' : 'Internal server error') : typeof response === 'string' ? response : detail.message ?? 'Request failed';
     if (status >= 500) {
@@ -57,14 +64,26 @@ class ErrorFilter implements ExceptionFilter {
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
+  const storage = options.storage ?? new S3Storage({
+    bucket: config.S3_BUCKET, region: config.S3_REGION, endpoint: config.S3_ENDPOINT, forcePathStyle: config.S3_FORCE_PATH_STYLE,
+    accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
+  });
+  let queueRedis: import('ioredis').Redis | undefined;
+  let queue = options.queue;
+  if (!queue) {
+    const { Redis } = await import('ioredis');
+    queueRedis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
+    queue = new BullUploadQueue(queueRedis);
+  }
   @Module({
-    controllers: [SystemController, AuthController, TeamController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, { provide: APP_GUARD, useClass: SecurityGuard },
+      AuthService, TeamService, UploadsService, { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
+      { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
   class ApiModule {}
@@ -118,6 +137,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
   });
   server.addHook('onClose', async () => {
     if (redis) await redis.quit();
+    if (!options.queue) { await (queue as BullUploadQueue).close(); await queueRedis?.quit(); }
     if (!options.database) await database.close();
   });
   app.useGlobalFilters(new ErrorFilter(Boolean(config.SENTRY_DSN)));

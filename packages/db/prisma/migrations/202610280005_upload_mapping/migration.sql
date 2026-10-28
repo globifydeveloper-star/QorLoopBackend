@@ -1,0 +1,2 @@
+ALTER TABLE "uploads" ADD COLUMN "mapping" JSONB;
+ALTER TABLE "uploads" ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 0;
