@@ -43,7 +43,9 @@
     "@prisma/client": "^7.10.1",
     "@sentry/node": "^11.9.0",
     "bullmq": "^6.5.0",
+    "csv-parse": "^7.0.3",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "fastify": "5.12.7",
     "ioredis": "^6.0.0",
     "nodemailer": "^10.2.1",
@@ -52,6 +54,7 @@
     "pino": "^9.6.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "xlsx": "^0.18.5",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -64,6 +67,7 @@
     "@types/pg": "^8.23.1",
     "eslint": "^10.13.0",
     "jest": "^30.5.2",
+    "jszip": "^3.10.2",
     "prisma": "^7.10.1",
     "ts-jest": "^29.4.15",
     "tsx": "^4.23.15",
