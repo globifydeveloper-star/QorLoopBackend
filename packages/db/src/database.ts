@@ -16,7 +16,9 @@ export class Database {
   private readonly client: PrismaClient;
   constructor(url: string, client?: PrismaClient) {
     this.client = client ?? new PrismaClient({
-      adapter: new PrismaPg({ connectionString: url, max: 5, connectionTimeoutMillis: 5000 }),
+      // adapter-pg sends and parses timestamptz as offset-less UTC, so the session must be UTC
+      // regardless of the server or database TimeZone setting.
+      adapter: new PrismaPg({ connectionString: url, max: 5, connectionTimeoutMillis: 5000, options: '-c timezone=UTC' }),
     });
   }
   connect() { return this.client.$connect(); }

@@ -84,6 +84,14 @@ describe('role permissions', () => {
     expect((await h.request('POST', `/api/uploads/${id}/mapping`, a, analyst, { fields: {} })).statusCode).toBe(403);
     expect((await h.request('POST', `/api/uploads/${id}/discard`, a, analyst)).statusCode).toBe(403);
   });
+  it('Analyst cannot complete an upload but can read it, and a rejected call changes nothing', async () => {
+    const id = (await h.request('POST', '/api/uploads', a, manager, body)).json().data.id;
+    expect((await h.request('POST', `/api/uploads/${id}/complete`, a, analyst)).statusCode).toBe(403);
+    expect((await h.request('POST', `/api/uploads/${id}/discard`, a, analyst)).statusCode).toBe(403);
+    const read = await h.request('GET', `/api/uploads/${id}`, a, analyst);
+    expect(read.statusCode).toBe(200);
+    expect(read.json().data.status).toBe('uploading');
+  });
 });
 
 describe('completing an upload', () => {

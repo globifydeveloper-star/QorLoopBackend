@@ -1,16 +1,19 @@
-import { afterAll, describe, expect, it } from '@jest/globals';
+import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { Redis } from 'ioredis';
 import { Worker } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { BullUploadQueue, JOB_DEFAULTS, processJobId, type ProcessUploadJob } from '../../../../packages/shared/src/queue.js';
 import { S3Storage, storageKeys } from '../../../../packages/shared/src/storage.js';
 
-const redisUrl = process.env.REDIS_URL;
+// A dedicated variable: the app's REDIS_URL (from .env) must never point tests at a shared Redis.
+const redisUrl = process.env.TEST_REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
 describeRedis('BullMQ upload queue (real Redis)', () => {
-  const connection = new Redis(redisUrl ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
-  const queue = new BullUploadQueue(connection);
+  // Connect in beforeAll: a skipped describe still runs its body, and an eager client would keep jest alive.
+  let connection: Redis;
+  let queue: BullUploadQueue;
+  beforeAll(() => { connection = new Redis(redisUrl!, { maxRetriesPerRequest: null }); queue = new BullUploadQueue(connection); });
   afterAll(async () => { await queue.close(); await connection.quit(); });
 
   it('delivers a job once, even if the API enqueues the same revision twice', async () => {

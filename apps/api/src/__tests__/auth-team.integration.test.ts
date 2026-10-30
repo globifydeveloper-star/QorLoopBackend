@@ -6,6 +6,7 @@ import { AuthService } from '../auth/auth.service.js';
 import { loadConfig } from '../../../../packages/shared/src/config.js';
 import { digest, unseal } from '../../../../packages/shared/src/security.js';
 import { testDatabase } from './database.js';
+import { testServices } from './harness.js';
 
 const password = 'Correct horse battery staple!';
 type Session = { cookie: string; csrf: string; recoveryCodes?: string[] };
@@ -66,7 +67,7 @@ async function acceptMember(store: Store, role: string) {
 
 beforeAll(async () => {
   fixture = await testDatabase();
-  api = await buildApp(config, { database: fixture.database, logger: false });
+  api = await buildApp(config, { database: fixture.database, logger: false, ...testServices() });
   a = await createOwner('dohafresh');
   b = await createOwner('otherstore');
 }, 120000);
@@ -97,7 +98,7 @@ describe('Foundation and tenant routing', () => {
     expect(sameEmail).toHaveLength(2);
   });
   it('enforces configured instance pins as well as host resolution', async () => {
-    const pinned = await buildApp({ ...config, TENANT_ID: a.id }, { database: fixture.database, logger: false });
+    const pinned = await buildApp({ ...config, TENANT_ID: a.id }, { database: fixture.database, logger: false, ...testServices() });
     const response = await pinned.server.inject({ url: '/api/auth/me', headers: { host: b.hostname } });
     expect(response.statusCode).toBe(404);
     await pinned.app.close();
@@ -192,6 +193,9 @@ describe('Team authorization and lifecycle', () => {
       expect((await request('GET', '/api/team/members', a, member.session)).statusCode).toBe(200);
       expect((await request('GET', '/api/team/invitations', a, member.session)).statusCode).toBe(403);
       expect((await request('POST', '/api/team/invitations', a, member.session, { email: 'denied@example.test', role: 'admin' })).statusCode).toBe(403);
+      const target = await fixture.prisma.membership.findFirstOrThrow({ where: { tenantId: a.id, role: 'owner' } });
+      expect((await request('PATCH', '/api/team/members/' + target.id + '/role', a, member.session, { role: 'analyst' })).statusCode).toBe(403);
+      expect((await request('DELETE', '/api/team/members/' + target.id, a, member.session)).statusCode).toBe(403);
     }
   });
   it('prevents Admins from inviting, promoting, demoting or removing Owners', async () => {

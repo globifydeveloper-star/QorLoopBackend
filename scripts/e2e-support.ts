@@ -20,7 +20,7 @@ if (config.NODE_ENV === 'production') throw new Error('e2e-support must never ru
 
 const [command, ...rest] = process.argv.slice(2);
 const { values } = parseArgs({ args: rest, options: { slug: { type: 'string' }, 'owner-email': { type: 'string' }, email: { type: 'string' }, kind: { type: 'string', default: 'invitation' } }, strict: true });
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL }) });
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL, options: '-c timezone=UTC' }) });
 const database = new Database(config.DATABASE_URL, prisma);
 
 async function tokenFor(slug: string, email: string, kind: string) {

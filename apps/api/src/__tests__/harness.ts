@@ -13,10 +13,14 @@ export const password = 'Correct horse battery staple!';
 export type Session = { cookie: string; csrf: string };
 export type Store = { id: string; hostname: string; owner: Session };
 
+/** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3). */
+export function testServices() {
+  return { storage: new MemoryStorage(), queue: new InlineUploadQueue() };
+}
+
 export async function createHarness() {
   const fixture = await testDatabase();
-  const storage = new MemoryStorage();
-  const queue = new InlineUploadQueue();
+  const { storage, queue } = testServices();
   const config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://test:test@localhost/test', AUTH_SECRET: 'test-only-secret-at-least-thirty-two-characters', APP_ORIGIN: 'http://dohafresh.localhost:3000' });
   const api = await buildApp(config, { database: fixture.database, logger: false, storage, queue, rateLimitMax: 100000 });
   let counter = 0;

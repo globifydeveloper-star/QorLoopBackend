@@ -82,5 +82,5 @@ for full coverage (the 50,000-row test and the `pg_trgm` migration only run ther
 
 ```bash
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/qorloop_test \
-REDIS_URL=redis://localhost:6379 npm test
+TEST_REDIS_URL=redis://localhost:6379 npm test
 ```

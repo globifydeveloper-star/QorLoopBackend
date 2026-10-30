@@ -27,9 +27,12 @@ export async function testDatabase() {
       await pool.end();
     };
   } else {
-    const embedded = await PGlite.create({ initialMemory: 64 * 1024 * 1024 });
+    // pglite.wasm imports at least 2048 pages (128 MiB); the default initialMemory is exactly that minimum.
+    const embedded = await PGlite.create();
     await embedded.exec(sql);
-    const socket = new PGLiteSocketServer({ db: embedded, host: '127.0.0.1', port: 0, maxConnections: 1 });
+    // pg destroys a client after a query error and reconnects at once; the second slot covers that overlap
+    // (otherwise the new connection is refused). The pg pool below still holds at most one connection.
+    const socket = new PGLiteSocketServer({ db: embedded, host: '127.0.0.1', port: 0, maxConnections: 2 });
     await socket.start();
     adapter = new PrismaPg({ connectionString: 'postgresql://postgres:postgres@' + socket.getServerConn() + '/postgres', max: 1 });
     stop = async () => { await socket.stop(); await embedded.close(); };
