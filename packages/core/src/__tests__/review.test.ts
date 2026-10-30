@@ -36,10 +36,44 @@ describe('buildErpReview', () => {
     expect(r.errors).toHaveLength(1);
     expect(r.summary.matched).toBe(1);
   });
+  describe('duplicate barcodes keep the row whose stock did not need clamping, else the first', () => {
+    const clamped = (r: ErpRow): ErpRow => ({ ...r, stock: 0, negativeStockClamped: true });
+    const kept = (r: ReturnType<typeof buildErpReview>) => r.rows.map((x) => [x.rowNumber, (x.parsed as ErpRow).price, (x.parsed as ErpRow).stock]);
+    const reasons = (r: ReturnType<typeof buildErpReview>) => r.errors.map((e) => [e.row, e.reason]);
+
+    it('the real shape: an oversold row first (price 26, stock -2) loses to a later row with real stock (price 27, stock 5)', () => {
+      const r = buildErpReview([clamped(erp(13907, '710535010558', 26, -2)), erp(14037, '710535010558', 27, 5)], 2, [], [], 'partial');
+      expect(kept(r)).toEqual([[14037, 27, 5]]);
+      expect(reasons(r)).toEqual([[13907, 'Duplicate barcode in this file; kept row 14037']]);
+      // the losing row's clamp is not counted: only kept rows are
+      expect(r.summary).toMatchObject({ newProducts: 1, rowsWithErrors: 1, negativeStockClamped: 0 });
+    });
+    it('the other order: the valid row is first and stays', () => {
+      const r = buildErpReview([erp(2, '710535010558', 27, 5), clamped(erp(3, '710535010558', 26, -2))], 2, [], [], 'partial');
+      expect(kept(r)).toEqual([[2, 27, 5]]);
+      expect(reasons(r)).toEqual([[3, 'Duplicate barcode in this file; kept row 2']]);
+    });
+    it('three copies: the first unclamped row wins over both an earlier clamped one and a later clean one', () => {
+      const r = buildErpReview([clamped(erp(2, '111', 26, -2)), erp(3, '111', 27, 5), erp(4, '111', 28, 9)], 3, [], products, 'partial');
+      expect(kept(r)).toEqual([[3, 27, 5]]);
+      expect(reasons(r)).toEqual([[2, 'Duplicate barcode in this file; kept row 3'], [4, 'Duplicate barcode in this file; kept row 3']]);
+      expect(r.summary).toMatchObject({ matched: 1, rowsWithErrors: 2 });
+    });
+    it('every copy clamped: the first wins', () => {
+      const r = buildErpReview([clamped(erp(2, '111', 26, -2)), clamped(erp(3, '111', 27, -1))], 2, [], products, 'partial');
+      expect(kept(r)).toEqual([[2, 26, 0]]);
+      expect(reasons(r)).toEqual([[3, 'Duplicate barcode in this file; kept row 2']]);
+    });
+    it('two clean copies: the first wins, as before', () => {
+      const r = buildErpReview([erp(2, '111', 26, 3), erp(3, '111', 27, 5)], 2, [], products, 'partial');
+      expect(kept(r)).toEqual([[2, 26, 3]]);
+      expect(reasons(r)).toEqual([[3, 'Duplicate barcode in this file; kept row 2']]);
+    });
+  });
   it('names the file\'s own column in review errors, the field key only when nothing is mapped', () => {
     const rows = [erp(2, '111', 10, 5), erp(3, '111', 12, 5)];
     expect(buildErpReview(rows, 2, [], products, 'partial', { barcode: 'UPC', stock: 'Stock' }).errors).toEqual([
-      { row: 3, column: 'UPC', value: '111', reason: 'Duplicate barcode in this file' },
+      { row: 3, column: 'UPC', value: '111', reason: 'Duplicate barcode in this file; kept row 2' },
     ]);
     expect(buildErpReview(rows, 2, [], products, 'partial').errors[0].column).toBe('barcode');
   });

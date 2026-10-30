@@ -74,6 +74,8 @@ const columnOf = (fields: Record<string, string>, keys: string[], fallback = key
 /**
  * Compare a validated ERP file with the current catalogue (docs 5.6). Pure: the worker persists the result.
  * `fields` is the confirmed mapping (field key -> file header), used to name the column in errors.
+ * Duplicate barcodes keep one row: one whose stock did not need clamping (an oversold row loses to a later
+ * row with real stock), else the first. Every other copy is a "Duplicate barcode" error naming the kept row.
  */
 export function buildErpReview(
   rows: ErpRow[],
@@ -86,16 +88,21 @@ export function buildErpReview(
   const byBarcode = new Map(products.map((p) => [p.normalizedBarcode, p] as const));
   const errors = [...inputErrors];
   const out: ReviewRow[] = [];
-  const seenBarcodes = new Set<string>();
   const seenProducts = new Set<string>();
   let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0, negativeStockClamped = 0;
 
+  const kept = new Map<string, ErpRow>();
   for (const r of rows) {
-    if (seenBarcodes.has(r.barcode)) {
-      errors.push({ row: r.rowNumber, column: columnOf(fields, ['barcode']), value: r.barcode, reason: 'Duplicate barcode in this file' });
+    const k = kept.get(r.barcode);
+    if (!k || (k.negativeStockClamped && !r.negativeStockClamped)) kept.set(r.barcode, r);
+  }
+
+  for (const r of rows) {
+    const k = kept.get(r.barcode)!;
+    if (k !== r) {
+      errors.push({ row: r.rowNumber, column: columnOf(fields, ['barcode']), value: r.barcode, reason: `Duplicate barcode in this file; kept row ${k.rowNumber}` });
       continue;
     }
-    seenBarcodes.add(r.barcode);
     if (r.costIgnored) costIgnored++;
     if (r.negativeStockClamped) negativeStockClamped++;
     const p = byBarcode.get(r.barcode);

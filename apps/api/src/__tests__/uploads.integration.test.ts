@@ -242,7 +242,7 @@ describe('row errors as .xlsx', () => {
       [undefined, 4, 'Barcode', '', 'Barcode is empty'],
       [undefined, 7, 'Sale Price', `'${evil}`, 'Price must be a number above 0'],
       [undefined, 10, 'Sale Price', '-2', 'Price must be a number above 0'],
-      [undefined, 14, 'Barcode', '6281000000500', 'Duplicate barcode in this file'],
+      [undefined, 14, 'Barcode', '6281000000500', 'Duplicate barcode in this file; kept row 2'],
     ]);
   });
 
@@ -832,6 +832,30 @@ describe('confirm and apply', () => {
     expect((await product(s, '6291069207200')).erpStock).toBe(0);
     expect((await product(s, '6291069207217')).erpStock).toBe(0);
     expect((await product(s, '6291069207224')).erpStock).toBe(7);
+  });
+
+  it('a duplicate barcode whose first row is oversold keeps the later row with real stock, and says so in the errors download', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([
+      erpHeader,
+      ['710535010558', 'Oversold copy', 26, -2], // row 2, like real row 13907
+      ['6291069207200', 'Other', 3, 1],
+      ['6291069207217', 'Other', 3, 1],
+      ['6291069207224', 'Other', 3, 1],
+      ['6291069207231', 'Other', 3, 1],
+      ['710535010558', 'Real stock copy', 27, 5], // row 7, like real row 14037
+    ]), erpFields);
+    expect((await status(s, m, id)).summary).toMatchObject({ rowsRead: 6, rowsWithErrors: 1, newProducts: 5, negativeStockClamped: 0 });
+    const reason = 'Duplicate barcode in this file; kept row 7';
+    expect((await h.request('GET', `/api/uploads/${id}/errors`, s, m)).json().data.errors).toEqual([{ row: 2, column: 'Barcode', value: '710535010558', reason }]);
+    const download = await h.request('GET', `/api/uploads/${id}/errors.xlsx`, s, m);
+    expect(download.statusCode).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(download.rawPayload as unknown as ArrayBuffer);
+    expect(wb.getWorksheet('Row errors')!.getRow(2).values).toEqual([undefined, 2, 'Barcode', '710535010558', reason]);
+    expect((await apply(s, m, id)).statusCode).toBe(200);
+    expect(await product(s, '710535010558')).toMatchObject({ nameEn: 'Real stock copy', erpStock: 5 });
+    expect((await product(s, '710535010558')).erpPrice.toNumber()).toBe(27);
   });
 
   it('a staged row that breaks the barcode rule is skipped and reported; the rest of the file applies', async () => {
