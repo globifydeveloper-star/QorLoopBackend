@@ -1,4 +1,5 @@
 import type { ErpRow, MarketplaceRow } from './validate.js';
+import { marketplaceMatcher, type MatchProduct } from './review.js';
 
 /** The catalogue as it is at apply time (not as the review saw it). Money as numbers. */
 export interface ApplyProduct {
@@ -152,21 +153,34 @@ export interface ListingWrite {
   available: boolean;
 }
 
+export interface ListingApplyPlan {
+  listings: ListingWrite[];
+  skipped: SkippedRow[];
+  /** written listings that point at a product / that do not (no match, or more than one) */
+  matched: number;
+  unmatched: number;
+}
+
 /**
- * Marketplace rows as listings: matched rows point at their product, unmatched rows keep a null product.
- * A row the database would refuse (listingProblem) is skipped and reported.
+ * Marketplace rows as listings, each matched again against the catalogue at apply time with the review's rules
+ * (marketplaceMatcher), so a review built before the ERP was applied still links its rows. Pure.
+ * - Exactly one product: the listing points at it. None, or more than one (never guessed): a null product.
+ * - A row the database would refuse (listingProblem) is skipped and reported.
  */
-export function planListingApply(rows: { parsed: MarketplaceRow; productId: string | null }[]): { listings: ListingWrite[]; skipped: SkippedRow[] } {
-  const listings: ListingWrite[] = [];
-  const skipped: SkippedRow[] = [];
-  for (const { parsed: r, productId } of rows) {
+export function planListingApply(rows: MarketplaceRow[], products: MatchProduct[]): ListingApplyPlan {
+  const match = marketplaceMatcher(products);
+  const plan: ListingApplyPlan = { listings: [], skipped: [], matched: 0, unmatched: 0 };
+  for (const r of rows) {
+    const ids = match(r);
     const l: ListingWrite = {
-      marketplaceProductId: r.marketplaceProductId, productId, barcodes: r.barcodes,
+      marketplaceProductId: r.marketplaceProductId, productId: ids.length === 1 ? ids[0]! : null, barcodes: r.barcodes,
       name: r.name || null, price: money3(r.price)!, available: r.available,
     };
     const problem = listingProblem(l);
-    if (problem) skipped.push({ rowNumber: r.rowNumber, reason: problem });
-    else listings.push(l);
+    if (problem) { plan.skipped.push({ rowNumber: r.rowNumber, reason: problem }); continue; }
+    plan.listings.push(l);
+    if (l.productId) plan.matched++;
+    else plan.unmatched++;
   }
-  return { listings, skipped };
+  return plan;
 }

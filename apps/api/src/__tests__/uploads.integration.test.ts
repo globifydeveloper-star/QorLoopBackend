@@ -623,12 +623,50 @@ describe('confirm and apply', () => {
       expect(await h.fixture.prisma.listing.count({ where: { tenantId: s.id, marketplaceId: 'talabat' } })).toBe(1);
       // listings are summarised per apply, not per row; products are untouched
       expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, skipped: 0, uploadId: first },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, skipped: 0, uploadId: partial },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, skipped: 0, uploadId: full },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 2, uploadId: first },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 0, uploadId: partial },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 1, uploadId: full },
       ]);
       expect(await events(s, 'product.field_changed')).toHaveLength(0);
       expect((await product(s, '6281000000011')).erpPrice.toNumber()).toBe(1.5);
+    });
+
+    it('a review built before the ERP was applied: apply matches against the catalogue as it is now, by barcode or by sku as a barcode', async () => {
+      const { s, manager: m } = await store();
+      const talabatHeader = ['sku', 'barcode 1', 'barcode 2', 'barcode 3', 'name', 'price', 'active'];
+      const talabatFields = { marketplaceProductId: 'sku', barcode1: 'barcode 1', barcode2: 'barcode 2', barcode3: 'barcode 3', name: 'name', price: 'price', available: 'active' };
+      const marketplace = await reviewed(s, m, await xlsx([
+        talabatHeader,
+        ['T-LABAN', '06281000000011', '', '', 'Laban', 2, 'TRUE'], // barcode match
+        ['6291069207200', '', '5555', '', 'Juice', 5, 'TRUE'], // barcode wrong; sku is the ERP barcode
+        ['6291069207217', '1234', '', '', 'Water', 1, 'FALSE'], // barcode wrong; sku is the ERP barcode
+        ['T-NONE', '999', '', '', 'Mystery', 3, 'TRUE'], // matches nothing
+        ['6291069207231', '', '', '', 'No barcode', 1, 'TRUE'], // no barcode: an error even though the sku is digits
+      ]), talabatFields, { source: 'talabat' });
+      // reviewed against an empty catalogue: nothing matched yet
+      expect((await status(s, m, marketplace)).summary).toMatchObject({ matched: 0, unmatched: 4, rowsWithErrors: 1 });
+      expect((await h.request('GET', `/api/uploads/${marketplace}/errors`, s, m)).json().data.errors)
+        .toEqual([{ row: 6, column: 'barcode 1', value: null, reason: 'Barcode is empty' }]);
+
+      const erp = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.5, 3], ['6291069207200', 'Juice', 4, 1], ['6291069207217', 'Water', 1, 0]]), erpFields);
+      await apply(s, m, erp);
+      expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(3);
+
+      const logged: { msg?: string; o: object }[] = [];
+      const log = { info: (o: object, msg?: string) => { logged.push({ o, msg }); }, warn: (o: object, msg?: string) => { logged.push({ o, msg }); } };
+      h.queue.applyHandler = job => applyUpload({ ...deps(), log }, job).then(() => undefined);
+      try { await apply(s, m, marketplace); } finally { h.queue.applyHandler = job => applyUpload(deps(), job).then(() => undefined); }
+      expect((await status(s, m, marketplace)).status).toBe('applied');
+      const talabat = await h.fixture.prisma.listing.findMany({ where: { tenantId: s.id, marketplaceId: 'talabat' }, orderBy: { marketplaceProductId: 'asc' } });
+      expect(talabat.map(l => [l.marketplaceProductId, l.productId])).toEqual([
+        ['6291069207200', (await product(s, '6291069207200')).id],
+        ['6291069207217', (await product(s, '6291069207217')).id],
+        ['T-LABAN', (await product(s, '6281000000011')).id],
+        ['T-NONE', null],
+      ]);
+      const applied = (await events(s, 'upload.applied')).find(e => (e.details as { uploadId?: string }).uploadId === marketplace);
+      expect(applied!.details).toMatchObject({ listingsUpserted: 4, matchedAtApply: 3, unmatchedAtApply: 1 });
+      expect(logged.find(l => l.msg === 'Upload applied')!.o).toMatchObject({ matchedAtApply: 3, unmatchedAtApply: 1 });
     });
   });
 

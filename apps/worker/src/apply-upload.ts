@@ -10,7 +10,11 @@ export interface ApplyDeps {
 
 export type ApplyOutcome = 'applied' | 'failed' | 'skipped';
 
-export interface ApplyCounts { created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number; skipped: number }
+export interface ApplyCounts {
+  created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number; skipped: number;
+  /** marketplace only: written listings matched to a product at apply time, and those left without one */
+  matchedAtApply?: number; unmatchedAtApply?: number;
+}
 
 /** Skipped rows listed in the 'upload.applied' audit event; the count is always complete. */
 const MAX_SKIPPED_LISTED = 1000;
@@ -111,13 +115,15 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
         Object.assign(c, { created: plan.create.length, updated: plan.update.length, flagged: flagged.length });
       } else {
         enter('listings');
-        const plan = planListingApply(staged.map(r => ({ parsed: (r.parsed as Staged).data as MarketplaceRow, productId: r.matchProductId })));
+        // matched again against the catalogue as it is now: the review may predate the ERP apply that created the products
+        const products = await d.uploads.productSnapshot();
+        const plan = planListingApply(staged.map(r => (r.parsed as Staged).data as MarketplaceRow), products);
         await d.uploads.upsertListings(u.source, uploadId, plan.listings);
         // a skipped row's ID still counts as in the file, so a full list does not remove its existing listing
         const inFile = staged.map(r => ((r.parsed as Staged).data as MarketplaceRow).marketplaceProductId).filter(id => typeof id === 'string' && id);
         const removed = full ? await d.uploads.removeListingsNotIn(u.source, inFile) : 0;
         skipped = plan.skipped;
-        Object.assign(c, { listingsUpserted: plan.listings.length, listingsRemoved: removed });
+        Object.assign(c, { listingsUpserted: plan.listings.length, listingsRemoved: removed, matchedAtApply: plan.matched, unmatchedAtApply: plan.unmatched });
       }
       c.skipped = skipped.length;
 

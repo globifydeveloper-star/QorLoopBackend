@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { planErpApply, planListingApply, productProblem, type ApplyProduct } from '../upload/apply.js';
-import type { ErpRow } from '../upload/validate.js';
+import type { ErpRow, MarketplaceRow } from '../upload/validate.js';
 
 const product = (o: Partial<ApplyProduct> = {}): ApplyProduct => ({
   id: 'p1', normalizedBarcode: '111', sku: 'S1', nameEn: 'Laban', nameAr: null, brand: 'B', erpCategory: 'Dairy',
@@ -89,17 +89,39 @@ describe('planErpApply skips rows the database would refuse', () => {
 });
 
 describe('planListingApply', () => {
+  const mp = (rowNumber: number, o: Partial<MarketplaceRow> = {}): MarketplaceRow => ({ rowNumber, marketplaceProductId: `K${rowNumber}`, barcodes: ['9'], name: 'n', price: 2, available: true, ...o });
   it('keeps unmatched rows with a null product', () => {
-    expect(planListingApply([{ parsed: { rowNumber: 2, marketplaceProductId: 'K1', barcodes: ['9'], name: '', price: 2, available: false }, productId: null }]))
-      .toEqual({ listings: [{ marketplaceProductId: 'K1', productId: null, barcodes: ['9'], name: null, price: 2, available: false }], skipped: [] });
+    expect(planListingApply([mp(2, { marketplaceProductId: 'K1', name: '', available: false })], []))
+      .toEqual({ listings: [{ marketplaceProductId: 'K1', productId: null, barcodes: ['9'], name: null, price: 2, available: false }], skipped: [], matched: 0, unmatched: 1 });
   });
-  it('skips a listing that breaks listing_price_valid or has no ID', () => {
-    const r = (rowNumber: number, o: object) => ({ parsed: { rowNumber, marketplaceProductId: `K${rowNumber}`, barcodes: ['9'], name: 'n', price: 2, available: true, ...o }, productId: null });
-    const plan = planListingApply([r(2, { price: -1 }), r(3, { marketplaceProductId: '' }), r(4, {})]);
+  it('skips a listing that breaks listing_price_valid or has no ID; skipped rows are not counted as matched or unmatched', () => {
+    const plan = planListingApply([mp(2, { price: -1 }), mp(3, { marketplaceProductId: '' }), mp(4)], []);
     expect(plan.listings.map(l => l.marketplaceProductId)).toEqual(['K4']);
     expect(plan.skipped).toEqual([
       { rowNumber: 2, reason: 'Price must be 0 or more and below 1,000,000,000' },
       { rowNumber: 3, reason: 'Marketplace product ID is empty' },
     ]);
+    expect([plan.matched, plan.unmatched]).toEqual([0, 1]);
+  });
+  it('matches against the catalogue it is given, with the review\'s rules: barcodes, then the ID as a barcode, then SKU', () => {
+    const catalogue = [
+      { id: 'p1', normalizedBarcode: '6281000000011', sku: null },
+      { id: 'p2', normalizedBarcode: '6291069207200', sku: 'ITEM-2' },
+    ];
+    const plan = planListingApply([
+      mp(2, { barcodes: ['6281000000011'] }),
+      mp(3, { marketplaceProductId: '6291069207200', barcodes: ['1234'] }),
+      mp(4, { marketplaceProductId: 'ITEM-2', barcodes: ['1'] }),
+      mp(5, { barcodes: ['555'] }),
+      mp(6, { marketplaceProductId: '6291069207200', barcodes: [] }), // staged without a barcode: no fallback
+    ], catalogue);
+    expect(plan.listings.map(l => l.productId)).toEqual(['p1', 'p2', 'p2', null, null]);
+    expect([plan.matched, plan.unmatched]).toEqual([3, 2]);
+  });
+  it('a row matching more than one product is written unmatched and counted, never guessed', () => {
+    const twins = [{ id: 'a', normalizedBarcode: '1', sku: null }, { id: 'b', normalizedBarcode: '2', sku: null }];
+    const plan = planListingApply([mp(2, { barcodes: ['1', '2'] })], twins);
+    expect(plan.listings[0]!.productId).toBeNull();
+    expect([plan.matched, plan.unmatched]).toEqual([0, 1]);
   });
 });
