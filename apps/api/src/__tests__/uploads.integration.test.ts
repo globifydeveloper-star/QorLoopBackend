@@ -184,6 +184,101 @@ describe('ERP pipeline: detect → suggest mapping → validate → review', () 
   });
 });
 
+describe('row errors as .xlsx', () => {
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const evil = '=HYPERLINK("http://evil.test","x")';
+
+  /** Upload a file and confirm the suggested mapping if the layout is not recognised yet. */
+  async function reviewed(store: Store, who: Session, file: Buffer, fileName: string) {
+    const { id, final } = await upload(store, who, file, { fileName });
+    if (final.status === 'needs_mapping') {
+      const fields = (await status(store, who, id)).mappingSuggestion.fields;
+      expect((await h.request('POST', `/api/uploads/${id}/mapping`, store, who, { fields })).statusCode).toBe(200);
+    }
+    return { id, final: await status(store, who, id) };
+  }
+  async function download(store: Store, who: Session | undefined, id: string) {
+    return h.request('GET', `/api/uploads/${id}/errors.xlsx`, store, who);
+  }
+  async function workbook(body: Buffer) {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(body as unknown as ArrayBuffer);
+    return wb;
+  }
+
+  let withErrors: string;
+  beforeAll(async () => {
+    const lines = ['Barcode,Item Name,Sale Price,Qty'];
+    for (let i = 0; i < 8; i++) lines.push(`62810000005${i}0,Product ${i},2.5,3`);
+    lines.splice(3, 0, ',No barcode,1,1');
+    lines.splice(6, 0, `6281000000599,Evil,"${evil.replace(/"/g, '""')}",1`);
+    const { id, final } = await reviewed(a, a.owner, Buffer.from(lines.join('\n')), 'Daily "stock"; v2.csv');
+    expect(final.status).toBe('needs_review');
+    withErrors = id;
+  });
+
+  it('owner downloads a workbook with a summary and one row per error', async () => {
+    const r = await download(a, a.owner, withErrors);
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toBe(XLSX);
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(r.headers['content-disposition']).toBe('attachment; filename="Dailystockv2-errors.xlsx"');
+    const wb = await workbook(r.rawPayload);
+    expect(wb.worksheets.map(s => s.name)).toEqual(['Summary', 'Row errors']);
+    const summary = wb.getWorksheet('Summary')!;
+    expect([1, 2, 3].map(n => summary.getRow(n).values)).toEqual([
+      [undefined, 'File', 'Daily "stock"; v2.csv'], [undefined, 'Source', 'erp'], [undefined, 'Total errors', 2],
+    ]);
+    const sheet = wb.getWorksheet('Row errors')!;
+    expect(sheet.getSheetValues().slice(1)).toEqual([
+      [undefined, 'Row', 'Column', 'Value', 'Problem'],
+      [undefined, 4, 'Barcode', '', 'Barcode is empty'],
+      [undefined, 7, 'Sale Price', `'${evil}`, 'Price must be a number above 0'],
+    ]);
+  });
+
+  it('stores a formula-looking value as plain text, never as a formula', async () => {
+    const r = await download(a, a.owner, withErrors);
+    const cell = (await workbook(r.rawPayload)).getWorksheet('Row errors')!.getCell('C3');
+    expect(cell.type).toBe(ExcelJS.ValueType.String);
+    expect(cell.formula).toBeUndefined();
+    const zip = await JSZip.loadAsync(r.rawPayload);
+    const sheets = zip.file(/^xl\/worksheets\/sheet\d+\.xml$/);
+    expect(sheets).toHaveLength(2);
+    for (const sheet of sheets) expect(await sheet.async('string')).not.toMatch(/<f[ >]/);
+  });
+
+  it('an upload without errors gives a header-only sheet', async () => {
+    const { id, final } = await reviewed(a, a.owner, await xlsx([erpHeader, ['6281000000611', 'Clean', 2, 1]]), 'clean.xlsx');
+    expect(final.summary.rowsWithErrors).toBe(0);
+    const wb = await workbook((await download(a, a.owner, id)).rawPayload);
+    expect(wb.getWorksheet('Row errors')!.rowCount).toBe(1);
+    expect(wb.getWorksheet('Summary')!.getRow(3).values).toEqual([undefined, 'Total errors', 0]);
+  });
+
+  it('works for a rejected upload', async () => {
+    const rows = [erpHeader, ...Array.from({ length: 10 }, (_, i) => [i < 3 ? '' : `62810000007${i}`, 'x', 1, 1])];
+    const { id, final } = await reviewed(a, manager, await xlsx(rows), 'rejected.xlsx');
+    expect(final.status).toBe('rejected');
+    const wb = await workbook((await download(a, manager, id)).rawPayload);
+    expect(wb.getWorksheet('Row errors')!.rowCount).toBe(4);
+  });
+
+  it('an Analyst can download; anonymous, other tenants and bad ids cannot', async () => {
+    expect((await download(a, analyst, withErrors)).statusCode).toBe(200);
+    expect((await download(a, undefined, withErrors)).statusCode).toBe(401);
+    expect((await download(b, analystB, withErrors)).statusCode).toBe(404);
+    expect((await download(b, b.owner, withErrors)).statusCode).toBe(404);
+    expect((await h.request('GET', '/api/uploads/not-a-uuid/errors.xlsx', a, a.owner)).statusCode).toBe(400);
+  });
+
+  it('is documented as a binary download', () => {
+    const op = h.api.spec.paths['/api/uploads/{id}/errors.xlsx']?.get;
+    expect(op?.security).toEqual([{ cookie: [] }]);
+    expect((op?.responses['200'] as { content: Record<string, unknown> }).content).toEqual({ [XLSX]: { schema: { type: 'string', format: 'binary' } } });
+  });
+});
+
 describe('file safety in the worker', () => {
   it('rejects macro-enabled workbooks, fake spreadsheets and password-protected files', async () => {
     const zip = await JSZip.loadAsync(await xlsx([erpHeader, ['1', 'a', 1, 1]]));

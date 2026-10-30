@@ -10,6 +10,7 @@ import { extensionOf, isAllowedExtension } from '../../../../packages/core/src/u
 import { signatureFor, validateMapping } from '../../../../packages/core/src/upload/mapping.js';
 import { fieldsFor } from '../../../../packages/core/src/upload/fields.js';
 import { RETENTION_DAYS, UPLOAD_LIMITS } from '../../../../packages/core/src/upload/constants.js';
+import { buildErrorWorkbook, errorReportFileName, MAX_STORED_ERRORS } from '../../../../packages/core/src/upload/error-report.js';
 import { CONFIG, STORAGE, UPLOAD_QUEUE } from '../tokens.js';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -133,6 +134,24 @@ export class UploadsService {
       const [errors, total] = await data.uploads.errors(id, (page - 1) * 200, 200);
       return { page, total, errors };
     });
+  }
+
+  /** All stored row errors as an .xlsx download; a header-only sheet when there are none. */
+  async errorsXlsx(ctx: RequestContext, id: string) {
+    const { upload, errors, stored } = await this.auth.authenticated(ctx, { permission: 'uploads.view' }, async data => {
+      const u = await data.uploads.get(id);
+      if (!u) throw new NotFoundException('Upload not found');
+      const [list, count] = await data.uploads.errors(id, 0, MAX_STORED_ERRORS);
+      return { upload: u, errors: list, stored: count };
+    });
+    // The review summary knows the real count; a rejected upload only has what was stored (capped).
+    const counted = (upload.summary as { rowsWithErrors?: unknown } | null)?.rowsWithErrors;
+    const total = Math.max(stored, typeof counted === 'number' ? counted : 0);
+    const body = await buildErrorWorkbook({
+      fileName: upload.fileName, source: upload.source, total, errors,
+      mayHaveMore: typeof counted !== 'number' && stored >= MAX_STORED_ERRORS,
+    });
+    return { fileName: errorReportFileName(upload.fileName), body };
   }
 
   /** Step 9 → 10: the user confirms (and optionally saves) a column mapping; processing resumes. */

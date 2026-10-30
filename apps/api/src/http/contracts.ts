@@ -21,12 +21,23 @@ export const errorSchema = {
     error: { type: 'object' as const, required: ['code', 'message'], properties: { code: { type: 'string' as const }, message: { type: 'string' as const }, details: { type: 'array' as const, items: { type: 'object' as const } } } },
   },
 };
+const errorResponses = () => [400, 401, 403, 404, 409, 429, 500, 503].map(status => ApiResponse({ status, schema: errorSchema }));
+
 export function Contract(summary: string, body?: ZodTypeAny, response: Record<string, unknown> = { type: 'object', additionalProperties: true }) {
   return applyDecorators(
     ApiOperation({ summary }),
     ...(body ? [ApiBody({ schema: jsonSchema(body) })] : []),
     ApiResponse({ status: 200, schema: { type: 'object', required: ['data'], properties: { data: response } } }),
-    ...[400, 401, 403, 404, 409, 429, 500, 503].map(status => ApiResponse({ status, schema: errorSchema })),
+    ...errorResponses(),
+  );
+}
+
+/** A route that answers with a file download (no `{ data }` envelope) of the given media type. */
+export function FileContract(summary: string, contentType: string) {
+  return applyDecorators(
+    ApiOperation({ summary }),
+    ApiResponse({ status: 200, description: 'File download (Content-Disposition: attachment)', content: { [contentType]: { schema: { type: 'string', format: 'binary' } } } }),
+    ...errorResponses(),
   );
 }
 

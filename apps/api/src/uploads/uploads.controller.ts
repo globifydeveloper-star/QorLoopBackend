@@ -1,11 +1,13 @@
-import { Body, Controller, Get, HttpCode, Inject, Param, ParseIntPipe, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, ParseIntPipe, ParseUUIDPipe, Post, Query, Req, Res } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { XLSX_CONTENT_TYPE } from '../../../../packages/core/src/upload/error-report.js';
 import * as dto from '../../../../packages/shared/src/contracts.js';
 import type { Config } from '../../../../packages/shared/src/config.js';
 import { CONFIG } from '../tokens.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
-import { Contract, ZodPipe } from '../http/contracts.js';
+import { Contract, FileContract, ZodPipe } from '../http/contracts.js';
 import { UploadsService } from './uploads.service.js';
 
 @ApiTags('Uploads')
@@ -44,6 +46,18 @@ export class UploadsController {
   @Contract('Row errors (row, column, value, reason), 200 per page')
   errors(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string, @Query('page', new ParseIntPipe({ optional: true })) page = 1) {
     return this.uploads.errors(context(req, this.config), id, Math.max(1, page));
+  }
+
+  @Get(':id/errors.xlsx') @Access({ permission: 'uploads.view' })
+  @FileContract('All stored row errors (first 5,000) as an .xlsx download: a Summary sheet and a Row errors sheet', XLSX_CONTENT_TYPE)
+  async errorsXlsx(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string, @Res() reply: FastifyReply) {
+    const file = await this.uploads.errorsXlsx(context(req, this.config), id);
+    // the file name is reduced to [A-Za-z0-9._-] by errorReportFileName, so it is safe inside the quotes
+    return reply
+      .header('Content-Type', XLSX_CONTENT_TYPE)
+      .header('Content-Disposition', `attachment; filename="${file.fileName}"`)
+      .header('Cache-Control', 'no-store')
+      .send(file.body);
   }
 
   @Post(':id/mapping') @HttpCode(200) @Access({ permission: 'uploads.map' })
