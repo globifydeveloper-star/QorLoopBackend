@@ -1,4 +1,5 @@
 import type { Prisma } from './generated/client.js';
+import type { ListingWrite, NewProduct, ProductWrite } from '../../core/src/upload/apply.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -102,8 +103,114 @@ export class UploadRepository {
   /** Uploads that were queued but never finished, for the worker's recovery sweep. */
   stuck(olderThan: Date) {
     return this.tx.upload.findMany({
-      where: { tenantId: this.tenantId, status: 'processing', updatedAt: { lt: olderThan } },
-      select: { id: true, revision: true },
+      where: { tenantId: this.tenantId, status: { in: ['processing', 'applying'] }, updatedAt: { lt: olderThan } },
+      select: { id: true, revision: true, status: true },
     });
+  }
+
+  // ── Apply (docs 5.6). Bulk statements only: the whole apply runs in one transaction under the tenant lock. ──
+
+  stagedRows(uploadId: string) {
+    return this.tx.uploadRow.findMany({
+      where: { tenantId: this.tenantId, uploadId }, orderBy: { rowNumber: 'asc' },
+      select: { parsed: true, matchProductId: true, changeType: true },
+    });
+  }
+  /** Who confirmed the apply; the job payload carries no user. */
+  async applyRequestedBy(uploadId: string) {
+    const e = await this.tx.auditEvent.findFirst({
+      where: { tenantId: this.tenantId, action: 'upload.apply_requested', entityId: uploadId },
+      orderBy: { createdAt: 'desc' }, select: { actorId: true },
+    });
+    return e?.actorId ?? null;
+  }
+  applySnapshot() {
+    return this.tx.product.findMany({
+      where: { tenantId: this.tenantId },
+      select: {
+        id: true, normalizedBarcode: true, sku: true, nameEn: true, nameAr: true, brand: true, erpCategory: true,
+        erpPrice: true, costPrice: true, erpStock: true, erpActive: true, inLatestErpFile: true,
+      },
+    });
+  }
+  /** One INSERT ... SELECT FROM unnest(...) per 5,000 products: one bind parameter per column, not per value. */
+  async createProducts(rows: NewProduct[]) {
+    for (let i = 0; i < rows.length; i += 5000) {
+      const c = rows.slice(i, i + 5000);
+      const text = (n: number | null) => (n === null ? null : String(n));
+      await this.tx.$executeRaw`
+        INSERT INTO products (id, tenant_id, barcode, normalized_barcode, sku, name_en, name_ar, brand, erp_category,
+                              erp_price, cost_price, erp_stock, erp_active, in_latest_erp_file, status, created_at, updated_at)
+        SELECT gen_random_uuid(), ${this.tenantId}::uuid, v.barcode, v.barcode, v.sku, v.name_en, v.name_ar, v.brand, v.erp_category,
+               v.erp_price::numeric, v.cost_price::numeric, v.erp_stock::int, v.erp_active::boolean, true, v.status, now(), now()
+        FROM unnest(
+          ${c.map(r => r.normalizedBarcode)}::text[], ${c.map(r => r.sku)}::text[], ${c.map(r => r.nameEn)}::text[], ${c.map(r => r.nameAr)}::text[],
+          ${c.map(r => r.brand)}::text[], ${c.map(r => r.erpCategory)}::text[], ${c.map(r => text(r.erpPrice))}::text[],
+          ${c.map(r => text(r.costPrice))}::text[], ${c.map(r => String(r.erpStock))}::text[], ${c.map(r => String(r.erpActive))}::text[],
+          ${c.map(r => r.status)}::text[]
+        ) AS v(barcode, sku, name_en, name_ar, brand, erp_category, erp_price, cost_price, erp_stock, erp_active, status)`;
+    }
+  }
+  /** One UPDATE ... FROM unnest(...) per 5,000 products; sets every ERP-owned field to an absolute value. */
+  async updateProducts(rows: ProductWrite[]) {
+    for (let i = 0; i < rows.length; i += 5000) {
+      const c = rows.slice(i, i + 5000);
+      const text = (n: number | null) => (n === null ? null : String(n));
+      await this.tx.$executeRaw`
+        UPDATE products AS p SET
+          sku = v.sku, name_en = v.name_en, name_ar = v.name_ar, brand = v.brand, erp_category = v.erp_category,
+          erp_price = v.erp_price::numeric, cost_price = v.cost_price::numeric, erp_stock = v.erp_stock::int,
+          erp_active = v.erp_active::boolean, in_latest_erp_file = v.in_latest::boolean, updated_at = now()
+        FROM unnest(
+          ${c.map(r => r.id)}::uuid[], ${c.map(r => r.sku)}::text[], ${c.map(r => r.nameEn)}::text[], ${c.map(r => r.nameAr)}::text[],
+          ${c.map(r => r.brand)}::text[], ${c.map(r => r.erpCategory)}::text[], ${c.map(r => text(r.erpPrice))}::text[],
+          ${c.map(r => text(r.costPrice))}::text[], ${c.map(r => String(r.erpStock))}::text[], ${c.map(r => String(r.erpActive))}::text[],
+          ${c.map(r => String(r.inLatestErpFile))}::text[]
+        ) AS v(id, sku, name_en, name_ar, brand, erp_category, erp_price, cost_price, erp_stock, erp_active, in_latest)
+        WHERE p.tenant_id = ${this.tenantId}::uuid AND p.id = v.id`;
+    }
+  }
+  /** Full ERP list: products not in the file are flagged (never deactivated). Returns the flagged ids. */
+  async flagMissingProducts(barcodes: string[]) {
+    const rows = await this.tx.$queryRaw<{ id: string }[]>`
+      UPDATE products SET in_latest_erp_file = false, updated_at = now()
+      WHERE tenant_id = ${this.tenantId}::uuid AND in_latest_erp_file AND NOT (normalized_barcode = ANY(${barcodes}::text[]))
+      RETURNING id`;
+    return rows.map(r => r.id);
+  }
+  /** Insert-or-update by (tenant, marketplace, marketplace product ID), 5,000 rows per statement. */
+  async upsertListings(marketplaceId: string, uploadId: string, rows: ListingWrite[]) {
+    for (let i = 0; i < rows.length; i += 5000) {
+      const c = rows.slice(i, i + 5000);
+      await this.tx.$executeRaw`
+        INSERT INTO listings (id, tenant_id, marketplace_id, marketplace_product_id, product_id, barcodes, name, price, available, upload_id, created_at, updated_at)
+        SELECT gen_random_uuid(), ${this.tenantId}::uuid, ${marketplaceId}, v.mpid, v.product_id,
+               ARRAY(SELECT jsonb_array_elements_text(v.barcodes::jsonb)), v.name, v.price::numeric, v.available::boolean, ${uploadId}::uuid, now(), now()
+        FROM unnest(
+          ${c.map(r => r.marketplaceProductId)}::text[], ${c.map(r => r.productId)}::uuid[], ${c.map(r => JSON.stringify(r.barcodes))}::text[],
+          ${c.map(r => r.name)}::text[], ${c.map(r => String(r.price))}::text[], ${c.map(r => String(r.available))}::text[]
+        ) AS v(mpid, product_id, barcodes, name, price, available)
+        ON CONFLICT (tenant_id, marketplace_id, marketplace_product_id) DO UPDATE SET
+          product_id = EXCLUDED.product_id, barcodes = EXCLUDED.barcodes, name = EXCLUDED.name, price = EXCLUDED.price,
+          available = EXCLUDED.available, upload_id = EXCLUDED.upload_id, updated_at = now()`;
+    }
+  }
+  /** Full marketplace list: this marketplace's listings that are not in the file are removed. */
+  removeListingsNotIn(marketplaceId: string, marketplaceProductIds: string[]) {
+    return this.tx.$executeRaw`
+      DELETE FROM listings
+      WHERE tenant_id = ${this.tenantId}::uuid AND marketplace_id = ${marketplaceId}
+        AND NOT (marketplace_product_id = ANY(${marketplaceProductIds}::text[]))`;
+  }
+  /** One INSERT ... SELECT FROM unnest(...) per 5,000 events (an apply can write one per changed field). */
+  async auditEvents(actorId: string | null, events: { action: string; entityId: string; details: Prisma.InputJsonObject }[]) {
+    for (let i = 0; i < events.length; i += 5000) {
+      const c = events.slice(i, i + 5000);
+      await this.tx.$executeRaw`
+        INSERT INTO audit_events (id, tenant_id, actor_id, action, entity_id, details, created_at)
+        SELECT gen_random_uuid(), ${this.tenantId}::uuid, ${actorId}::uuid, v.action, v.entity_id, v.details::jsonb, now()
+        FROM unnest(${c.map(e => e.action)}::text[], ${c.map(e => e.entityId)}::uuid[], ${c.map(e => JSON.stringify(e.details))}::text[])
+          AS v(action, entity_id, details)`;
+    }
   }
 }

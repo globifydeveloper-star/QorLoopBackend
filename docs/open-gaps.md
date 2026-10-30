@@ -5,7 +5,7 @@ please confirm or correct.
 
 | # | Gap | What was built | Needs |
 |---|-----|----------------|-------|
-| G1 | **No per-action permission matrix.** Roles are described in prose only (`01-product-overview.md`). | `packages/core/src/roles.ts` keeps the matrix inherited from the earlier backend: Owner all; Admin all but security policy; Catalogue Manager operates (upload, map, apply, price, generate), no team/settings edits; Analyst read-only, export gated by `analystCanExport`. | A reviewed matrix from Globify/the client. Upload endpoints use `uploads.view/upload/map/discard`. |
+| G1 | **No per-action permission matrix.** Roles are described in prose only (`01-product-overview.md`). | `packages/core/src/roles.ts` keeps the matrix inherited from the earlier backend: Owner all; Admin all but security policy; Catalogue Manager operates (upload, map, apply, price, generate), no team/settings edits; Analyst read-only, export gated by `analystCanExport`. | A reviewed matrix from Globify/the client. Upload endpoints use `uploads.view/upload/map/apply/discard`. |
 | G2 | Several Owners allowed? | Yes; the last active Owner can never be demoted or removed (ADR 007). | Confirm. |
 | G3 | Who may complete an upload? | Only the person who created it. | Confirm. |
 | G4 | **Marketplace file formats** (Q10): Rafeeq, Keeta/Jahez unknown; Talabat/Snoonu column names come from the docs. | No built-in input mappings are seeded. The first file for each source goes through the mapping screen and can be saved; a saved layout is recognised next time. Output templates exist as a table with `configured = false`. | Real sample files per marketplace. |

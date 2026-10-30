@@ -66,6 +66,10 @@ export class UploadsController {
     return this.uploads.mapping(context(req, this.config), id, input);
   }
 
+  @Post(':id/apply') @HttpCode(200) @Access({ permission: 'uploads.apply' })
+  @Contract('Confirm and apply a reviewed upload (needs_review only; 409 otherwise). Returns the upload with status applying and enqueues the catalogue write; calling it again while applying or applied returns the record unchanged (idempotent)')
+  apply(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string) { return this.uploads.apply(context(req, this.config), id); }
+
   @Post(':id/discard') @HttpCode(200) @Access({ permission: 'uploads.discard' })
   @Contract('Discard an upload that is not applied; removes staging rows and the stored original')
   discard(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string) { return this.uploads.discard(context(req, this.config), id); }

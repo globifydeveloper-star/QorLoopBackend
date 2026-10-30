@@ -6,8 +6,9 @@ import { Database } from '../../../packages/db/src/database.js';
 import { loadConfig } from '../../../packages/shared/src/config.js';
 import { unseal } from '../../../packages/shared/src/security.js';
 import { S3Storage } from '../../../packages/shared/src/storage.js';
-import { JOB_DEFAULTS, QUEUES, type ProcessUploadJob } from '../../../packages/shared/src/queue.js';
+import { applyJobId, JOB_DEFAULTS, processJobId, QUEUES, type ApplyUploadJob, type ProcessUploadJob } from '../../../packages/shared/src/queue.js';
 import { markFailed, processUpload, recoverStuckUploads } from './process-upload.js';
+import { applyUpload, revertToReview } from './apply-upload.js';
 
 const config = loadConfig();
 const log = pino();
@@ -51,8 +52,21 @@ uploadWorker.on('failed', (job, err) => {
   if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) void markFailed(deps, job.data).catch(() => log.error('Could not mark upload failed'));
 });
 uploadWorker.on('error', () => log.error('Upload worker failed'));
+
+// Apply: one short transaction per upload; a failed apply returns the upload to needs_review itself.
+const applyQueue = new Queue(QUEUES.uploadApply, { connection, defaultJobOptions: JOB_DEFAULTS });
+const applyWorker = new Worker<ApplyUploadJob>(QUEUES.uploadApply, job => applyUpload(deps, job.data), { connection, concurrency: config.UPLOAD_CONCURRENCY, lockDuration: 120_000 });
+applyWorker.on('failed', (job, err) => {
+  log.error({ jobId: job?.id, errorType: err.name }, 'Upload apply attempt failed');
+  if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) void revertToReview(deps, job.data).catch(() => log.error('Could not return upload to review'));
+});
+applyWorker.on('error', () => log.error('Upload apply worker failed'));
+
 const sweep = setInterval(() => {
-  recoverStuckUploads(deps, async j => { await uploadQueue.add('process-upload', j, { jobId: `process-${j.tenantId}-${j.uploadId}-${j.revision}` }); })
+  recoverStuckUploads(deps, async (j, kind) => {
+    if (kind === 'apply') await applyQueue.add('apply-upload', j, { jobId: applyJobId(j) });
+    else await uploadQueue.add('process-upload', j, { jobId: processJobId(j) });
+  })
     .then(n => n && log.info({ requeued: n }, 'Re-queued stuck uploads'))
     .catch(() => log.error('Upload recovery sweep failed'));
 }, 5 * 60_000);
@@ -62,7 +76,7 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   clearInterval(sweep);
-  await worker.close(); await uploadWorker.close(); await uploadQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
+  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await uploadQueue.close(); await applyQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
 }
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());

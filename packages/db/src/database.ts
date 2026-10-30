@@ -30,14 +30,15 @@ export class Database {
       select: { id: true, name: true, slug: true, hostname: true },
     });
   }
-  async run<T>(tenantId: string, action: (data: TenantData) => Promise<T>): Promise<T> {
+  /** `timeout` (ms) is for the few bulk jobs that must stay one transaction, such as an upload apply; requests keep 20 s. */
+  async run<T>(tenantId: string, action: (data: TenantData) => Promise<T>, { timeout = 20000 }: { timeout?: number } = {}): Promise<T> {
     return this.client.$transaction(async tx => {
       // A tenant row lock serializes invitation consumption, MFA/recovery replay,
       // membership changes and last-Owner checks, including across API replicas.
       const rows = await tx.$queryRaw<{id: string}[]>`SELECT id FROM tenants WHERE id = ${tenantId}::uuid AND status = 'active' FOR UPDATE`;
       if (!rows.length) throw new Error('Tenant unavailable');
       return action(new TenantData(tenantId, tx));
-    }, { maxWait: 10000, timeout: 20000 });
+    }, { maxWait: 10000, timeout });
   }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {
@@ -55,7 +56,7 @@ export class Database {
   // Control-plane enumeration returns only routing coordinates, never user data.
   async tenantsWithStuckUploads(olderThan: Date) {
     const rows = await this.client.upload.findMany({
-      where: { status: 'processing', updatedAt: { lt: olderThan }, tenant: { status: 'active' } },
+      where: { status: { in: ['processing', 'applying'] }, updatedAt: { lt: olderThan }, tenant: { status: 'active' } },
       select: { tenantId: true }, distinct: ['tenantId'], take: 100,
     });
     return rows.map(r => r.tenantId);

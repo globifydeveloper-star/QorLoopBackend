@@ -24,6 +24,17 @@ describe('buildErpReview', () => {
     expect(r.errors).toHaveLength(1);
     expect(r.summary.matched).toBe(1);
   });
+  it('names the file\'s own column in review errors, the field key only when nothing is mapped', () => {
+    const rows = [erp(2, '111', 10, 5), erp(3, '111', 12, 5)];
+    expect(buildErpReview(rows, 2, [], products, 'partial', { barcode: 'UPC', stock: 'Stock' }).errors).toEqual([
+      { row: 3, column: 'UPC', value: '111', reason: 'Duplicate barcode in this file' },
+    ]);
+    expect(buildErpReview(rows, 2, [], products, 'partial').errors[0].column).toBe('barcode');
+  });
+  it('leaves the columns of row-validation errors as they are', () => {
+    const input = [{ row: 4, column: 'barcode', value: '', reason: 'Barcode is empty' }];
+    expect(buildErpReview([], 1, input, products, 'partial', { barcode: 'UPC' }).errors).toEqual(input);
+  });
 });
 
 describe('buildMarketplaceReview', () => {
@@ -42,6 +53,20 @@ describe('buildMarketplaceReview', () => {
     const r = buildMarketplaceReview([mp(2, 'Z', ['111', '222'], 1, true)], 1, [], products, [], 'partial');
     expect(r.errors[0].reason).toMatch(/more than one product/);
     expect(r.rows).toHaveLength(0);
+  });
+  it('names the file\'s own column in review errors', () => {
+    const dup = [mp(2, 'M1', ['111'], 10, true), mp(3, 'M1', ['999'], 10, true)];
+    const talabat = { marketplaceProductId: 'sku', barcode1: 'barcode 1', price: 'price', available: 'active' };
+    expect(buildMarketplaceReview(dup, 2, [], products, [], 'partial', talabat).errors[0]).toEqual(
+      { row: 3, column: 'sku', value: 'M1', reason: 'Duplicate marketplace product ID in this file' },
+    );
+    // Snoonu has no ID column: the ID is the barcode, so the barcode column is named
+    const snoonu = { barcode1: 'Barcode(UniqueIdentifier)', price: 'Price For Branch X(Update)', available: 'Availability for X(Update)' };
+    expect(buildMarketplaceReview(dup, 2, [], products, [], 'partial', snoonu).errors[0].column).toBe('Barcode(UniqueIdentifier)');
+    expect(buildMarketplaceReview(dup, 2, [], products, [], 'partial').errors[0].column).toBe('marketplaceProductId');
+    const twoProducts = [mp(2, 'Z', ['111', '222'], 1, true)];
+    expect(buildMarketplaceReview(twoProducts, 1, [], products, [], 'partial', talabat).errors[0].column).toBe('barcode 1');
+    expect(buildMarketplaceReview(twoProducts, 1, [], products, [], 'partial').errors[0].column).toBe('barcode');
   });
   it('a product with no current listing is a change', () => {
     expect(buildMarketplaceReview([mp(2, 'M3', ['333'], 30, true)], 1, [], products, [], 'partial').rows[0].changeType).toBe('price_availability');

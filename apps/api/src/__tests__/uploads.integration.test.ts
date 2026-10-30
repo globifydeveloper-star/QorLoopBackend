@@ -2,13 +2,17 @@ import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { createHarness, type Harness, type Session, type Store } from './harness.js';
+import { randomUUID } from 'node:crypto';
 import { processUpload, markFailed, recoverStuckUploads } from '../../../worker/src/process-upload.js';
+import { applyUpload } from '../../../worker/src/apply-upload.js';
 import type { ProcessUploadJob } from '../../../../packages/shared/src/queue.js';
 
 let h: Harness;
 let a: Store, b: Store;
 let manager: Session, analyst: Session, admin: Session, otherManager: Session, analystB: Session;
 const external = Boolean(process.env.TEST_DATABASE_URL);
+/** Rows in the apply timing test; APPLY_SCALE_ROWS=22000 measures a real-size ERP file. */
+const applyScale = Number(process.env.APPLY_SCALE_ROWS) || 3_000;
 
 async function xlsx(rows: unknown[][]) {
   const wb = new ExcelJS.Workbook();
@@ -209,9 +213,12 @@ describe('row errors as .xlsx', () => {
   let withErrors: string;
   beforeAll(async () => {
     const lines = ['Barcode,Item Name,Sale Price,Qty'];
-    for (let i = 0; i < 8; i++) lines.push(`62810000005${i}0,Product ${i},2.5,3`);
+    for (let i = 0; i < 13; i++) lines.push(`62810000005${i}0,Product ${i},2.5,3`);
+    // file row = index + 1; three invalid rows of 17 stays under the 20% rejection threshold
     lines.splice(3, 0, ',No barcode,1,1');
     lines.splice(6, 0, `6281000000599,Evil,"${evil.replace(/"/g, '""')}",1`);
+    lines.splice(9, 0, '6281000000598,Negative,2,-2');
+    lines.splice(13, 0, '6281000000500,Duplicate of row 2,2,1'); // a review-stage error
     const { id, final } = await reviewed(a, a.owner, Buffer.from(lines.join('\n')), 'Daily "stock"; v2.csv');
     expect(final.status).toBe('needs_review');
     withErrors = id;
@@ -227,25 +234,36 @@ describe('row errors as .xlsx', () => {
     expect(wb.worksheets.map(s => s.name)).toEqual(['Summary', 'Row errors']);
     const summary = wb.getWorksheet('Summary')!;
     expect([1, 2, 3].map(n => summary.getRow(n).values)).toEqual([
-      [undefined, 'File', 'Daily "stock"; v2.csv'], [undefined, 'Source', 'erp'], [undefined, 'Total errors', 2],
+      [undefined, 'File', 'Daily "stock"; v2.csv'], [undefined, 'Source', 'erp'], [undefined, 'Total errors', 4],
     ]);
     const sheet = wb.getWorksheet('Row errors')!;
     expect(sheet.getSheetValues().slice(1)).toEqual([
       [undefined, 'Row', 'Column', 'Value', 'Problem'],
       [undefined, 4, 'Barcode', '', 'Barcode is empty'],
       [undefined, 7, 'Sale Price', `'${evil}`, 'Price must be a number above 0'],
+      [undefined, 10, 'Qty', '-2', 'Stock must be 0 or more'],
+      [undefined, 14, 'Barcode', '6281000000500', 'Duplicate barcode in this file'],
     ]);
+  });
+
+  it('review errors name the file\'s column header, like row errors do', async () => {
+    const errors = (await h.request('GET', `/api/uploads/${withErrors}/errors`, a, a.owner)).json().data.errors;
+    expect(errors.map((e: { column: string }) => e.column)).toEqual(['Barcode', 'Sale Price', 'Qty', 'Barcode']);
   });
 
   it('stores a formula-looking value as plain text, never as a formula', async () => {
     const r = await download(a, a.owner, withErrors);
-    const cell = (await workbook(r.rawPayload)).getWorksheet('Row errors')!.getCell('C3');
+    const sheet = (await workbook(r.rawPayload)).getWorksheet('Row errors')!;
+    const cell = sheet.getCell('C3');
     expect(cell.type).toBe(ExcelJS.ValueType.String);
     expect(cell.formula).toBeUndefined();
+    // a plain negative number keeps its text and gets no apostrophe
+    const negative = sheet.getCell('C4');
+    expect([negative.type, negative.value]).toEqual([ExcelJS.ValueType.String, '-2']);
     const zip = await JSZip.loadAsync(r.rawPayload);
     const sheets = zip.file(/^xl\/worksheets\/sheet\d+\.xml$/);
     expect(sheets).toHaveLength(2);
-    for (const sheet of sheets) expect(await sheet.async('string')).not.toMatch(/<f[ >]/);
+    for (const xml of sheets) expect(await xml.async('string')).not.toMatch(/<f[ >]/);
   });
 
   it('an upload without errors gives a header-only sheet', async () => {
@@ -407,5 +425,326 @@ describe('scale', () => {
     expect(page.rows).toHaveLength(100);
     console.log(`${n} rows processed in ${Date.now() - t0} ms`);
     expect(Date.now() - t0).toBeLessThan(180_000); // plan: under 3 minutes
+  }, 240_000);
+});
+
+describe('confirm and apply', () => {
+  const erpFields = { barcode: 'Barcode', nameEn: 'Item Name', price: 'Sale Price', stock: 'Qty' };
+  const deps = () => ({ database: h.fixture.database });
+  let counter = 0;
+
+  /** A fresh store (empty catalogue) with a Catalogue Manager. */
+  async function store() {
+    const s = await h.createOwner(`apply${++counter}`);
+    return { s, manager: await h.member(s, 'catalogue_manager') };
+  }
+  /** Upload through the real pipeline and confirm `fields` when the layout is new; ends in needs_review. */
+  async function reviewed(s: Store, who: Session, file: Buffer, fields: Record<string, string>, opts: { source?: string; contains?: string } = {}) {
+    const { id, final } = await upload(s, who, file, { ...opts, fileName: 'f.xlsx' });
+    if (final.status === 'needs_mapping') expect((await h.request('POST', `/api/uploads/${id}/mapping`, s, who, { fields })).statusCode).toBe(200);
+    expect((await status(s, who, id)).status).toBe('needs_review');
+    return id;
+  }
+  const apply = (s: Store, who: Session | undefined, id: string) => h.request('POST', `/api/uploads/${id}/apply`, s, who);
+  const products = (s: Store) => h.fixture.prisma.product.findMany({ where: { tenantId: s.id }, orderBy: { normalizedBarcode: 'asc' } });
+  const product = (s: Store, barcode: string) => h.fixture.prisma.product.findFirstOrThrow({ where: { tenantId: s.id, normalizedBarcode: barcode } });
+  const events = (s: Store, action: string) => h.fixture.prisma.auditEvent.findMany({ where: { tenantId: s.id, action }, orderBy: { createdAt: 'asc' } });
+  /** The Catalogue Manager's user id (the store's only invited user). */
+  const managerId = async (s: Store) => (await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: s.id, email: { startsWith: 'user' } } })).id;
+
+  beforeAll(() => { h.queue.applyHandler = job => applyUpload(deps(), job).then(() => undefined); });
+
+  it('applies once: the response says applying, a second call returns the applied record, nothing is applied twice', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12]]), erpFields);
+    const first = await apply(s, m, id);
+    expect(first.statusCode).toBe(200);
+    expect(first.json().data).toMatchObject({ id, status: 'applying' });
+    expect(JSON.stringify(first.json().data)).not.toMatch(/revision|storageKey/);
+    const after = await status(s, m, id);
+    expect(after).toMatchObject({ status: 'applied', step: null, progress: 100, errorMessage: null });
+    expect(after.appliedAt).toBeTruthy();
+    const again = await apply(s, m, id);
+    expect(again.statusCode).toBe(200);
+    expect(again.json().data).toMatchObject({ status: 'applied', appliedAt: after.appliedAt });
+    expect(h.queue.applyJobs.filter(j => j.uploadId === id)).toHaveLength(1);
+    expect(await events(s, 'upload.applied')).toHaveLength(1);
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(1);
+    // the worker skips a replayed job for the same revision
+    const job = h.queue.applyJobs.find(j => j.uploadId === id)!;
+    expect(await applyUpload(deps(), job)).toBe('skipped');
+    // an applied upload cannot be discarded
+    expect((await h.request('POST', `/api/uploads/${id}/discard`, s, m)).statusCode).toBe(409);
+  });
+
+  it('two concurrent applies apply once', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12], ['6281000000028', 'Milk', 4.5, 3]]), erpFields);
+    const [r1, r2] = await Promise.all([apply(s, m, id), apply(s, s.owner, id)]);
+    expect([r1.statusCode, r2.statusCode]).toEqual([200, 200]);
+    expect(h.queue.applyJobs.filter(j => j.uploadId === id)).toHaveLength(1);
+    expect(await events(s, 'upload.applied')).toHaveLength(1);
+    expect(await events(s, 'upload.apply_requested')).toHaveLength(1);
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(2);
+  });
+
+  it('permissions, tenancy and state: Analyst 403, anonymous 401, other tenant 404, wrong status 409, bad id 400', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12]]), erpFields);
+    const sAnalyst = await h.member(s, 'analyst');
+    expect((await apply(s, sAnalyst, id)).statusCode).toBe(403);
+    expect((await apply(s, undefined, id)).statusCode).toBe(401);
+    expect((await apply(b, b.owner, id)).statusCode).toBe(404);
+    expect((await apply(b, analystB, id)).statusCode).toBe(403); // permission is checked before the lookup
+    expect((await apply(s, b.owner, id)).statusCode).toBe(401); // B's cookie is useless on A's host
+    expect((await h.request('POST', '/api/uploads/not-a-uuid/apply', s, m)).statusCode).toBe(400);
+    expect((await status(s, m, id)).status).toBe('needs_review'); // none of the above changed anything
+    const uploading = (await h.request('POST', '/api/uploads', s, m, { source: 'erp', fileName: 'x.xlsx', size: 10 })).json().data.id;
+    expect((await apply(s, m, uploading)).statusCode).toBe(409);
+    expect((await h.request('POST', `/api/uploads/${id}/discard`, s, m)).statusCode).toBe(200);
+    expect((await apply(s, m, id)).statusCode).toBe(409);
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(0);
+  });
+
+  it('is documented as a cookie-authenticated POST', () => {
+    const op = h.api.spec.paths['/api/uploads/{id}/apply']?.post;
+    expect(op?.security).toEqual([{ cookie: [] }]);
+    expect(Object.keys(op?.responses ?? {})).toEqual(expect.arrayContaining(['200', '401', '403', '404', '409']));
+  });
+
+  it('the first ERP import creates active products; a later import creates products with status new', async () => {
+    const { s, manager: m } = await store();
+    const header = [...erpHeader, 'SKU', 'Brand', 'Category', 'Cost', 'Arabic Name'];
+    const fields = { ...erpFields, sku: 'SKU', brand: 'Brand', category: 'Category', cost: 'Cost', nameAr: 'Arabic Name' };
+    const first = await reviewed(s, m, await xlsx([header, ['06281000000011', 'Laban', 1.75, 12, 'L1', 'Almarai', 'Dairy', 1.2, 'لبن']]), fields);
+    expect((await status(s, m, first)).summary.firstImport).toBe(true);
+    await apply(s, m, first);
+    expect(await products(s)).toMatchObject([{
+      barcode: '6281000000011', normalizedBarcode: '6281000000011', sku: 'L1', nameEn: 'Laban', nameAr: 'لبن', brand: 'Almarai', erpCategory: 'Dairy',
+      erpStock: 12, erpActive: true, inLatestErpFile: true, status: 'active', categoryId: null, imageKey: null,
+    }]);
+    expect((await product(s, '6281000000011')).erpPrice.toNumber()).toBe(1.75);
+    expect((await product(s, '6281000000011')).costPrice?.toNumber()).toBe(1.2);
+
+    const later = await reviewed(s, m, await xlsx([header, ['6281000000011', 'Laban', 1.75, 12, 'L1', 'Almarai', 'Dairy', 1.2, 'لبن'], ['6281000000028', 'Milk', 4.5, 3, '', '', '', '', '']]), fields, { contains: 'partial' });
+    await apply(s, m, later);
+    expect(await product(s, '6281000000028')).toMatchObject({ status: 'new', inLatestErpFile: true, sku: null, brand: null, costPrice: null });
+    // nothing changed on the existing product, so no field events; one summary event per apply
+    expect(await events(s, 'product.field_changed')).toHaveLength(0);
+    expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: first },
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: later },
+    ]);
+  });
+
+  it('matched rows update only ERP-owned fields and keep nameAr, category, image and status; nameAr is filled only when empty', async () => {
+    const { s, manager: m } = await store();
+    const actor = await managerId(s);
+    const category = await h.fixture.prisma.category.create({ data: { tenantId: s.id, nameEn: 'Dairy' } });
+    await h.fixture.prisma.product.createMany({ data: [
+      { tenantId: s.id, barcode: '6281000000011', normalizedBarcode: '6281000000011', nameEn: 'Old laban', nameAr: 'لبن قديم', brand: 'X', erpPrice: 1.5, costPrice: 1, erpStock: 1, erpActive: true, status: 'active', categoryId: category.id, imageKey: 'img/1.png' },
+      { tenantId: s.id, barcode: '6281000000028', normalizedBarcode: '6281000000028', nameEn: 'Milk', erpPrice: 4.5, erpStock: 3, status: 'inactive', inLatestErpFile: false },
+    ] });
+    const header = [...erpHeader, 'Arabic Name', 'Brand', 'Active'];
+    const id = await reviewed(s, m, await xlsx([header,
+      ['6281000000011', 'Laban 1L', 1.75, 12, 'لبن جديد', '', 'No'],
+      ['6281000000028', 'Milk', 4.5, 3, 'حليب', 'Nadec', 'Yes'],
+    ]), { ...erpFields, nameAr: 'Arabic Name', brand: 'Brand', active: 'Active' });
+    await apply(s, m, id);
+    const laban = await product(s, '6281000000011');
+    expect(laban).toMatchObject({ nameEn: 'Laban 1L', nameAr: 'لبن قديم', brand: null, erpStock: 12, erpActive: false, status: 'active', categoryId: category.id, imageKey: 'img/1.png' });
+    expect(laban.erpPrice.toNumber()).toBe(1.75);
+    expect(laban.costPrice?.toNumber()).toBe(1); // cost is not mapped in this file: left as it was
+    const milk = await product(s, '6281000000028');
+    expect(milk).toMatchObject({ nameAr: 'حليب', brand: 'Nadec', status: 'inactive', inLatestErpFile: true });
+
+    const changes = (await events(s, 'product.field_changed')).map(e => ({ entity: e.entityId, actor: e.actorId, ...(e.details as object) }));
+    expect(changes).toEqual(expect.arrayContaining([
+      { entity: laban.id, actor, field: 'nameEn', old: 'Old laban', new: 'Laban 1L', uploadId: id },
+      { entity: laban.id, actor, field: 'brand', old: 'X', new: null, uploadId: id },
+      { entity: laban.id, actor, field: 'erpPrice', old: 1.5, new: 1.75, uploadId: id },
+      { entity: laban.id, actor, field: 'erpStock', old: 1, new: 12, uploadId: id },
+      { entity: laban.id, actor, field: 'erpActive', old: true, new: false, uploadId: id },
+      { entity: milk.id, actor, field: 'nameAr', old: null, new: 'حليب', uploadId: id },
+      { entity: milk.id, actor, field: 'brand', old: null, new: 'Nadec', uploadId: id },
+      { entity: milk.id, actor, field: 'inLatestErpFile', old: false, new: true, uploadId: id },
+    ]));
+    expect(changes).toHaveLength(8);
+    expect((await events(s, 'upload.applied'))[0]!.details).toEqual({ created: 0, updated: 2, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: id });
+  });
+
+  it('a full ERP list flags products missing from the file without deactivating them; a partial list does not', async () => {
+    const { s, manager: m } = await store();
+    await h.fixture.prisma.product.createMany({ data: ['11', '22', '33'].map(n => ({ tenantId: s.id, barcode: `62810000000${n}`, normalizedBarcode: `62810000000${n}`, nameEn: n, erpPrice: 1, erpStock: 1, status: 'active' })) });
+    const partial = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', '11', 1, 1]]), erpFields, { contains: 'partial' });
+    await apply(s, m, partial);
+    expect((await products(s)).map(p => p.inLatestErpFile)).toEqual([true, true, true]);
+
+    const full = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', '11', 1, 1]]), erpFields, { contains: 'full' });
+    await apply(s, m, full);
+    expect((await products(s)).map(p => [p.inLatestErpFile, p.status, p.erpActive])).toEqual([[true, 'active', true], [false, 'active', true], [false, 'active', true]]);
+    const flaggedEvents = (await events(s, 'product.field_changed')).map(e => e.details);
+    expect(flaggedEvents).toEqual([
+      { field: 'inLatestErpFile', old: true, new: false, uploadId: full },
+      { field: 'inLatestErpFile', old: true, new: false, uploadId: full },
+    ]);
+    expect((await events(s, 'upload.applied')).at(-1)!.details).toMatchObject({ updated: 0, flagged: 2 });
+  });
+
+  describe('marketplace listings', () => {
+    const mpHeader = ['Item ID', 'EAN', 'Title', 'Price', 'In stock'];
+    const mpFields = { marketplaceProductId: 'Item ID', barcode1: 'EAN', name: 'Title', price: 'Price', available: 'In stock' };
+    const listings = (s: Store) => h.fixture.prisma.listing.findMany({ where: { tenantId: s.id, marketplaceId: 'keeta' }, orderBy: { marketplaceProductId: 'asc' } });
+
+    it('upserts by marketplace product ID; unmatched rows become listings with no product; full removes absent listings, partial keeps them', async () => {
+      const { s, manager: m } = await store();
+      const p = await h.fixture.prisma.product.create({ data: { tenantId: s.id, barcode: '6281000000011', normalizedBarcode: '6281000000011', nameEn: 'Laban', erpPrice: 1.5, erpStock: 1, status: 'active' } });
+      await h.fixture.prisma.listing.create({ data: { tenantId: s.id, marketplaceId: 'talabat', marketplaceProductId: 'T1', barcodes: [], price: 1, available: true } });
+
+      const first = await reviewed(s, m, await xlsx([mpHeader, ['K1', '06281000000011', 'Laban', 2, 'TRUE'], ['K2', '999', 'Mystery', 5, 'FALSE'], ['K3', '888', 'Gone soon', 1, 'TRUE']]), mpFields, { source: 'keeta' });
+      await apply(s, m, first);
+      expect((await listings(s)).map(l => ({ id: l.marketplaceProductId, productId: l.productId, barcodes: l.barcodes, name: l.name, price: l.price.toNumber(), available: l.available, uploadId: l.uploadId }))).toEqual([
+        { id: 'K1', productId: p.id, barcodes: ['6281000000011'], name: 'Laban', price: 2, available: true, uploadId: first },
+        { id: 'K2', productId: null, barcodes: ['999'], name: 'Mystery', price: 5, available: false, uploadId: first },
+        { id: 'K3', productId: null, barcodes: ['888'], name: 'Gone soon', price: 1, available: true, uploadId: first },
+      ]);
+      const k1 = (await listings(s))[0]!.id;
+
+      const partial = await reviewed(s, m, await xlsx([mpHeader, ['K1', '6281000000011', 'Laban', 2.25, 'FALSE']]), mpFields, { source: 'keeta', contains: 'partial' });
+      await apply(s, m, partial);
+      expect((await listings(s)).map(l => l.marketplaceProductId)).toEqual(['K1', 'K2', 'K3']);
+      expect((await listings(s))[0]).toMatchObject({ id: k1, available: false, uploadId: partial });
+
+      const full = await reviewed(s, m, await xlsx([mpHeader, ['K1', '6281000000011', 'Laban', 2.25, 'FALSE'], ['K2', '999', 'Mystery', 5, 'TRUE']]), mpFields, { source: 'keeta', contains: 'full' });
+      await apply(s, m, full);
+      expect((await listings(s)).map(l => l.marketplaceProductId)).toEqual(['K1', 'K2']);
+      expect((await listings(s))[0]!.id).toBe(k1); // updated in place, not re-created
+      // another marketplace's listings are never touched
+      expect(await h.fixture.prisma.listing.count({ where: { tenantId: s.id, marketplaceId: 'talabat' } })).toBe(1);
+      // listings are summarised per apply, not per row; products are untouched
+      expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, uploadId: first },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, uploadId: partial },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, uploadId: full },
+      ]);
+      expect(await events(s, 'product.field_changed')).toHaveLength(0);
+      expect((await product(s, '6281000000011')).erpPrice.toNumber()).toBe(1.5);
+    });
+  });
+
+  it('a failure mid-apply leaves the catalogue unchanged and the upload back in needs_review, ready to retry', async () => {
+    const { s, manager: m } = await store();
+    await h.fixture.prisma.product.create({ data: { tenantId: s.id, barcode: '6281000000011', normalizedBarcode: '6281000000011', nameEn: 'Laban', erpPrice: 1.5, erpStock: 1, status: 'active' } });
+    const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12], ['6281000000028', 'Milk', 4.5, 3], ['6281000000035', 'Bread', 2, 3]]), erpFields);
+    // Corrupt the matched staging row so the bulk UPDATE overflows numeric(12,3), after the new products were inserted.
+    const row = await h.fixture.prisma.uploadRow.findFirstOrThrow({ where: { uploadId: id, changeType: { not: 'new' } } });
+    const parsed = row.parsed as { data: Record<string, unknown> };
+    await h.fixture.prisma.uploadRow.update({ where: { id: row.id }, data: { parsed: { ...parsed, data: { ...parsed.data, price: 1e12 } } as never } });
+    const before = await products(s);
+    const logged: object[] = [];
+    h.queue.applyHandler = job => applyUpload({ ...deps(), log: { info: () => undefined, warn: o => { logged.push(o); } } }, job).then(() => undefined);
+    try {
+      expect((await apply(s, m, id)).statusCode).toBe(200);
+    } finally {
+      h.queue.applyHandler = job => applyUpload(deps(), job).then(() => undefined);
+    }
+    expect(await products(s)).toEqual(before);
+    const after = await status(s, m, id);
+    expect(after).toMatchObject({ status: 'needs_review', appliedAt: null, errorMessage: 'We could not apply this file. Nothing was changed; please try again.' });
+    expect(await events(s, 'product.field_changed')).toHaveLength(0);
+    expect(await events(s, 'upload.applied')).toHaveLength(0);
+    const [failed] = await events(s, 'upload.apply_failed');
+    expect(logged).toHaveLength(1);
+    // the phase, Postgres code and unquoted message are logged and audited; no value from the file is
+    const summary = { phase: 'update products', sqlState: '22003', message: 'numeric field overflow' };
+    expect(logged[0]).toMatchObject({ ...summary, errorType: expect.any(String), ms: expect.any(Number), timings: expect.objectContaining({ 'create products': expect.any(Number) }) });
+    expect(failed!.details).toMatchObject(summary);
+    expect(JSON.stringify([logged, failed!.details])).not.toMatch(/6281000000011|Laban|Milk|Bread|1000000000000|1e\+?12/i);
+    // the review is still there and the user can retry once the data is fixed
+    expect((await h.request('GET', `/api/uploads/${id}/review`, s, m)).statusCode).toBe(200);
+    await h.fixture.prisma.uploadRow.update({ where: { id: row.id }, data: { parsed: parsed as never } });
+    expect((await apply(s, m, id)).json().data.status).toBe('applying');
+    expect((await status(s, m, id)).status).toBe('applied');
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(3);
+  });
+
+  it('the recovery sweep re-queues an upload stuck in applying as an apply job', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12]]), erpFields);
+    await h.fixture.prisma.upload.update({ where: { id }, data: { status: 'applying', revision: 9, updatedAt: new Date(Date.now() - 3_600_000) } });
+    const queued: [ProcessUploadJob, string][] = [];
+    await recoverStuckUploads({ database: h.fixture.database, storage: h.storage }, async (j, kind) => { queued.push([j, kind]); });
+    expect(queued).toContainEqual([{ tenantId: s.id, uploadId: id, revision: 9 }, 'apply']);
+    expect(await applyUpload(deps(), { tenantId: s.id, uploadId: id, revision: 9 })).toBe('applied');
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(1);
+  });
+
+  it(`applies ${applyScale.toLocaleString('en')} staged ERP rows (half new, half changed) in one transaction`, async () => {
+    const { s, manager: m } = await store();
+    const half = Math.floor(applyScale / 2);
+    const barcode = (i: number) => String(6290000000000 + i);
+    for (let i = 0; i < half; i += 2000) {
+      await h.fixture.prisma.product.createMany({ data: Array.from({ length: Math.min(2000, half - i) }, (_, k) => ({
+        tenantId: s.id, barcode: barcode(i + k), normalizedBarcode: barcode(i + k), nameEn: `Product ${i + k}`, erpPrice: 1, erpStock: 1, status: 'active',
+      })) });
+    }
+    // Stage a reviewed upload directly: this measures apply, not parsing.
+    const id = randomUUID();
+    await h.fixture.prisma.upload.create({ data: {
+      id, tenantId: s.id, source: 'erp', fileName: 'big.csv', size: 1, storageKey: `tenants/${s.id}/uploads/${id}/original.csv`, contains: 'full',
+      uploadedById: await managerId(s), status: 'needs_review', mapping: erpFields, summary: { firstImport: false },
+    } });
+    const rows = Array.from({ length: applyScale }, (_, i) => ({
+      tenantId: s.id, uploadId: id, rowNumber: i + 2, matchProductId: null, changeType: i < half ? 'price_stock' : 'new',
+      parsed: { data: { rowNumber: i + 2, barcode: barcode(i), nameEn: `Product ${i}`, price: 2.5, stock: i % 20, active: true } },
+    }));
+    for (let i = 0; i < rows.length; i += 2000) await h.fixture.prisma.uploadRow.createMany({ data: rows.slice(i, i + 2000) });
+
+    const t0 = Date.now();
+    let timings: unknown;
+    h.queue.applyHandler = job => applyUpload({ ...deps(), log: { info: o => { timings = (o as { timings: unknown }).timings; }, warn: () => undefined } }, job).then(() => undefined);
+    try {
+      expect((await apply(s, m, id)).statusCode).toBe(200); // the inline queue runs the apply before answering
+    } finally {
+      h.queue.applyHandler = job => applyUpload(deps(), job).then(() => undefined);
+    }
+    const ms = Date.now() - t0;
+    console.log(`apply of ${applyScale} rows (${half} updated, ${applyScale - half} created) took ${ms} ms`, JSON.stringify(timings));
+    expect((await status(s, m, id)).status).toBe('applied');
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(applyScale);
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'new' } })).toBe(applyScale - half);
+    expect((await product(s, barcode(0))).erpPrice.toNumber()).toBe(2.5);
+    expect((await events(s, 'upload.applied'))[0]!.details).toMatchObject({ created: applyScale - half, updated: half, flagged: 0 });
+    // every existing product changes price, and stock unless the new stock is 1 (i % 20 === 1)
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'product.field_changed' } })).toBe(half * 2 - Math.ceil((half - 1) / 20));
+    expect(ms).toBeLessThan(15_000);
+  }, 240_000);
+
+  it(`a first import of ${applyScale.toLocaleString('en')} rows with every ERP column mapped applies, and logs each phase's time`, async () => {
+    const { s } = await store();
+    const barcode = (i: number) => String(6291000000000 + i);
+    const id = randomUUID();
+    const mapping = { barcode: 'Barcode', sku: 'SKU', nameEn: 'Item Name', nameAr: 'Arabic Name', brand: 'Brand', category: 'Category', price: 'Sale Price', cost: 'Cost', stock: 'Qty', active: 'Active' };
+    await h.fixture.prisma.upload.create({ data: {
+      id, tenantId: s.id, source: 'erp', fileName: 'first.csv', size: 1, storageKey: `tenants/${s.id}/uploads/${id}/original.csv`, contains: 'full',
+      uploadedById: await managerId(s), status: 'applying', mapping, summary: { firstImport: true },
+    } });
+    const rows = Array.from({ length: applyScale }, (_, i) => ({
+      tenantId: s.id, uploadId: id, rowNumber: i + 2, matchProductId: null, changeType: 'new',
+      parsed: { data: {
+        rowNumber: i + 2, barcode: barcode(i), sku: `SKU-${i}`, nameEn: `Almarai Full Fat Fresh Milk 2L Family Pack ${i}`, nameAr: `حليب طازج كامل الدسم ${i}`,
+        brand: 'Almarai', category: 'Dairy / Milk / Fresh', price: 12.345, cost: 9.5, stock: i % 500, active: i % 7 !== 0,
+      } },
+    }));
+    for (let i = 0; i < rows.length; i += 2000) await h.fixture.prisma.uploadRow.createMany({ data: rows.slice(i, i + 2000) });
+
+    const logged: { msg?: string; o: Record<string, unknown> }[] = [];
+    const log = { info: (o: object, msg?: string) => { logged.push({ o: o as Record<string, unknown>, msg }); }, warn: (o: object, msg?: string) => { logged.push({ o: o as Record<string, unknown>, msg }); } };
+    expect(await applyUpload({ ...deps(), log }, { tenantId: s.id, uploadId: id, revision: 0 })).toBe('applied');
+    console.log(`first import of ${applyScale} rows:`, JSON.stringify(logged[0]?.o));
+    expect(logged[0]!.msg).toBe('Upload applied');
+    expect(Object.keys(logged[0]!.o.timings as object)).toEqual(expect.arrayContaining(['start', 'create products', 'update products', 'flag missing', 'audit', 'finish']));
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'active' } })).toBe(applyScale);
+    expect((await product(s, barcode(7))).erpActive).toBe(false);
   }, 240_000);
 });

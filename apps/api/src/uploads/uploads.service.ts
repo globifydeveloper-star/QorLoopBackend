@@ -179,6 +179,31 @@ export class UploadsService {
     return view(upload);
   }
 
+  /**
+   * Step 12: confirm and apply. needs_review -> applying (compare-and-set, revision +1), then one apply job.
+   * Calling it again while applying or after applied returns the record unchanged; it never applies twice.
+   */
+  async apply(ctx: RequestContext, id: string) {
+    const { upload, queued } = await this.auth.authenticated(ctx, { permission: 'uploads.apply', mutation: true }, async (data, p) => {
+      const u = await data.uploads.get(id);
+      if (!u) throw new NotFoundException('Upload not found');
+      if (u.status === 'applying' || u.status === 'applied') return { upload: u, queued: false };
+      if (u.status !== 'needs_review') throw new ConflictException(`An upload that is ${u.status} cannot be applied`);
+      const ok = await data.uploads.transition(id, ['needs_review'], { status: 'applying', step: 'apply', progress: 0, errorMessage: null, revision: { increment: 1 } });
+      if (ok) await data.event('upload.apply_requested', p.user.id, id, ctx.requestId);
+      return { upload: (await data.uploads.get(id))!, queued: ok };
+    });
+    if (queued) {
+      try {
+        await this.queue.enqueueApply({ tenantId: ctx.tenantId, uploadId: upload.id, revision: upload.revision });
+      } catch {
+        // The record stays "applying"; the worker's recovery sweep re-queues it.
+        this.log.error(`Could not enqueue apply for upload ${upload.id}; recovery sweep will retry`);
+      }
+    }
+    return view(upload);
+  }
+
   async discard(ctx: RequestContext, id: string) {
     const key = await this.auth.authenticated(ctx, { permission: 'uploads.discard', mutation: true }, async (data, p) => {
       const u = await data.uploads.get(id);

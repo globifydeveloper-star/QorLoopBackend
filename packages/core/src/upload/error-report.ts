@@ -22,13 +22,16 @@ export interface ErrorReportInput {
   mayHaveMore?: boolean;
 }
 
+const PLAIN_NUMBER = /^[+-]?\d+(\.\d+)?$/;
+
 /**
  * Text that Excel, LibreOffice or Sheets could treat as a formula once the user edits or re-saves the
- * file (OWASP CSV injection) gets a leading single quote. Cells are also always written as strings.
+ * file (OWASP CSV injection) gets a leading single quote. Plain numbers such as "-2" stay as they are.
+ * Cells are also always written as strings.
  */
 export function safeCell(v: string | null | undefined): string {
   const s = v ?? '';
-  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return /^[=+\-@\t\r]/.test(s) && !PLAIN_NUMBER.test(s) ? `'${s}` : s;
 }
 
 /** "Daily stock (v2).csv" -> "Dailystockv2-errors.xlsx". Only [A-Za-z0-9._-] survive; never empty. */

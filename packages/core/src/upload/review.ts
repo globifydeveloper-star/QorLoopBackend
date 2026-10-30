@@ -51,13 +51,23 @@ export interface Review {
 
 const sameMoney = (a: number | null, b: number) => a !== null && round2(a) === round2(b);
 
-/** Compare a validated ERP file with the current catalogue (docs 5.6). Pure: the worker persists the result. */
+/**
+ * The file's own header for a review error, like row-validation errors report it: the header of the
+ * first mapped field in `keys`, else `fallback` (the field key the error was reported under before).
+ */
+const columnOf = (fields: Record<string, string>, keys: string[], fallback = keys[0]) => keys.map((k) => fields[k]).find(Boolean) ?? fallback;
+
+/**
+ * Compare a validated ERP file with the current catalogue (docs 5.6). Pure: the worker persists the result.
+ * `fields` is the confirmed mapping (field key -> file header), used to name the column in errors.
+ */
 export function buildErpReview(
   rows: ErpRow[],
   rowsRead: number,
   inputErrors: RowError[],
   products: CatalogProduct[],
   contains: 'full' | 'partial',
+  fields: Record<string, string> = {},
 ): Review {
   const byBarcode = new Map(products.map((p) => [p.normalizedBarcode, p] as const));
   const errors = [...inputErrors];
@@ -68,7 +78,7 @@ export function buildErpReview(
 
   for (const r of rows) {
     if (seenBarcodes.has(r.barcode)) {
-      errors.push({ row: r.rowNumber, column: 'barcode', value: r.barcode, reason: 'Duplicate barcode in this file' });
+      errors.push({ row: r.rowNumber, column: columnOf(fields, ['barcode']), value: r.barcode, reason: 'Duplicate barcode in this file' });
       continue;
     }
     seenBarcodes.add(r.barcode);
@@ -113,6 +123,7 @@ export function buildErpReview(
 /**
  * Compare a validated marketplace file with the current listings (docs 5.5/5.6).
  * Match on any of the row's barcodes; fall back to SKU. Two products matching one row is an error.
+ * `fields` is the confirmed mapping (field key -> file header), used to name the column in errors.
  */
 export function buildMarketplaceReview(
   rows: MarketplaceRow[],
@@ -121,6 +132,7 @@ export function buildMarketplaceReview(
   products: CatalogProduct[],
   listings: CatalogListing[],
   contains: 'full' | 'partial',
+  fields: Record<string, string> = {},
 ): Review {
   const byBarcode = new Map(products.map((p) => [p.normalizedBarcode, p] as const));
   const bySku = new Map<string, CatalogProduct[]>();
@@ -134,7 +146,8 @@ export function buildMarketplaceReview(
 
   for (const r of rows) {
     if (seenIds.has(r.marketplaceProductId)) {
-      errors.push({ row: r.rowNumber, column: 'marketplaceProductId', value: r.marketplaceProductId, reason: 'Duplicate marketplace product ID in this file' });
+      // without a mapped ID column (Snoonu) the ID is the row's first barcode
+      errors.push({ row: r.rowNumber, column: columnOf(fields, ['marketplaceProductId', 'barcode1']), value: r.marketplaceProductId, reason: 'Duplicate marketplace product ID in this file' });
       continue;
     }
     seenIds.add(r.marketplaceProductId);
@@ -142,7 +155,7 @@ export function buildMarketplaceReview(
     let candidates = [...new Set(r.barcodes.map((b) => byBarcode.get(b)).filter(Boolean))] as CatalogProduct[];
     if (candidates.length === 0) candidates = bySku.get(r.marketplaceProductId) ?? [];
     if (candidates.length > 1) {
-      errors.push({ row: r.rowNumber, column: 'barcode', value: r.barcodes.join(', '), reason: 'Matches more than one product; not guessed' });
+      errors.push({ row: r.rowNumber, column: columnOf(fields, ['barcode1'], 'barcode'), value: r.barcodes.join(', '), reason: 'Matches more than one product; not guessed' });
       continue;
     }
     const p = candidates[0];

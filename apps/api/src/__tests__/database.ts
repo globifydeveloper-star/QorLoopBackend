@@ -17,7 +17,8 @@ export async function testDatabase() {
   if (external) {
     // Never reset an existing database. Each test run owns a fresh random schema.
     const schema = 'qorloop_test_' + randomUUID().replaceAll('-', '');
-    const pool = new Pool({ connectionString: external, max: 1, options: '-c search_path=' + schema });
+    // public stays on the path so an extension already installed there (pg_trgm) resolves; new tables go to the first schema.
+    const pool = new Pool({ connectionString: external, max: 1, options: '-c search_path=' + schema + ',public' });
     await pool.query('CREATE SCHEMA "' + schema + '"');
     await pool.query(sql);
     adapter = new PrismaPg(pool, { schema });

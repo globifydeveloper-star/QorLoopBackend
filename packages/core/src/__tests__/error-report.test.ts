@@ -9,10 +9,10 @@ async function read(buf: Buffer) {
 }
 
 describe('safeCell', () => {
-  it.each(['=1+2', '+1', '-1', '@SUM(A1)', '\tx', '\rx', '=HYPERLINK("http://evil.test","x")'])('neutralises %j', (v) => {
+  it.each(['=1+2', '=A1', '-5+cmd', '+1+1', '-', '-1e5', '-2,5', '@SUM(A1)', '\tx', '\rx', '\t-2', '=HYPERLINK("http://evil.test","x")'])('neutralises %j', (v) => {
     expect(safeCell(v)).toBe(`'${v}`);
   });
-  it.each(['abc', '1.5', ' =x', "'quoted", ''])('leaves %j alone', (v) => expect(safeCell(v)).toBe(v));
+  it.each(['-2', '+3', '-1.5', '12', '0', 'abc', '1.5', ' =x', "'quoted", ''])('leaves %j alone', (v) => expect(safeCell(v)).toBe(v));
   it('treats null as empty', () => expect(safeCell(null)).toBe(''));
 });
 
@@ -33,6 +33,7 @@ describe('buildErrorWorkbook', () => {
       errors: [
         { row: 3, column: 'Barcode', value: null, reason: 'Barcode is empty' },
         { row: 4, column: 'Price', value: '=HYPERLINK("http://evil.test","x")', reason: 'Price must be a number above 0' },
+        { row: 5, column: 'Stock', value: '-2', reason: 'Stock must be 0 or more' },
       ],
     }));
     expect(wb.worksheets.map((s) => s.name)).toEqual(['Summary', 'Row errors']);
@@ -47,6 +48,9 @@ describe('buildErrorWorkbook', () => {
     expect(cell.type).toBe(ExcelJS.ValueType.String);
     expect(cell.formula).toBeUndefined();
     expect(cell.value).toBe('\'=HYPERLINK("http://evil.test","x")');
+    const negative = sheet.getCell('C4');
+    expect(negative.type).toBe(ExcelJS.ValueType.String);
+    expect(negative.value).toBe('-2');
   });
 
   it('notes a truncated list', async () => {

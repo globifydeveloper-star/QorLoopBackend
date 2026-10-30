@@ -115,10 +115,10 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
     const catalog = products.map(p => ({ id: p.id, normalizedBarcode: p.normalizedBarcode, sku: p.sku, nameEn: p.nameEn, erpPrice: p.erpPrice.toNumber(), erpStock: p.erpStock, inLatestErpFile: p.inLatestErpFile }));
     const contains = upload.contains === 'partial' ? 'partial' : 'full';
     const review: Review = upload.source === 'erp'
-      ? buildErpReview(mapped.erpRows as ErpRow[], rowsRead, errRows.map(e => ({ row: e.row, column: e.column ?? '', value: e.value ?? '', reason: e.reason })), catalog, contains)
+      ? buildErpReview(mapped.erpRows as ErpRow[], rowsRead, errRows.map(e => ({ row: e.row, column: e.column ?? '', value: e.value ?? '', reason: e.reason })), catalog, contains, fields)
       : buildMarketplaceReview(
           mapped.marketplaceRows as MarketplaceRow[], rowsRead, errRows.map(e => ({ row: e.row, column: e.column ?? '', value: e.value ?? '', reason: e.reason })),
-          catalog, listings.map(l => ({ productId: l.productId, marketplaceProductId: l.marketplaceProductId, price: l.price.toNumber(), available: l.available })), contains,
+          catalog, listings.map(l => ({ productId: l.productId, marketplaceProductId: l.marketplaceProductId, price: l.price.toNumber(), available: l.available })), contains, fields,
         );
 
     const summary = { ...review.summary, contains, firstImport: upload.source === 'erp' && products.length === 0, missingSample: review.missing.slice(0, 20) };
@@ -150,13 +150,16 @@ export async function markFailed(deps: ProcessDeps, job: ProcessUploadJob) {
   });
 }
 
-/** Re-queue uploads stuck in "processing" (e.g. the API crashed between commit and enqueue). Enqueue is idempotent. */
-export async function recoverStuckUploads(deps: ProcessDeps, enqueue: (j: ProcessUploadJob) => Promise<void>, olderThanMs = 10 * 60_000) {
+/**
+ * Re-queue uploads stuck in "processing" or "applying" (e.g. the API crashed between commit and enqueue).
+ * Enqueue is idempotent: the job ID is deterministic, so a job that is still running is not duplicated.
+ */
+export async function recoverStuckUploads(deps: ProcessDeps, enqueue: (j: ProcessUploadJob, kind: 'process' | 'apply') => Promise<void>, olderThanMs = 10 * 60_000) {
   const cutoff = new Date(Date.now() - olderThanMs);
   let count = 0;
   for (const tenantId of await deps.database.tenantsWithStuckUploads(cutoff)) {
     const stuck = await deps.database.run(tenantId, d => d.uploads.stuck(cutoff));
-    for (const s of stuck) { await enqueue({ tenantId, uploadId: s.id, revision: s.revision }); count++; }
+    for (const s of stuck) { await enqueue({ tenantId, uploadId: s.id, revision: s.revision }, s.status === 'applying' ? 'apply' : 'process'); count++; }
   }
   return count;
 }
