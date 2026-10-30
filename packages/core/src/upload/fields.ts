@@ -23,7 +23,7 @@ export const ERP_FIELDS: readonly FieldDef[] = [
 ];
 
 export const MARKETPLACE_FIELDS: readonly FieldDef[] = [
-  { key: 'marketplaceProductId', label: 'Marketplace product ID', required: true, hints: ['sku', 'item id', 'item code', 'product id', 'id'] },
+  { key: 'marketplaceProductId', label: 'Marketplace product ID', required: false, hints: ['sku', 'item id', 'item code', 'product id', 'id'] },
   { key: 'barcode1', label: 'Barcode', required: true, hints: ['barcode 1', 'barcode', 'ean', 'gtin'] },
   { key: 'barcode2', label: 'Barcode 2', required: false, hints: ['barcode 2'] },
   { key: 'barcode3', label: 'Barcode 3', required: false, hints: ['barcode 3'] },
@@ -32,6 +32,18 @@ export const MARKETPLACE_FIELDS: readonly FieldDef[] = [
   { key: 'available', label: 'Availability (True/False) or stock quantity', required: true, hints: ['availability', 'available', 'in stock', 'active', 'status', 'stock'] },
 ];
 
+/**
+ * Sources whose files carry their own product ID column (Talabat: `sku`), so the ID must be mapped.
+ * Everywhere else it is optional and mapRows falls back to the first barcode: Snoonu files only have
+ * "Barcode(UniqueIdentifier)", and the Rafeeq/Keeta layouts are not known yet (open gap G4).
+ */
+const SOURCES_WITH_PRODUCT_ID: ReadonlySet<string> = new Set(['talabat']);
+
+const MARKETPLACE_FIELDS_WITH_ID: readonly FieldDef[] = MARKETPLACE_FIELDS.map((f) =>
+  f.key === 'marketplaceProductId' ? { ...f, required: true } : f,
+);
+
 export function fieldsFor(source: UploadSource | string): readonly FieldDef[] {
-  return source === 'erp' ? ERP_FIELDS : MARKETPLACE_FIELDS;
+  if (source === 'erp') return ERP_FIELDS;
+  return SOURCES_WITH_PRODUCT_ID.has(source) ? MARKETPLACE_FIELDS_WITH_ID : MARKETPLACE_FIELDS;
 }

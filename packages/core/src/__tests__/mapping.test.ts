@@ -36,6 +36,69 @@ describe('suggestMapping', () => {
     expect(validateMapping('erp', { barcode: 'A', nameEn: 'A', price: 'B', stock: 'B' }, headers).join('|')).toMatch(/only be mapped to one/);
   });
   it('signatureFor keeps only existing headers', () => expect(signatureFor({ barcode: 'A', x: 'Z' }, ['A'])).toEqual(['A']));
+  it('short hints only match whole words', () => {
+    expect(suggestMapping('talabat', ['UniqueIdentifier', 'Paid', 'Item ID']).fields.marketplaceProductId).toBe('Item ID');
+    expect(suggestMapping('talabat', ['UniqueIdentifier', 'Paid']).fields.marketplaceProductId).toBeUndefined();
+    expect(suggestMapping('erp', ['Upcoming', 'UPC']).fields.barcode).toBe('UPC');
+  });
+  it('the product ID is required for Talabat only', () => {
+    const noId = { barcode1: 'b', price: 'p', available: 'a' };
+    expect(validateMapping('talabat', noId, ['b', 'p', 'a'])).toEqual(['Marketplace product ID must be mapped']);
+    for (const source of ['snoonu', 'rafeeq', 'keeta']) expect(validateMapping(source, noId, ['b', 'p', 'a'])).toEqual([]);
+  });
+});
+
+describe('real file headers', () => {
+  // Snoonu names the availability and price columns after the branch, so the branch part varies per customer.
+  const snoonu = (branch: string) => [
+    'Barcode(UniqueIdentifier)',
+    'Product Name (En)(Update)',
+    `Availability for ${branch}(Update)`,
+    `Price For Branch ${branch}(Update)`,
+  ];
+
+  it.each(['Shaklaan Food Center Gharrafat Al Rayyan', 'Al Meera Hypermarket Al Wakra'])('Snoonu (%s)', (branch) => {
+    const headers = snoonu(branch);
+    const s = suggestMapping('snoonu', headers);
+    expect(s.fields).toEqual({ barcode1: headers[0], name: headers[1], available: headers[2], price: headers[3] });
+    expect(s.fields).not.toHaveProperty('marketplaceProductId');
+    expect(s.missingRequired).toEqual([]);
+    expect(s.confidence).toBe(1);
+    expect(validateMapping('snoonu', s.fields, headers)).toEqual([]);
+
+    const r = mapRows('snoonu', [
+      { [headers[0]]: '6281000000011', [headers[1]]: 'Laban 1L', [headers[2]]: 'True', [headers[3]]: '1.75' },
+      { [headers[0]]: '6281000000028', [headers[1]]: 'Milk 2L', [headers[2]]: 'False', [headers[3]]: 4.5 },
+    ], s.fields);
+    expect(r.errors).toEqual([]);
+    expect(r.marketplaceRows.map((x) => [x.marketplaceProductId, x.barcodes, x.name, x.price, x.available])).toEqual([
+      ['6281000000011', ['6281000000011'], 'Laban 1L', 1.75, true],
+      ['6281000000028', ['6281000000028'], 'Milk 2L', 4.5, false],
+    ]);
+  });
+
+  it('Talabat', () => {
+    const headers = ['sku', 'barcode 1', 'barcode 2', 'barcode 3', 'name', 'price', 'active'];
+    const s = suggestMapping('talabat', headers);
+    expect(s.fields).toEqual({
+      marketplaceProductId: 'sku', barcode1: 'barcode 1', barcode2: 'barcode 2', barcode3: 'barcode 3',
+      name: 'name', price: 'price', available: 'active',
+    });
+    expect(s.missingRequired).toEqual([]);
+    expect(s.confidence).toBe(1);
+    expect(validateMapping('talabat', s.fields, headers)).toEqual([]);
+  });
+
+  it('ERP', () => {
+    const headers = ['UPC', 'Item', 'Price', 'Cost', 'Stock', 'Tag 1', 'Item Code'];
+    const s = suggestMapping('erp', headers);
+    expect(s.fields).toEqual({
+      barcode: 'UPC', nameEn: 'Item', price: 'Price', cost: 'Cost', stock: 'Stock', category: 'Tag 1', sku: 'Item Code',
+    });
+    expect(s.missingRequired).toEqual([]);
+    expect(s.confidence).toBe(1);
+    expect(validateMapping('erp', s.fields, headers)).toEqual([]);
+  });
 });
 
 describe('mapRows validation', () => {
