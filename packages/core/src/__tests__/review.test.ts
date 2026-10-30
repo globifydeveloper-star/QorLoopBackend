@@ -16,6 +16,11 @@ describe('buildErpReview', () => {
     expect(r.missing).toEqual([{ productId: 'p3', barcode: '333' }]);
     expect(r.rows.map((x) => x.changeType)).toEqual(['price', 'stock', 'new']);
   });
+  it('counts rows whose cost was ignored, once per kept row', () => {
+    const r = buildErpReview([{ ...erp(2, '111', 10, 5), costIgnored: true }, erp(3, '999', 5, 1), { ...erp(4, '111', 10, 5), costIgnored: true }], 3, [], products, 'partial');
+    expect(r.summary.costIgnored).toBe(1); // the duplicate row 4 is an error, not a kept row
+    expect(buildErpReview([erp(2, '111', 10, 5)], 1, [], products, 'partial').summary.costIgnored).toBe(0);
+  });
   it('partial files never flag missing products', () => {
     expect(buildErpReview([erp(2, '111', 10, 5)], 1, [], products, 'partial').summary.missingFromFile).toBe(0);
   });

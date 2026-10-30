@@ -40,7 +40,17 @@ export interface ReviewSummary {
   stockChanges: number;
   missingFromFile: number;
   unmatched: number;
+  /** ERP rows kept without their cost because it was negative or not a number */
+  costIgnored: number;
 }
+
+/** The summary stored on an upload at review time and returned by the API (older uploads may lack costIgnored). */
+export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored'> & {
+  costIgnored?: number;
+  contains: 'full' | 'partial';
+  firstImport: boolean;
+  missingSample: { productId: string; barcode: string }[];
+};
 
 export interface Review {
   rows: ReviewRow[];
@@ -74,7 +84,7 @@ export function buildErpReview(
   const out: ReviewRow[] = [];
   const seenBarcodes = new Set<string>();
   const seenProducts = new Set<string>();
-  let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0;
+  let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0;
 
   for (const r of rows) {
     if (seenBarcodes.has(r.barcode)) {
@@ -82,6 +92,7 @@ export function buildErpReview(
       continue;
     }
     seenBarcodes.add(r.barcode);
+    if (r.costIgnored) costIgnored++;
     const p = byBarcode.get(r.barcode);
     if (!p) {
       newProducts++;
@@ -115,7 +126,7 @@ export function buildErpReview(
     errors,
     summary: {
       rowsRead, matched, newProducts, rowsWithErrors: errors.length,
-      priceChanges, stockChanges, missingFromFile: missing.length, unmatched: 0,
+      priceChanges, stockChanges, missingFromFile: missing.length, unmatched: 0, costIgnored,
     },
   };
 }
@@ -192,7 +203,7 @@ export function buildMarketplaceReview(
     errors,
     summary: {
       rowsRead, matched, newProducts: 0, rowsWithErrors: errors.length,
-      priceChanges, stockChanges: availChanges, missingFromFile: missing.length, unmatched,
+      priceChanges, stockChanges: availChanges, missingFromFile: missing.length, unmatched, costIgnored: 0,
     },
   };
 }

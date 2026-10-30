@@ -532,8 +532,8 @@ describe('confirm and apply', () => {
     // nothing changed on the existing product, so no field events; one summary event per apply
     expect(await events(s, 'product.field_changed')).toHaveLength(0);
     expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
-      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: first },
-      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: later },
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: first },
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: later },
     ]);
   });
 
@@ -570,7 +570,7 @@ describe('confirm and apply', () => {
       { entity: milk.id, actor, field: 'inLatestErpFile', old: false, new: true, uploadId: id },
     ]));
     expect(changes).toHaveLength(8);
-    expect((await events(s, 'upload.applied'))[0]!.details).toEqual({ created: 0, updated: 2, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, uploadId: id });
+    expect((await events(s, 'upload.applied'))[0]!.details).toEqual({ created: 0, updated: 2, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: id });
   });
 
   it('a full ERP list flags products missing from the file without deactivating them; a partial list does not', async () => {
@@ -623,9 +623,9 @@ describe('confirm and apply', () => {
       expect(await h.fixture.prisma.listing.count({ where: { tenantId: s.id, marketplaceId: 'talabat' } })).toBe(1);
       // listings are summarised per apply, not per row; products are untouched
       expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, uploadId: first },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, uploadId: partial },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, uploadId: full },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, skipped: 0, uploadId: first },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, skipped: 0, uploadId: partial },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, skipped: 0, uploadId: full },
       ]);
       expect(await events(s, 'product.field_changed')).toHaveLength(0);
       expect((await product(s, '6281000000011')).erpPrice.toNumber()).toBe(1.5);
@@ -636,10 +636,13 @@ describe('confirm and apply', () => {
     const { s, manager: m } = await store();
     await h.fixture.prisma.product.create({ data: { tenantId: s.id, barcode: '6281000000011', normalizedBarcode: '6281000000011', nameEn: 'Laban', erpPrice: 1.5, erpStock: 1, status: 'active' } });
     const id = await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12], ['6281000000028', 'Milk', 4.5, 3], ['6281000000035', 'Bread', 2, 3]]), erpFields);
-    // Corrupt the matched staging row so the bulk UPDATE overflows numeric(12,3), after the new products were inserted.
-    const row = await h.fixture.prisma.uploadRow.findFirstOrThrow({ where: { uploadId: id, changeType: { not: 'new' } } });
-    const parsed = row.parsed as { data: Record<string, unknown> };
-    await h.fixture.prisma.uploadRow.update({ where: { id: row.id }, data: { parsed: { ...parsed, data: { ...parsed.data, price: 1e12 } } as never } });
+    // The planner now skips rows it can see are bad, so the database itself refuses the bulk UPDATE of this store's
+    // products, after the new products were inserted, with a check_violation whose message quotes a value (like 23514 does).
+    const fn = `apply_fail_${s.id.replaceAll('-', '')}`;
+    await h.fixture.prisma.$executeRawUnsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.tenant_id = '${s.id}'::uuid THEN RAISE EXCEPTION 'cost of % is not valid', quote_literal(NEW.name_en) USING ERRCODE = 'check_violation'; END IF;
+      RETURN NEW; END $$`);
+    await h.fixture.prisma.$executeRawUnsafe(`CREATE TRIGGER ${fn} BEFORE UPDATE ON products FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
     const before = await products(s);
     const logged: object[] = [];
     h.queue.applyHandler = job => applyUpload({ ...deps(), log: { info: () => undefined, warn: o => { logged.push(o); } } }, job).then(() => undefined);
@@ -647,6 +650,8 @@ describe('confirm and apply', () => {
       expect((await apply(s, m, id)).statusCode).toBe(200);
     } finally {
       h.queue.applyHandler = job => applyUpload(deps(), job).then(() => undefined);
+      await h.fixture.prisma.$executeRawUnsafe(`DROP TRIGGER ${fn} ON products`);
+      await h.fixture.prisma.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
     }
     expect(await products(s)).toEqual(before);
     const after = await status(s, m, id);
@@ -656,13 +661,12 @@ describe('confirm and apply', () => {
     const [failed] = await events(s, 'upload.apply_failed');
     expect(logged).toHaveLength(1);
     // the phase, Postgres code and unquoted message are logged and audited; no value from the file is
-    const summary = { phase: 'update products', sqlState: '22003', message: 'numeric field overflow' };
+    const summary = { phase: 'update products', sqlState: '23514', message: 'cost of' };
     expect(logged[0]).toMatchObject({ ...summary, errorType: expect.any(String), ms: expect.any(Number), timings: expect.objectContaining({ 'create products': expect.any(Number) }) });
     expect(failed!.details).toMatchObject(summary);
-    expect(JSON.stringify([logged, failed!.details])).not.toMatch(/6281000000011|Laban|Milk|Bread|1000000000000|1e\+?12/i);
-    // the review is still there and the user can retry once the data is fixed
+    expect(JSON.stringify([logged, failed!.details])).not.toMatch(/6281000000011|Laban|Milk|Bread|1\.75/i);
+    // the review is still there and the user can retry once the database accepts the rows
     expect((await h.request('GET', `/api/uploads/${id}/review`, s, m)).statusCode).toBe(200);
-    await h.fixture.prisma.uploadRow.update({ where: { id: row.id }, data: { parsed: parsed as never } });
     expect((await apply(s, m, id)).json().data.status).toBe('applying');
     expect((await status(s, m, id)).status).toBe('applied');
     expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id } })).toBe(3);
@@ -733,7 +737,8 @@ describe('confirm and apply', () => {
       tenantId: s.id, uploadId: id, rowNumber: i + 2, matchProductId: null, changeType: 'new',
       parsed: { data: {
         rowNumber: i + 2, barcode: barcode(i), sku: `SKU-${i}`, nameEn: `Almarai Full Fat Fresh Milk 2L Family Pack ${i}`, nameAr: `حليب طازج كامل الدسم ${i}`,
-        brand: 'Almarai', category: 'Dairy / Milk / Fresh', price: 12.345, cost: 9.5, stock: i % 500, active: i % 7 !== 0,
+        // row 7 has the real file's negative cost, staged as it was before validation ignored it
+        brand: 'Almarai', category: 'Dairy / Milk / Fresh', price: 12.345, cost: i === 5 ? -42.8 : 9.5, stock: i % 500, active: i % 7 !== 0,
       } },
     }));
     for (let i = 0; i < rows.length; i += 2000) await h.fixture.prisma.uploadRow.createMany({ data: rows.slice(i, i + 2000) });
@@ -742,9 +747,57 @@ describe('confirm and apply', () => {
     const log = { info: (o: object, msg?: string) => { logged.push({ o: o as Record<string, unknown>, msg }); }, warn: (o: object, msg?: string) => { logged.push({ o: o as Record<string, unknown>, msg }); } };
     expect(await applyUpload({ ...deps(), log }, { tenantId: s.id, uploadId: id, revision: 0 })).toBe('applied');
     console.log(`first import of ${applyScale} rows:`, JSON.stringify(logged[0]?.o));
-    expect(logged[0]!.msg).toBe('Upload applied');
+    expect(logged.map(l => l.msg)).toEqual(['Upload applied']);
+    expect(logged[0]!.o).toMatchObject({ created: applyScale, skipped: 0 });
     expect(Object.keys(logged[0]!.o.timings as object)).toEqual(expect.arrayContaining(['start', 'create products', 'update products', 'flag missing', 'audit', 'finish']));
     expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'active' } })).toBe(applyScale);
     expect((await product(s, barcode(7))).erpActive).toBe(false);
+    expect((await product(s, barcode(5))).costPrice).toBeNull();
+    expect((await product(s, barcode(6))).costPrice?.toNumber()).toBe(9.5);
   }, 240_000);
+
+  it('the real file\'s negative cost: the row stays valid, costIgnored is 1, and the product is created with no cost', async () => {
+    const { s, manager: m } = await store();
+    const header = ['Barcode', 'Item Name', 'Sale Price', 'Cost', 'Qty'];
+    const id = await reviewed(s, m, await xlsx([
+      header,
+      ['6291069207200', 'Real row with negative cost', 5.25, -42.8, 4],
+      ['6291069207217', 'Zero cost', 3, 0, 1],
+      ['6291069207224', 'Normal cost', 3, 2.125, 1],
+    ]), { ...erpFields, cost: 'Cost' });
+    const reviewedUpload = await status(s, m, id);
+    expect(reviewedUpload.summary).toMatchObject({ rowsRead: 3, rowsWithErrors: 0, newProducts: 3, costIgnored: 1 });
+    expect((await apply(s, m, id)).statusCode).toBe(200);
+    expect((await status(s, m, id)).status).toBe('applied');
+    expect((await product(s, '6291069207200')).costPrice).toBeNull();
+    expect((await product(s, '6291069207217')).costPrice?.toNumber()).toBe(0);
+    expect((await product(s, '6291069207224')).costPrice?.toNumber()).toBe(2.125);
+    expect((await events(s, 'upload.applied'))[0]!.details).toMatchObject({ created: 3, skipped: 0 });
+  });
+
+  it('a staged row that breaks the barcode rule is skipped and reported; the rest of the file applies', async () => {
+    const { s } = await store();
+    const id = randomUUID();
+    await h.fixture.prisma.upload.create({ data: {
+      id, tenantId: s.id, source: 'erp', fileName: 'bad.csv', size: 1, storageKey: `tenants/${s.id}/uploads/${id}/original.csv`, contains: 'full',
+      uploadedById: await managerId(s), status: 'applying', mapping: erpFields, summary: { firstImport: true },
+    } });
+    const staged = [['6281000000011', 'Good'], ['0123456', 'Leading zero'], ['6281000000028', 'Also good']] as const;
+    await h.fixture.prisma.uploadRow.createMany({ data: staged.map(([barcode, nameEn], i) => ({
+      tenantId: s.id, uploadId: id, rowNumber: i + 2, matchProductId: null, changeType: 'new',
+      parsed: { data: { rowNumber: i + 2, barcode, nameEn, price: 1, stock: 1, active: true } },
+    })) });
+    const logged: { msg?: string; o: object }[] = [];
+    const log = { info: (o: object, msg?: string) => { logged.push({ o, msg }); }, warn: (o: object, msg?: string) => { logged.push({ o, msg }); } };
+    expect(await applyUpload({ ...deps(), log }, { tenantId: s.id, uploadId: id, revision: 0 })).toBe('applied');
+    expect((await products(s)).map(p => p.normalizedBarcode)).toEqual(['6281000000011', '6281000000028']);
+    const [applied] = await events(s, 'upload.applied');
+    expect(applied!.details).toMatchObject({ created: 2, skipped: 1, skippedRows: [{ row: 3, reason: 'Barcode must be digits only and not start with 0' }] });
+    expect(logged).toEqual([
+      { msg: 'Upload applied', o: expect.objectContaining({ created: 2, skipped: 1 }) },
+      { msg: 'Upload applied without rows the database would refuse', o: expect.objectContaining({ skipped: 1, reasons: { 'Barcode must be digits only and not start with 0': 1 } }) },
+    ]);
+    // the row number and reason are recorded, never the row's values
+    expect(JSON.stringify([applied!.details, logged])).not.toMatch(/0123456|Leading zero/);
+  });
 });

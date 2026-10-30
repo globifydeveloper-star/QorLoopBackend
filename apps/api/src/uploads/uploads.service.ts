@@ -11,6 +11,7 @@ import { signatureFor, validateMapping } from '../../../../packages/core/src/upl
 import { fieldsFor } from '../../../../packages/core/src/upload/fields.js';
 import { RETENTION_DAYS, UPLOAD_LIMITS } from '../../../../packages/core/src/upload/constants.js';
 import { buildErrorWorkbook, errorReportFileName, MAX_STORED_ERRORS } from '../../../../packages/core/src/upload/error-report.js';
+import type { StoredReviewSummary } from '../../../../packages/core/src/upload/review.js';
 import { CONFIG, STORAGE, UPLOAD_QUEUE } from '../tokens.js';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -38,7 +39,8 @@ type UploadRow = {
 function view(u: UploadRow) {
   return {
     id: u.id, source: u.source, fileName: u.fileName, size: u.size, contains: u.contains, status: u.status,
-    step: u.step, progress: u.progress, summary: u.summary ?? null, errorMessage: u.errorMessage,
+    // the review summary (costIgnored and the rest); a rejected upload may have none
+    step: u.step, progress: u.progress, summary: (u.summary ?? null) as StoredReviewSummary | null, errorMessage: u.errorMessage,
     uploadedById: u.uploadedById, createdAt: u.createdAt, updatedAt: u.updatedAt, appliedAt: u.appliedAt,
     ...(u.status === 'needs_mapping' ? { headers: u.headers ?? [], mappingSuggestion: u.mappingSuggestion ?? null, fields: fieldsFor(u.source).map(f => ({ key: f.key, label: f.label, required: f.required })) } : {}),
   };

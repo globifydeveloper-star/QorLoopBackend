@@ -19,9 +19,12 @@ export interface ErpRow {
   brand?: string;
   category?: string;
   price: number;
+  /** never negative: a negative or unreadable cost becomes unknown (see costIgnored) */
   cost?: number;
   stock: number;
   active: boolean;
+  /** the Cost cell had a value that is not a cost (negative or not a number); the row stays valid without it */
+  costIgnored?: true;
 }
 
 export interface MarketplaceRow {
@@ -85,6 +88,10 @@ export function mapRows(source: string, rows: SheetRow[], fields: Record<string,
       if (!nameEn) return err(fields.nameEn, 'Product name is empty');
       if (price === null || price <= 0) return err(fields.price, 'Price must be a number above 0');
       if (stock === null || stock < 0) return err(fields.stock, 'Stock must be 0 or more');
+      // Cost is optional, so a negative or unreadable one does not reject the row: it becomes unknown and is counted.
+      const costCell = fields.cost ? r[fields.cost] : undefined;
+      const cost = toNum(costCell);
+      const costIgnored = str(costCell) !== '' && (cost === null || cost < 0);
       erpRows.push({
         rowNumber,
         barcode,
@@ -94,9 +101,10 @@ export function mapRows(source: string, rows: SheetRow[], fields: Record<string,
         brand: fields.brand ? str(r[fields.brand]) || undefined : undefined,
         category: fields.category ? str(r[fields.category]) || undefined : undefined,
         price: round2(price),
-        cost: fields.cost ? toNum(r[fields.cost]) ?? undefined : undefined,
+        cost: cost !== null && cost >= 0 ? cost : undefined,
         stock: Math.floor(stock),
         active: fields.active ? toBool(r[fields.active]) ?? true : true,
+        ...(costIgnored ? { costIgnored: true as const } : {}),
       });
       return;
     }

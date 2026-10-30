@@ -175,6 +175,23 @@ describe('mapRows validation', () => {
       [7, 'name', 'Product name is empty'],
     ]);
   });
+  it('a negative or non-numeric cost keeps the row valid with cost unknown; zero and empty cost are fine', () => {
+    const f = { ...fields, cost: 'cost' };
+    const rows = [
+      { bc: '6291069207200', name: 'Negative', price: 5, qty: 1, cost: -42.8 },
+      { bc: '6291069207201', name: 'Text', price: 5, qty: 1, cost: 'n/a' },
+      { bc: '6291069207202', name: 'Zero', price: 5, qty: 1, cost: 0 },
+      { bc: '6291069207203', name: 'Empty', price: 5, qty: 1, cost: '' },
+      { bc: '6291069207204', name: 'Normal', price: 5, qty: 1, cost: '3.25' },
+    ];
+    const r = mapRows('erp', rows, f);
+    expect(r.errors).toEqual([]);
+    expect(r.erpRows.map((x) => [x.cost, x.costIgnored])).toEqual([
+      [undefined, true], [undefined, true], [0, undefined], [undefined, undefined], [3.25, undefined],
+    ]);
+    // unmapped cost never counts as ignored
+    expect(mapRows('erp', [{ ...rows[0] }], fields).erpRows[0]!.costIgnored).toBeUndefined();
+  });
   it('marketplace rows accept True/False and quantities', () => {
     const f = { marketplaceProductId: 'id', barcode1: 'b1', barcode2: 'b2', price: 'p', available: 'a' };
     const r = mapRows('talabat', [

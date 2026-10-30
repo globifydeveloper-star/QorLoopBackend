@@ -9,7 +9,7 @@ import { inspectFile, extensionOf } from '../../../packages/core/src/upload/safe
 import { ParseError, parseSpreadsheet } from '../../../packages/core/src/upload/parse.js';
 import { detectTemplate, looksLikeOtherSource, suggestMapping, validateMapping, type TemplateLike } from '../../../packages/core/src/upload/mapping.js';
 import { exceedsInvalidShare, mapRows, type ErpRow, type MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
-import { buildErpReview, buildMarketplaceReview, type Review } from '../../../packages/core/src/upload/review.js';
+import { buildErpReview, buildMarketplaceReview, type Review, type StoredReviewSummary } from '../../../packages/core/src/upload/review.js';
 import { UPLOAD_LIMITS } from '../../../packages/core/src/upload/constants.js';
 
 export interface ProcessDeps {
@@ -121,7 +121,7 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
           catalog, listings.map(l => ({ productId: l.productId, marketplaceProductId: l.marketplaceProductId, price: l.price.toNumber(), available: l.available })), contains, fields,
         );
 
-    const summary = { ...review.summary, contains, firstImport: upload.source === 'erp' && products.length === 0, missingSample: review.missing.slice(0, 20) };
+    const summary: StoredReviewSummary = { ...review.summary, contains, firstImport: upload.source === 'erp' && products.length === 0, missingSample: review.missing.slice(0, 20) };
     const storedErrors = review.errors.map(e => ({ row: e.row, column: e.column || null, value: e.value || null, reason: e.reason })).slice(0, MAX_STORED_ERRORS);
     await database.run(tenantId, async d => {
       await d.uploads.replaceReview(uploadId, review.rows.map(r => ({

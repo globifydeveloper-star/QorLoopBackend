@@ -32,6 +32,37 @@ export interface ErpApplyPlan {
   changes: FieldChange[];
   /** every barcode in the file (new and existing), for flagging products missing from a full list */
   barcodes: string[];
+  /** rows the database would refuse; left out so the rest of the file still applies */
+  skipped: SkippedRow[];
+}
+
+/** A row left out of an apply: its file row number and a plain reason, never its values. */
+export interface SkippedRow { rowNumber: number; reason: string }
+
+/**
+ * The database's rules for what an apply writes, checked first so one bad row cannot roll back the whole file.
+ * Mirrors packages/db/prisma/migrations: CHECK product_status_valid, product_barcode_normalized, product_money_valid,
+ * listing_price_valid, the NOT NULL text columns, and the column types numeric(12,3) and int.
+ */
+const MONEY_LIMIT = 1_000_000_000; // numeric(12,3) holds up to 999,999,999.999
+const INT_MAX = 2_147_483_647;
+const PRODUCT_STATUSES = new Set(['active', 'inactive', 'new']);
+const money = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n < MONEY_LIMIT;
+
+export function productProblem(p: { normalizedBarcode: string; nameEn: string; erpPrice: number; costPrice: number | null; erpStock: number; status?: string }): string | null {
+  if (typeof p.normalizedBarcode !== 'string' || !/^[0-9]+$/.test(p.normalizedBarcode) || p.normalizedBarcode.startsWith('0')) return 'Barcode must be digits only and not start with 0';
+  if (p.status !== undefined && !PRODUCT_STATUSES.has(p.status)) return 'Product status is not valid';
+  if (typeof p.nameEn !== 'string' || !p.nameEn) return 'Product name is empty';
+  if (!money(p.erpPrice)) return 'Price must be 0 or more and below 1,000,000,000';
+  if (p.costPrice !== null && !money(p.costPrice)) return 'Cost must be 0 or more and below 1,000,000,000';
+  if (!Number.isInteger(p.erpStock) || p.erpStock < 0 || p.erpStock > INT_MAX) return 'Stock must be a whole number, 0 or more';
+  return null;
+}
+
+export function listingProblem(l: ListingWrite): string | null {
+  if (typeof l.marketplaceProductId !== 'string' || !l.marketplaceProductId) return 'Marketplace product ID is empty';
+  if (!money(l.price)) return 'Price must be 0 or more and below 1,000,000,000';
+  return null;
 }
 
 /** ERP-owned product fields and the mapping key that feeds each one (docs 5.6). */
@@ -63,40 +94,51 @@ function fileValue(r: ErpRow, key: (typeof ERP_FIELDS)[number][0]): FieldValue {
  * - A field whose column is not in the confirmed mapping is left alone (an empty mapped cell clears it).
  * - Qorloop-owned fields are never written, except nameAr, which is filled only when currently empty.
  * - Every row in the file marks its product as in the latest ERP file.
+ * - A negative cost (staged before validation ignored it) is treated as unknown: blank on a new product, kept on an existing one.
+ * - A row the database would refuse (productProblem) is skipped and reported; the rest still applies.
  */
 export function planErpApply(rows: ErpRow[], products: ApplyProduct[], mappedKeys: Iterable<string>, newStatus: 'active' | 'new'): ErpApplyPlan {
   const mapped = new Set(mappedKeys);
   const fields = ERP_FIELDS.filter(([key]) => mapped.has(key));
   const byBarcode = new Map(products.map(p => [p.normalizedBarcode, p] as const));
-  const plan: ErpApplyPlan = { create: [], update: [], changes: [], barcodes: [] };
+  const plan: ErpApplyPlan = { create: [], update: [], changes: [], barcodes: [], skipped: [] };
   const seen = new Set<string>();
 
-  for (const r of rows) {
+  for (const staged of rows) {
     // the review already rejects duplicate barcodes; first row wins if one slips through
-    if (seen.has(r.barcode)) continue;
-    seen.add(r.barcode);
-    plan.barcodes.push(r.barcode);
+    if (seen.has(staged.barcode)) continue;
+    seen.add(staged.barcode);
+    plan.barcodes.push(staged.barcode);
+    const costIgnored = staged.costIgnored === true || (staged.cost !== undefined && !(staged.cost >= 0));
+    const r: ErpRow = costIgnored ? { ...staged, cost: undefined } : staged;
     const p = byBarcode.get(r.barcode);
     if (!p) {
-      plan.create.push({
+      const created: NewProduct = {
         normalizedBarcode: r.barcode, sku: r.sku ?? null, nameEn: r.nameEn, nameAr: r.nameAr ?? null, brand: r.brand ?? null,
         erpCategory: r.category ?? null, erpPrice: money3(r.price)!, costPrice: money3(r.cost ?? null), erpStock: r.stock, erpActive: r.active,
         status: newStatus,
-      });
+      };
+      const problem = productProblem(created);
+      if (problem) plan.skipped.push({ rowNumber: r.rowNumber, reason: problem });
+      else plan.create.push(created);
       continue;
     }
     const { normalizedBarcode: _, ...next } = p;
-    const before = plan.changes.length;
+    const changes: FieldChange[] = [];
     const change = (field: keyof ProductWrite, value: FieldValue) => {
       const old = MONEY.has(field) ? money3(p[field] as number | null) : (p[field] as FieldValue);
       if (old === value) return;
-      plan.changes.push({ productId: p.id, field, old, new: value });
+      changes.push({ productId: p.id, field, old, new: value });
       (next as Record<string, FieldValue>)[field] = value;
     };
-    for (const [key, field] of fields) change(field, fileValue(r, key));
+    for (const [key, field] of fields) if (!(key === 'cost' && costIgnored)) change(field, fileValue(r, key));
     if (!p.nameAr && r.nameAr) change('nameAr', r.nameAr);
     change('inLatestErpFile', true);
-    if (plan.changes.length > before) plan.update.push(next);
+    if (!changes.length) continue;
+    const problem = productProblem({ ...next, normalizedBarcode: p.normalizedBarcode });
+    if (problem) { plan.skipped.push({ rowNumber: r.rowNumber, reason: problem }); continue; }
+    plan.changes.push(...changes);
+    plan.update.push(next);
   }
   return plan;
 }
@@ -110,10 +152,21 @@ export interface ListingWrite {
   available: boolean;
 }
 
-/** Marketplace rows as listings: matched rows point at their product, unmatched rows keep a null product. */
-export function planListingApply(rows: { parsed: MarketplaceRow; productId: string | null }[]): ListingWrite[] {
-  return rows.map(({ parsed: r, productId }) => ({
-    marketplaceProductId: r.marketplaceProductId, productId, barcodes: r.barcodes,
-    name: r.name || null, price: money3(r.price)!, available: r.available,
-  }));
+/**
+ * Marketplace rows as listings: matched rows point at their product, unmatched rows keep a null product.
+ * A row the database would refuse (listingProblem) is skipped and reported.
+ */
+export function planListingApply(rows: { parsed: MarketplaceRow; productId: string | null }[]): { listings: ListingWrite[]; skipped: SkippedRow[] } {
+  const listings: ListingWrite[] = [];
+  const skipped: SkippedRow[] = [];
+  for (const { parsed: r, productId } of rows) {
+    const l: ListingWrite = {
+      marketplaceProductId: r.marketplaceProductId, productId, barcodes: r.barcodes,
+      name: r.name || null, price: money3(r.price)!, available: r.available,
+    };
+    const problem = listingProblem(l);
+    if (problem) skipped.push({ rowNumber: r.rowNumber, reason: problem });
+    else listings.push(l);
+  }
+  return { listings, skipped };
 }

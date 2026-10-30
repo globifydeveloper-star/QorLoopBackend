@@ -1,7 +1,7 @@
 import type { Database } from '../../../packages/db/src/database.js';
 import type { ApplyUploadJob } from '../../../packages/shared/src/queue.js';
 import type { ErpRow, MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
-import { planErpApply, planListingApply } from '../../../packages/core/src/upload/apply.js';
+import { planErpApply, planListingApply, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
 
 export interface ApplyDeps {
   database: Database;
@@ -10,7 +10,10 @@ export interface ApplyDeps {
 
 export type ApplyOutcome = 'applied' | 'failed' | 'skipped';
 
-export interface ApplyCounts { created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number }
+export interface ApplyCounts { created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number; skipped: number }
+
+/** Skipped rows listed in the 'upload.applied' audit event; the count is always complete. */
+const MAX_SKIPPED_LISTED = 1000;
 
 const RETRY_MESSAGE = 'We could not apply this file. Nothing was changed; please try again.';
 /** A 23,500-row ERP file takes 4-6 s on local Postgres 18; leave room for a slower server, below the 120 s BullMQ job lock. */
@@ -76,6 +79,8 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
   const timings: Partial<Record<ApplyPhase, number>> = {};
   let mark = t0;
   const enter = (next: ApplyPhase) => { timings[phase] = (timings[phase] ?? 0) + Date.now() - mark; mark = Date.now(); phase = next; };
+  // rows the database would refuse are left out (row number and reason only), so one bad row cannot sink the file
+  let skipped: SkippedRow[] = [];
   let counts: ApplyCounts | null;
   try {
     counts = await database.run(tenantId, async d => {
@@ -83,7 +88,7 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
       if (!u || u.status !== 'applying' || u.revision !== job.revision) return null;
       const actorId = await d.uploads.applyRequestedBy(uploadId);
       const full = u.contains !== 'partial';
-      const c: ApplyCounts = { created: 0, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0 };
+      const c: ApplyCounts = { created: 0, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0 };
 
       if (u.source === 'erp') {
         const products = (await d.uploads.applySnapshot()).map(p => ({ ...p, erpPrice: p.erpPrice.toNumber(), costPrice: p.costPrice?.toNumber() ?? null }));
@@ -102,19 +107,25 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
           ...plan.changes.map(ch => ({ action: 'product.field_changed', entityId: ch.productId, details: { field: ch.field, old: ch.old, new: ch.new, uploadId } })),
           ...flagged.map(id => ({ action: 'product.field_changed', entityId: id, details: { field: 'inLatestErpFile', old: true, new: false, uploadId } })),
         ]);
+        skipped = plan.skipped;
         Object.assign(c, { created: plan.create.length, updated: plan.update.length, flagged: flagged.length });
       } else {
         enter('listings');
-        const listings = planListingApply(staged.map(r => ({ parsed: (r.parsed as Staged).data as MarketplaceRow, productId: r.matchProductId })));
-        await d.uploads.upsertListings(u.source, uploadId, listings);
-        const removed = full ? await d.uploads.removeListingsNotIn(u.source, listings.map(l => l.marketplaceProductId)) : 0;
-        Object.assign(c, { listingsUpserted: listings.length, listingsRemoved: removed });
+        const plan = planListingApply(staged.map(r => ({ parsed: (r.parsed as Staged).data as MarketplaceRow, productId: r.matchProductId })));
+        await d.uploads.upsertListings(u.source, uploadId, plan.listings);
+        // a skipped row's ID still counts as in the file, so a full list does not remove its existing listing
+        const inFile = staged.map(r => ((r.parsed as Staged).data as MarketplaceRow).marketplaceProductId).filter(id => typeof id === 'string' && id);
+        const removed = full ? await d.uploads.removeListingsNotIn(u.source, inFile) : 0;
+        skipped = plan.skipped;
+        Object.assign(c, { listingsUpserted: plan.listings.length, listingsRemoved: removed });
       }
+      c.skipped = skipped.length;
 
       enter('finish');
       const ok = await d.uploads.transition(uploadId, ['applying'], { status: 'applied', appliedAt: new Date(), step: null, progress: 100, errorMessage: null });
       if (!ok) throw new Error('Upload left the applying state during apply');
-      await d.event('upload.applied', actorId, uploadId, undefined, { ...c, uploadId });
+      const skippedRows = skipped.slice(0, MAX_SKIPPED_LISTED).map(s => ({ row: s.rowNumber, reason: s.reason }));
+      await d.event('upload.applied', actorId, uploadId, undefined, { ...c, uploadId, ...(skipped.length ? { skippedRows } : {}) });
       return c;
     }, { timeout: APPLY_TIMEOUT_MS });
   } catch (e) {
@@ -130,6 +141,11 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
   if (!counts) return 'skipped';
   enter(phase);
   deps.log?.info({ tenantId, uploadId, ...counts, ms: Date.now() - t0, timings }, 'Upload applied');
+  if (skipped.length) {
+    const reasons: Record<string, number> = {};
+    for (const s of skipped) reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
+    deps.log?.warn({ tenantId, uploadId, skipped: skipped.length, reasons }, 'Upload applied without rows the database would refuse');
+  }
   return 'applied';
 }
 
