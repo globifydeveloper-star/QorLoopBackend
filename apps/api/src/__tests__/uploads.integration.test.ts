@@ -217,7 +217,7 @@ describe('row errors as .xlsx', () => {
     // file row = index + 1; three invalid rows of 17 stays under the 20% rejection threshold
     lines.splice(3, 0, ',No barcode,1,1');
     lines.splice(6, 0, `6281000000599,Evil,"${evil.replace(/"/g, '""')}",1`);
-    lines.splice(9, 0, '6281000000598,Negative,2,-2');
+    lines.splice(9, 0, '6281000000598,Negative,-2,1'); // a negative price (negative stock is no longer an error)
     lines.splice(13, 0, '6281000000500,Duplicate of row 2,2,1'); // a review-stage error
     const { id, final } = await reviewed(a, a.owner, Buffer.from(lines.join('\n')), 'Daily "stock"; v2.csv');
     expect(final.status).toBe('needs_review');
@@ -241,14 +241,14 @@ describe('row errors as .xlsx', () => {
       [undefined, 'Row', 'Column', 'Value', 'Problem'],
       [undefined, 4, 'Barcode', '', 'Barcode is empty'],
       [undefined, 7, 'Sale Price', `'${evil}`, 'Price must be a number above 0'],
-      [undefined, 10, 'Qty', '-2', 'Stock must be 0 or more'],
+      [undefined, 10, 'Sale Price', '-2', 'Price must be a number above 0'],
       [undefined, 14, 'Barcode', '6281000000500', 'Duplicate barcode in this file'],
     ]);
   });
 
   it('review errors name the file\'s column header, like row errors do', async () => {
     const errors = (await h.request('GET', `/api/uploads/${withErrors}/errors`, a, a.owner)).json().data.errors;
-    expect(errors.map((e: { column: string }) => e.column)).toEqual(['Barcode', 'Sale Price', 'Qty', 'Barcode']);
+    expect(errors.map((e: { column: string }) => e.column)).toEqual(['Barcode', 'Sale Price', 'Sale Price', 'Barcode']);
   });
 
   it('stores a formula-looking value as plain text, never as a formula', async () => {
@@ -773,6 +773,27 @@ describe('confirm and apply', () => {
     expect((await product(s, '6291069207217')).costPrice?.toNumber()).toBe(0);
     expect((await product(s, '6291069207224')).costPrice?.toNumber()).toBe(2.125);
     expect((await events(s, 'upload.applied'))[0]!.details).toMatchObject({ created: 3, skipped: 0 });
+  });
+
+  it('the real file\'s negative stock: the row stays valid with stock 0, counted as negativeStockClamped; text stock is still an error', async () => {
+    const { s, manager: m } = await store();
+    const id = await reviewed(s, m, await xlsx([
+      erpHeader,
+      ['6291069207200', 'Oversold by two', 5.25, -2],
+      ['6291069207217', 'Oversold by thirty', 3, -30],
+      ['6291069207224', 'In stock', 3, 7],
+      ['6291069207231', 'Not a quantity', 3, 'n/a'],
+      ['6291069207248', 'Another in stock', 3, 1],
+      ['6291069207255', 'Yet another', 3, 1],
+    ]), erpFields);
+    const reviewedUpload = await status(s, m, id);
+    expect(reviewedUpload.summary).toMatchObject({ rowsRead: 6, rowsWithErrors: 1, newProducts: 5, negativeStockClamped: 2, costIgnored: 0 });
+    const errors = (await h.request('GET', `/api/uploads/${id}/errors`, s, m)).json().data;
+    expect(errors.errors).toEqual([{ row: 5, column: 'Qty', value: 'n/a', reason: 'Stock must be a number' }]);
+    expect((await apply(s, m, id)).statusCode).toBe(200);
+    expect((await product(s, '6291069207200')).erpStock).toBe(0);
+    expect((await product(s, '6291069207217')).erpStock).toBe(0);
+    expect((await product(s, '6291069207224')).erpStock).toBe(7);
   });
 
   it('a staged row that breaks the barcode rule is skipped and reported; the rest of the file applies', async () => {

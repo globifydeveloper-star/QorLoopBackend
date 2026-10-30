@@ -21,6 +21,13 @@ describe('buildErpReview', () => {
     expect(r.summary.costIgnored).toBe(1); // the duplicate row 4 is an error, not a kept row
     expect(buildErpReview([erp(2, '111', 10, 5)], 1, [], products, 'partial').summary.costIgnored).toBe(0);
   });
+  it('counts rows whose negative stock was stored as 0, once per kept row', () => {
+    const clamped = (r: ErpRow): ErpRow => ({ ...r, negativeStockClamped: true });
+    const r = buildErpReview([clamped(erp(2, '111', 10, 0)), clamped(erp(3, '999', 5, 0)), clamped(erp(4, '111', 10, 0)), erp(5, '222', 20, 0)], 4, [], products, 'partial');
+    expect(r.summary).toMatchObject({ negativeStockClamped: 2, rowsWithErrors: 1, newProducts: 1, matched: 2 });
+    expect(r.rows[0]).toMatchObject({ changeType: 'stock', stock: { old: 5, new: 0 } });
+    expect(buildMarketplaceReview([], 0, [], products, [], 'partial').summary.negativeStockClamped).toBe(0);
+  });
   it('partial files never flag missing products', () => {
     expect(buildErpReview([erp(2, '111', 10, 5)], 1, [], products, 'partial').summary.missingFromFile).toBe(0);
   });

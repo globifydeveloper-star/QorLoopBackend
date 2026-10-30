@@ -42,11 +42,14 @@ export interface ReviewSummary {
   unmatched: number;
   /** ERP rows kept without their cost because it was negative or not a number */
   costIgnored: number;
+  /** ERP rows whose negative stock was stored as 0 */
+  negativeStockClamped: number;
 }
 
-/** The summary stored on an upload at review time and returned by the API (older uploads may lack costIgnored). */
-export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored'> & {
+/** The summary stored on an upload at review time and returned by the API (older uploads may lack the optional counts). */
+export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored' | 'negativeStockClamped'> & {
   costIgnored?: number;
+  negativeStockClamped?: number;
   contains: 'full' | 'partial';
   firstImport: boolean;
   missingSample: { productId: string; barcode: string }[];
@@ -84,7 +87,7 @@ export function buildErpReview(
   const out: ReviewRow[] = [];
   const seenBarcodes = new Set<string>();
   const seenProducts = new Set<string>();
-  let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0;
+  let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0, negativeStockClamped = 0;
 
   for (const r of rows) {
     if (seenBarcodes.has(r.barcode)) {
@@ -93,6 +96,7 @@ export function buildErpReview(
     }
     seenBarcodes.add(r.barcode);
     if (r.costIgnored) costIgnored++;
+    if (r.negativeStockClamped) negativeStockClamped++;
     const p = byBarcode.get(r.barcode);
     if (!p) {
       newProducts++;
@@ -126,7 +130,7 @@ export function buildErpReview(
     errors,
     summary: {
       rowsRead, matched, newProducts, rowsWithErrors: errors.length,
-      priceChanges, stockChanges, missingFromFile: missing.length, unmatched: 0, costIgnored,
+      priceChanges, stockChanges, missingFromFile: missing.length, unmatched: 0, costIgnored, negativeStockClamped,
     },
   };
 }
@@ -203,7 +207,7 @@ export function buildMarketplaceReview(
     errors,
     summary: {
       rowsRead, matched, newProducts: 0, rowsWithErrors: errors.length,
-      priceChanges, stockChanges: availChanges, missingFromFile: missing.length, unmatched, costIgnored: 0,
+      priceChanges, stockChanges: availChanges, missingFromFile: missing.length, unmatched, costIgnored: 0, negativeStockClamped: 0,
     },
   };
 }

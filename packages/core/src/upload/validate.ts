@@ -21,10 +21,13 @@ export interface ErpRow {
   price: number;
   /** never negative: a negative or unreadable cost becomes unknown (see costIgnored) */
   cost?: number;
+  /** never negative: a negative stock becomes 0 (see negativeStockClamped) */
   stock: number;
   active: boolean;
   /** the Cost cell had a value that is not a cost (negative or not a number); the row stays valid without it */
   costIgnored?: true;
+  /** the Stock cell was negative (the ERP sold more than it had); stored as 0 and the row stays valid */
+  negativeStockClamped?: true;
 }
 
 export interface MarketplaceRow {
@@ -87,11 +90,13 @@ export function mapRows(source: string, rows: SheetRow[], fields: Record<string,
       if (!barcode) return err(fields.barcode, 'Barcode is empty');
       if (!nameEn) return err(fields.nameEn, 'Product name is empty');
       if (price === null || price <= 0) return err(fields.price, 'Price must be a number above 0');
-      if (stock === null || stock < 0) return err(fields.stock, 'Stock must be 0 or more');
+      if (stock === null) return err(fields.stock, 'Stock must be a number');
       // Cost is optional, so a negative or unreadable one does not reject the row: it becomes unknown and is counted.
       const costCell = fields.cost ? r[fields.cost] : undefined;
       const cost = toNum(costCell);
       const costIgnored = str(costCell) !== '' && (cost === null || cost < 0);
+      // A negative stock means none on hand, so it is stored as 0 and counted rather than rejecting the row.
+      const negativeStock = stock < 0;
       erpRows.push({
         rowNumber,
         barcode,
@@ -102,9 +107,10 @@ export function mapRows(source: string, rows: SheetRow[], fields: Record<string,
         category: fields.category ? str(r[fields.category]) || undefined : undefined,
         price: round2(price),
         cost: cost !== null && cost >= 0 ? cost : undefined,
-        stock: Math.floor(stock),
+        stock: negativeStock ? 0 : Math.floor(stock),
         active: fields.active ? toBool(r[fields.active]) ?? true : true,
         ...(costIgnored ? { costIgnored: true as const } : {}),
+        ...(negativeStock ? { negativeStockClamped: true as const } : {}),
       });
       return;
     }

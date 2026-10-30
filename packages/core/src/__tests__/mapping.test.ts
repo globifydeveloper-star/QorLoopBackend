@@ -162,18 +162,32 @@ describe('mapRows validation', () => {
       { bc: '0123', name: 'A', price: '1,250.50', qty: '3', active: 'yes' },
       { bc: '', name: 'B', price: 2, qty: 1 },
       { bc: '99', name: 'C', price: 'abc', qty: 1 },
-      { bc: '98', name: 'D', price: 3, qty: -1 },
+      { bc: '98', name: 'D', price: 3, qty: 'many' },
       { bc: '97', name: '', price: 3, qty: 1 },
+      { bc: '96', name: 'F', price: 3, qty: '' },
     ];
-    const r = mapRows('erp', rows, fields, [2, 3, 5, 6, 7]);
+    const r = mapRows('erp', rows, fields, [2, 3, 5, 6, 7, 8]);
     expect(r.erpRows).toHaveLength(1);
     expect(r.erpRows[0]).toMatchObject({ barcode: '123', price: 1250.5, stock: 3, active: true, rowNumber: 2 });
+    expect(r.erpRows[0]!.negativeStockClamped).toBeUndefined();
     expect(r.errors.map((e) => [e.row, e.column, e.reason])).toEqual([
       [3, 'bc', 'Barcode is empty'],
       [5, 'price', 'Price must be a number above 0'],
-      [6, 'qty', 'Stock must be 0 or more'],
+      [6, 'qty', 'Stock must be a number'],
       [7, 'name', 'Product name is empty'],
+      [8, 'qty', 'Stock must be a number'],
     ]);
+  });
+  it('a negative stock (the real file has -2, -30) keeps the row valid with stock 0 and is flagged; 0 is not', () => {
+    const rows = [
+      { bc: '6291069207200', name: 'Oversold', price: 5, qty: -2 },
+      { bc: '6291069207201', name: 'Oversold text', price: 5, qty: '-30' },
+      { bc: '6291069207202', name: 'Fraction', price: 5, qty: -0.5 },
+      { bc: '6291069207203', name: 'Zero', price: 5, qty: 0 },
+    ];
+    const r = mapRows('erp', rows, fields);
+    expect(r.errors).toEqual([]);
+    expect(r.erpRows.map((x) => [x.stock, x.negativeStockClamped])).toEqual([[0, true], [0, true], [0, true], [0, undefined]]);
   });
   it('a negative or non-numeric cost keeps the row valid with cost unknown; zero and empty cost are fine', () => {
     const f = { ...fields, cost: 'cost' };

@@ -39,7 +39,7 @@ type UploadRow = {
 function view(u: UploadRow) {
   return {
     id: u.id, source: u.source, fileName: u.fileName, size: u.size, contains: u.contains, status: u.status,
-    // the review summary (costIgnored and the rest); a rejected upload may have none
+    // the review summary (costIgnored, negativeStockClamped and the rest); a rejected upload may have none
     step: u.step, progress: u.progress, summary: (u.summary ?? null) as StoredReviewSummary | null, errorMessage: u.errorMessage,
     uploadedById: u.uploadedById, createdAt: u.createdAt, updatedAt: u.updatedAt, appliedAt: u.appliedAt,
     ...(u.status === 'needs_mapping' ? { headers: u.headers ?? [], mappingSuggestion: u.mappingSuggestion ?? null, fields: fieldsFor(u.source).map(f => ({ key: f.key, label: f.label, required: f.required })) } : {}),
