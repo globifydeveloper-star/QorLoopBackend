@@ -1,3 +1,4 @@
+import { normalizeBarcode } from '../barcode.js';
 import { round2 } from '../money.js';
 import type { ErpRow, MarketplaceRow, RowError } from './validate.js';
 
@@ -135,9 +136,44 @@ export function buildErpReview(
   };
 }
 
+/** What marketplace matching needs from a product. */
+export type MatchProduct = Pick<CatalogProduct, 'id' | 'normalizedBarcode' | 'sku'>;
+
+/** A marketplace product ID that is a barcode as written (Excel may add ".0"). */
+const DIGITS = /^[0-9]+(\.0+)?$/;
+
+/**
+ * Marketplace matching (docs 5.5), shared by the review and the apply so the two cannot drift.
+ * Returns the ids of every product the row matches under the first rule that matches any:
+ * 1. any of the row's barcodes;
+ * 2. the row's marketplace product ID (Talabat's sku) read as a barcode, when it is all digits;
+ * 3. the marketplace product ID equal to a product's own SKU.
+ * Rules 2 and 3 apply only to a row that has barcodes, none of which matched; a row without barcodes
+ * (validation reports it, but one may be staged from before) matches nothing.
+ * More than one id is ambiguous and never guessed.
+ */
+export function marketplaceMatcher(products: MatchProduct[]): (r: MarketplaceRow) => string[] {
+  const byBarcode = new Map<string, string[]>();
+  const bySku = new Map<string, string[]>();
+  const add = (m: Map<string, string[]>, key: string, id: string) => m.set(key, [...(m.get(key) ?? []), id]);
+  for (const p of products) {
+    add(byBarcode, p.normalizedBarcode, p.id);
+    if (p.sku) add(bySku, p.sku, p.id);
+  }
+  return (r) => {
+    const byRowBarcodes = [...new Set(r.barcodes.flatMap((b) => byBarcode.get(b) ?? []))];
+    if (byRowBarcodes.length || !r.barcodes.length) return byRowBarcodes;
+    // digits only: normalising strips letters, so a code like "LBN-500" would otherwise match barcode 500
+    const idAsBarcode = DIGITS.test(r.marketplaceProductId.trim()) ? normalizeBarcode(r.marketplaceProductId) : '';
+    const byId = idAsBarcode ? byBarcode.get(idAsBarcode) ?? [] : [];
+    if (byId.length) return byId;
+    return bySku.get(r.marketplaceProductId) ?? [];
+  };
+}
+
 /**
  * Compare a validated marketplace file with the current listings (docs 5.5/5.6).
- * Match on any of the row's barcodes; fall back to SKU. Two products matching one row is an error.
+ * Matching is marketplaceMatcher's; a row matching two products is an error.
  * `fields` is the confirmed mapping (field key -> file header), used to name the column in errors.
  */
 export function buildMarketplaceReview(
@@ -149,9 +185,8 @@ export function buildMarketplaceReview(
   contains: 'full' | 'partial',
   fields: Record<string, string> = {},
 ): Review {
-  const byBarcode = new Map(products.map((p) => [p.normalizedBarcode, p] as const));
-  const bySku = new Map<string, CatalogProduct[]>();
-  for (const p of products) if (p.sku) bySku.set(p.sku, [...(bySku.get(p.sku) ?? []), p]);
+  const match = marketplaceMatcher(products);
+  const byId = new Map(products.map((p) => [p.id, p] as const));
   const current = new Map(listings.filter((l) => l.productId).map((l) => [l.productId as string, l] as const));
   const errors = [...inputErrors];
   const out: ReviewRow[] = [];
@@ -167,13 +202,12 @@ export function buildMarketplaceReview(
     }
     seenIds.add(r.marketplaceProductId);
 
-    let candidates = [...new Set(r.barcodes.map((b) => byBarcode.get(b)).filter(Boolean))] as CatalogProduct[];
-    if (candidates.length === 0) candidates = bySku.get(r.marketplaceProductId) ?? [];
+    const candidates = match(r);
     if (candidates.length > 1) {
       errors.push({ row: r.rowNumber, column: columnOf(fields, ['barcode1'], 'barcode'), value: r.barcodes.join(', '), reason: 'Matches more than one product; not guessed' });
       continue;
     }
-    const p = candidates[0];
+    const p = candidates[0] === undefined ? undefined : byId.get(candidates[0]);
     if (!p) {
       unmatched++;
       out.push({ rowNumber: r.rowNumber, changeType: 'unmatched', productId: null, parsed: r });

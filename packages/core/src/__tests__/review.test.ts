@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { buildErpReview, buildMarketplaceReview, type CatalogProduct } from '../upload/review.js';
+import { buildErpReview, buildMarketplaceReview, marketplaceMatcher, type CatalogProduct } from '../upload/review.js';
 import type { ErpRow, MarketplaceRow } from '../upload/validate.js';
 
 const products: CatalogProduct[] = [
@@ -60,6 +60,48 @@ describe('buildMarketplaceReview', () => {
   });
   it('falls back to SKU when no barcode matches', () => {
     expect(buildMarketplaceReview([mp(2, 'S2', ['000'], 20, false)], 1, [], products, listings, 'partial').rows[0]).toMatchObject({ productId: 'p2', changeType: 'availability' });
+  });
+  it('falls back to the marketplace product ID read as a barcode (Talabat rows whose sku is the ERP barcode)', () => {
+    const erpCatalogue: CatalogProduct[] = [
+      { id: 'e1', normalizedBarcode: '6281000000011', sku: 'ITEM-1', nameEn: 'Laban', erpPrice: 2, erpStock: 3, inLatestErpFile: true },
+      { id: 'e2', normalizedBarcode: '6291069207200', sku: null, nameEn: 'Juice', erpPrice: 5, erpStock: 1, inLatestErpFile: true },
+    ];
+    const rows = [
+      mp(2, '6281000000011', ['4444'], 2, true), // barcode matches no product
+      mp(3, '06291069207200', ['9999999999999'], 5, true), // wrong barcode, sku padded with a zero
+      mp(4, '6281000000011.0', ['1234'], 2, true), // Excel-style ".0" (a distinct ID string)
+      mp(5, '5555555555555', ['4445'], 1, true), // sku is not an ERP barcode
+    ];
+    const r = buildMarketplaceReview(rows, 4, [], erpCatalogue, [], 'partial');
+    expect(r.rows.map((x) => [x.rowNumber, x.productId, x.changeType])).toEqual([
+      [2, 'e1', 'price_availability'], [3, 'e2', 'price_availability'], [4, 'e1', 'price_availability'], [5, null, 'unmatched'],
+    ]);
+    expect(r.summary).toMatchObject({ matched: 3, unmatched: 1, rowsWithErrors: 0 });
+  });
+  it('barcodes win over the ID fallback, and the fallback wins over the product\'s own SKU', () => {
+    const match = marketplaceMatcher([...products, { id: 'p4', normalizedBarcode: '444', sku: '222', nameEn: 'Four', erpPrice: 1, erpStock: 1, inLatestErpFile: true }]);
+    expect(match(mp(2, '333', ['111'], 1, true))).toEqual(['p1']);
+    expect(match(mp(2, '222', ['999'], 1, true))).toEqual(['p2']); // barcode 222, not p4 whose SKU is "222"
+    expect(match(mp(2, 'S2', ['000'], 1, true))).toEqual(['p2']); // existing SKU rule still applies after both
+  });
+  it('the ID fallback only reads an all-digit ID, so letters are never stripped into a match', () => {
+    const match = marketplaceMatcher(products);
+    expect(match(mp(2, 'LBN-111', ['999'], 1, true))).toEqual([]);
+    expect(match(mp(2, ' 0111 ', ['999'], 1, true))).toEqual(['p1']);
+  });
+  it('neither fallback applies to a row without barcodes (one staged before validation required them)', () => {
+    const match = marketplaceMatcher(products);
+    expect(match(mp(2, '111', [], 1, true))).toEqual([]); // would be p1 by the ID-as-barcode rule
+    expect(match(mp(2, 'S2', [], 1, true))).toEqual([]); // would be p2 by the SKU rule
+  });
+  it('an ID matching several products by barcode is the "more than one product" error, not a guess', () => {
+    const twins: CatalogProduct[] = [
+      { id: 'a', normalizedBarcode: '777', sku: null, nameEn: 'A', erpPrice: 1, erpStock: 1, inLatestErpFile: true },
+      { id: 'b', normalizedBarcode: '777', sku: null, nameEn: 'B', erpPrice: 1, erpStock: 1, inLatestErpFile: true },
+    ];
+    const r = buildMarketplaceReview([mp(2, '777', ['999'], 1, true)], 1, [], twins, [], 'partial');
+    expect(r.errors.map((e) => e.reason)).toEqual(['Matches more than one product; not guessed']);
+    expect(r.rows).toHaveLength(0);
   });
   it('refuses to guess when a row matches two products', () => {
     const r = buildMarketplaceReview([mp(2, 'Z', ['111', '222'], 1, true)], 1, [], products, [], 'partial');

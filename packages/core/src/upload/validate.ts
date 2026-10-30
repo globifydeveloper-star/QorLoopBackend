@@ -119,14 +119,16 @@ export function mapRows(source: string, rows: SheetRow[], fields: Record<string,
       .filter(Boolean)
       .map((c) => normalizeBarcode(r[c]))
       .filter(Boolean);
+    const id = str(r[fields.marketplaceProductId]);
     const price = toNum(r[fields.price]);
     const available = toBool(r[fields.available]);
+    // a row needs a barcode even when it has an ID: the ID fallback is only for barcodes that match no product
     if (!barcodes.length) return err(fields.barcode1, 'Barcode is empty');
     if (price === null || price < 0) return err(fields.price, 'Price is not a number');
     if (available === null) return err(fields.available, 'Availability must be True/False or a quantity');
     marketplaceRows.push({
       rowNumber,
-      marketplaceProductId: str(r[fields.marketplaceProductId]) || barcodes[0],
+      marketplaceProductId: id || barcodes[0]!,
       barcodes,
       name: fields.name ? str(r[fields.name]) : '',
       price: round2(price),

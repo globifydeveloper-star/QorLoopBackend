@@ -217,6 +217,19 @@ describe('mapRows validation', () => {
     expect(r.marketplaceRows.map((x) => x.available)).toEqual([true, false, true]);
     expect(r.errors).toHaveLength(1);
   });
+  it('a marketplace row with no barcode is an error even when it has an ID (the real Talabat file has 142)', () => {
+    const f = { marketplaceProductId: 'sku', barcode1: 'barcode 1', barcode2: 'barcode 2', barcode3: 'barcode 3', price: 'price', available: 'active' };
+    const r = mapRows('talabat', [
+      { sku: '6281000000011', 'barcode 1': '', 'barcode 2': '', 'barcode 3': '', price: 2, active: 'TRUE' },
+      { sku: '', 'barcode 1': '', price: 2, active: 'TRUE' },
+      { sku: '6291069207200', 'barcode 1': '', 'barcode 2': '1234', price: 2, active: 'TRUE' },
+    ], f);
+    expect(r.marketplaceRows.map((x) => [x.marketplaceProductId, x.barcodes])).toEqual([['6291069207200', ['1234']]]);
+    expect(r.errors.map((e) => [e.row, e.column, e.reason])).toEqual([[2, 'barcode 1', 'Barcode is empty'], [3, 'barcode 1', 'Barcode is empty']]);
+    // Snoonu has no ID column: no barcode is still an error
+    const snoonu = { barcode1: 'b', price: 'p', available: 'a' };
+    expect(mapRows('snoonu', [{ b: '', p: 1, a: 1 }], snoonu).errors).toHaveLength(1);
+  });
   it('20% invalid threshold', () => {
     expect(exceedsInvalidShare(10, 2, 0.2)).toBe(false);
     expect(exceedsInvalidShare(10, 3, 0.2)).toBe(true);
