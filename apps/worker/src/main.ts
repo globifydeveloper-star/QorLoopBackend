@@ -45,7 +45,7 @@ const storage = new S3Storage({
 });
 const deps = { database, storage, log };
 const uploadQueue = new Queue(QUEUES.uploads, { connection, defaultJobOptions: JOB_DEFAULTS });
-const uploadWorker = new Worker<ProcessUploadJob>(QUEUES.uploads, job => processUpload(deps, job.data), { connection, concurrency: 2, lockDuration: 120_000 });
+const uploadWorker = new Worker<ProcessUploadJob>(QUEUES.uploads, job => processUpload(deps, job.data), { connection, concurrency: config.UPLOAD_CONCURRENCY, lockDuration: 120_000 });
 uploadWorker.on('failed', (job, err) => {
   log.error({ jobId: job?.id, errorType: err.name }, 'Upload processing attempt failed');
   if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) void markFailed(deps, job.data).catch(() => log.error('Could not mark upload failed'));

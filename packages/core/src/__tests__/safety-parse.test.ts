@@ -1,9 +1,10 @@
 import { describe, it, expect } from '@jest/globals';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inspectFile } from '../upload/safety.js';
 import { parseSpreadsheet, ParseError, rowsToSheet } from '../upload/parse.js';
 
@@ -75,6 +76,40 @@ describe('parseSpreadsheet', () => {
     ws.addRow([1, { formula: 'A2*2', result: 2 }]);
     const r = await parseSpreadsheet({ path: tmp('f.xlsx', Buffer.from(await wb.xlsx.writeBuffer())) }, 'xlsx');
     expect(r.rows[0]).toEqual({ a: 1, b: 2 });
+  });
+  it('reads a workbook saved by Microsoft Excel (strings, numbers, dates, formula results)', async () => {
+    // Made with Excel 16 via COM, not exceljs: a hidden first sheet, a title row, a text barcode with a
+    // leading zero, Arabic text, yyyy-mm-dd dates, a blank row and formulas whose cached results are 57 and 0.
+    const path = fileURLToPath(new URL('./fixtures/excel-made.xlsx', import.meta.url));
+    expect(inspectFile(readFileSync(path), 'excel-made.xlsx')).toEqual({ ok: true, format: 'xlsx' });
+    const r = await parseSpreadsheet({ path }, 'xlsx');
+    expect(r.sheetName).toBe('Products');
+    expect(r.headers).toEqual(['Barcode', 'Name', 'Price', 'Qty', 'Expiry', 'Total']);
+    expect(r.rowNumbers).toEqual([3, 5]);
+    expect(r.rows).toEqual([
+      { Barcode: '0062000000012', Name: 'Milk 1L', Price: 4.75, Qty: 12, Expiry: '2026-03-15T00:00:00.000Z', Total: 57 },
+      { Barcode: '6281000000017', Name: 'حليب طازج', Price: -1.5, Qty: 0, Expiry: '2026-12-31T00:00:00.000Z', Total: 0 },
+    ]);
+  });
+  it('reads the same xlsx 200 times in a row without a failure', async () => {
+    const path = fileURLToPath(new URL('./fixtures/excel-made.xlsx', import.meta.url));
+    for (let i = 0; i < 200; i++) {
+      expect((await parseSpreadsheet({ path }, 'xlsx')).rows).toHaveLength(2);
+    }
+  });
+  it('reads a number in a date-formatted cell that is out of date range as empty, not as a broken file', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('S');
+    ws.addRow(['Barcode', 'Price']);
+    ws.addRow([6281000000017, 5]);
+    ws.getCell('A2').numFmt = 'yyyy-mm-dd';
+    const r = await parseSpreadsheet({ path: tmp('d.xlsx', Buffer.from(await wb.xlsx.writeBuffer())) }, 'xlsx');
+    expect(r.rows).toEqual([{ Barcode: null, Price: 5 }]);
+  });
+  it('rejects an xlsx with more than 50,000 rows', async () => {
+    const rows: unknown[][] = [['a', 'b']];
+    for (let i = 0; i < 50_001; i++) rows.push([i, 'x']);
+    await expect(parseSpreadsheet({ path: tmp('big.xlsx', await xlsxBuffer(rows)) }, 'xlsx')).rejects.toMatchObject({ code: 'too_many_rows' });
   });
   it('reads csv (semicolon delimiter, BOM, quotes)', async () => {
     const csv = '﻿Barcode;Name\n111;"A; B"\n222;C\n';

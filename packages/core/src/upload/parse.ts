@@ -26,7 +26,8 @@ const HEADER_SCAN_ROWS = 10;
 
 function cellValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
-  if (v instanceof Date) return v.toISOString();
+  // A big number in a date-formatted cell (e.g. a barcode) loads as an Invalid Date: an empty cell, not a failed file
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
   if (typeof v === 'object') {
     const o = v as Record<string, unknown>;
     if ('result' in o) return cellValue(o.result); // formula: keep the computed value, never the formula
@@ -81,27 +82,29 @@ export function guardRowCount(count: number) {
   }
 }
 
-async function parseXlsxFile(path: string): Promise<ParsedSheet> {
-  const reader = new ExcelJS.stream.xlsx.WorkbookReader(path, {
-    sharedStrings: 'cache',
-    hyperlinks: 'ignore',
-    styles: 'ignore',
-    worksheets: 'emit',
-    entries: 'ignore',
-  });
-  for await (const ws of reader) {
-    const sheet = ws as unknown as AsyncIterable<{ number: number; values: unknown[] }> & { id: number; name?: string; state?: string };
-    if (sheet.state && sheet.state !== 'visible') continue;
+// Non-streaming loader: the streaming WorkbookReader (exceljs 4.4 + unzipper 0.10) fails intermittently on
+// Node 24. Loading the whole workbook is safe here because inspectFile() has already capped the file at
+// 25 MB and rejected zip bombs before the worker gets this far.
+async function parseXlsxBuffer(buf: Buffer): Promise<ParsedSheet> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf as unknown as ArrayBuffer);
+  for (const ws of wb.worksheets) {
+    if (ws.state && ws.state !== 'visible') continue;
+    // rowCount is the last used row number, so this matches the old per-row check before materialising rows
+    guardRowCount(ws.rowCount - 1);
     const raw: unknown[][] = [];
-    for await (const row of sheet) {
-      // exceljs omits empty rows: pad so raw[i] is always sheet row i+1
-      while (raw.length < row.number - 1) raw.push([]);
-      // row.values is 1-based (index 0 unused)
-      raw.push((row.values as unknown[]).slice(1).map(cellValue));
-      guardRowCount(raw.length - 1);
-    }
+    ws.eachRow((row, n) => {
+      // eachRow skips empty rows: pad so raw[i] is always sheet row i+1
+      while (raw.length < n - 1) raw.push([]);
+      const values: unknown[] = [];
+      row.eachCell((cell, col) => {
+        // cell.value drops a falsy cached formula result (0, false, ''), cell.result keeps it
+        values[col - 1] = cellValue(cell.type === ExcelJS.ValueType.Formula ? cell.result : cell.value);
+      });
+      raw.push(values);
+    });
     if (raw.length === 0) continue;
-    return rowsToSheet(sheet.name ?? `Sheet${sheet.id}`, raw);
+    return rowsToSheet(ws.name, raw);
   }
   throw new ParseError('empty', 'The workbook has no data');
 }
@@ -143,10 +146,11 @@ export async function parseSpreadsheet(
   format: FileFormat,
 ): Promise<ParsedSheet> {
   try {
-    if (format === 'xlsx') return await parseXlsxFile(source.path);
     if (format === 'xls') return await parseXlsFile(source.path);
     const fs = await import('node:fs/promises');
-    return await parseCsvBuffer(source.buffer ?? (await fs.readFile(source.path)));
+    const buf = source.buffer ?? (await fs.readFile(source.path));
+    if (format === 'xlsx') return await parseXlsxBuffer(buf);
+    return await parseCsvBuffer(buf);
   } catch (e) {
     if (e instanceof ParseError) throw e;
     throw new ParseError('unreadable', 'The file could not be read. It may be damaged or password-protected.');

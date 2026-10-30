@@ -26,6 +26,8 @@ const schema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
+  // Each worst-case 25 MB / 50,000-row xlsx peaks at ~1.3 GB RSS while parsing, so default to one at a time.
+  UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
   SENTRY_DSN: z.string().url().optional(),
 }).superRefine((v, ctx) => {
   if (v.NODE_ENV === 'production') {

@@ -13,5 +13,10 @@ describe('environment validation', () => {
     expect(() => loadConfig({ ...valid, NODE_ENV: 'production', AUTH_SECRET: 'a'.repeat(48), APP_ORIGIN: 'https://store.example' })).toThrow('TENANT_ID');
     expect(loadConfig({ ...valid, NODE_ENV: 'production', AUTH_SECRET: 'a'.repeat(48), APP_ORIGIN: 'https://store.example', TENANT_ID: '00000000-0000-4000-8000-000000000001' }).NODE_ENV).toBe('production');
   });
+  it('defaults upload concurrency to 1 and only accepts 1-4', () => {
+    expect(loadConfig(valid).UPLOAD_CONCURRENCY).toBe(1);
+    expect(loadConfig({ ...valid, UPLOAD_CONCURRENCY: '4' }).UPLOAD_CONCURRENCY).toBe(4);
+    for (const bad of ['0', '5', '1.5', 'two']) expect(() => loadConfig({ ...valid, UPLOAD_CONCURRENCY: bad })).toThrow('UPLOAD_CONCURRENCY');
+  });
 });
 

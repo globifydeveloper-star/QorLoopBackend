@@ -63,7 +63,7 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
     let sheet;
     try {
       await step('read', 25);
-      sheet = await parseSpreadsheet({ path, buffer: safety.format === 'csv' ? buffer : undefined }, safety.format);
+      sheet = await parseSpreadsheet({ path, buffer: safety.format === 'xls' ? undefined : buffer }, safety.format);
     } catch (e) {
       if (e instanceof ParseError) return await reject(e.message, [], 'read');
       throw e;
