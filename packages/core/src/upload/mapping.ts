@@ -11,19 +11,58 @@ export interface TemplateLike {
 
 const norm = (h: string) => h.replace(/\s+/g, ' ').trim().toLowerCase();
 
-export function signatureMatches(signature: string[], headers: string[]): boolean {
-  if (signature.length === 0) return false;
-  const set = new Set(headers.map(norm));
-  return signature.every((s) => set.has(norm(s)));
+/** Snoonu names these columns after the customer's branch: "Price For Branch <branch>(Update)". */
+const SNOONU_BRANCH_HEADER = /^(availability for|price for branch) .+?\s*\(update\)$/;
+
+/**
+ * The form in which headers are compared against a saved layout: lower-case with collapsed spaces, and
+ * for Snoonu the branch name replaced by `*`, so one saved layout recognises every branch's file.
+ */
+export function headerKey(source: string, header: string): string {
+  const n = norm(header);
+  return source === 'snoonu' ? n.replace(SNOONU_BRANCH_HEADER, '$1 *(update)') : n;
 }
 
-/** A saved mapping matches when ALL its signature headers are present (case- and space-insensitive). */
+export function signatureMatches(signature: string[], headers: string[], source = ''): boolean {
+  if (signature.length === 0) return false;
+  const set = new Set(headers.map((h) => headerKey(source, h)));
+  return signature.every((s) => set.has(headerKey(source, s)));
+}
+
+/**
+ * Points each mapped field at the file's own header with the same key (a saved Snoonu layout names
+ * another branch's columns). Null when a key matches no header or more than one, e.g. two Availability
+ * columns: the user must choose on the mapping screen.
+ */
+function remapFields(source: string, fields: Record<string, string>, headers: string[]): Record<string, string> | null {
+  const byKey = new Map<string, string[]>();
+  for (const h of headers) {
+    const k = headerKey(source, h);
+    byKey.set(k, [...(byKey.get(k) ?? []), h]);
+  }
+  const out: Record<string, string> = {};
+  for (const [field, col] of Object.entries(fields)) {
+    const hits = byKey.get(headerKey(source, col)) ?? [];
+    if (hits.length !== 1) return null;
+    out[field] = hits[0];
+  }
+  return out;
+}
+
+/**
+ * A saved mapping matches when ALL its signature headers are present (case- and space-insensitive,
+ * Snoonu branch names ignored). The returned template's fields name the file's actual headers.
+ */
 export function detectTemplate<T extends TemplateLike>(templates: T[], source: string, headers: string[]): T | null {
   const candidates = templates
-    .filter((t) => t.source === source && signatureMatches(t.signature, headers))
+    .filter((t) => t.source === source && signatureMatches(t.signature, headers, source))
     // most specific (longest signature) first, then newest version
     .sort((a, b) => b.signature.length - a.signature.length || b.version - a.version);
-  return candidates[0] ?? null;
+  for (const t of candidates) {
+    const fields = remapFields(source, t.fields, headers);
+    if (fields) return { ...t, fields };
+  }
+  return null;
 }
 
 /**
@@ -31,7 +70,7 @@ export function detectTemplate<T extends TemplateLike>(templates: T[], source: s
  * mappings. Returns the source it looks like, or null.
  */
 export function looksLikeOtherSource<T extends TemplateLike>(templates: T[], source: string, headers: string[]): string | null {
-  const hit = templates.find((t) => t.source !== source && signatureMatches(t.signature, headers));
+  const hit = templates.find((t) => t.source !== source && signatureMatches(t.signature, headers, t.source));
   return hit ? hit.source : null;
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { detectTemplate, looksLikeOtherSource, suggestMapping, validateMapping, signatureFor } from '../upload/mapping.js';
+import { detectTemplate, headerKey, looksLikeOtherSource, suggestMapping, validateMapping, signatureFor } from '../upload/mapping.js';
 import { mapRows, exceedsInvalidShare } from '../upload/validate.js';
 
 const tpl = (id: string, source: string, signature: string[]) => ({ id, source, name: id, version: 1, fields: {}, signature });
@@ -14,6 +14,60 @@ describe('layout detection', () => {
   it('wrong-file guard names the other source', () => {
     expect(looksLikeOtherSource(templates, 'rafeeq', ['Barcode(UniqueIdentifier)', 'Price(Update)', 'x'])).toBe('snoonu');
     expect(looksLikeOtherSource(templates, 'snoonu', ['Barcode(UniqueIdentifier)', 'Price(Update)'])).toBeNull();
+  });
+});
+
+describe('saved layouts across Snoonu branch names', () => {
+  const snoonuHeaders = (branch: string) => [
+    'Barcode(UniqueIdentifier)', 'Product Name (En)(Update)', `Availability for ${branch}(Update)`, `Price For Branch ${branch}(Update)`,
+  ];
+  const A = snoonuHeaders('Shaklaan Food Center Gharrafat Al Rayyan');
+  const B = snoonuHeaders('Al Meera Hypermarket Al Wakra');
+  const fieldsA = { barcode1: A[0], name: A[1], available: A[2], price: A[3] };
+  // what the API stores today: literal headers from signatureFor
+  const savedA = { id: 'snoonuA', source: 'snoonu', name: 'Snoonu', version: 1, fields: fieldsA, signature: signatureFor(fieldsA, A) };
+
+  it('keys the branch name out for Snoonu only', () => {
+    expect(headerKey('snoonu', A[2])).toBe('availability for *(update)');
+    expect(headerKey('snoonu', B[3])).toBe('price for branch *(update)');
+    expect(headerKey('snoonu', 'Price For Branch  X (Update)')).toBe('price for branch *(update)');
+    expect(headerKey('snoonu', A[0])).toBe('barcode(uniqueidentifier)');
+    expect(headerKey('talabat', A[3])).toBe(A[3].toLowerCase());
+  });
+
+  it('a layout saved before this change still matches an identical file', () => {
+    expect(savedA.signature).toEqual(A);
+    expect(detectTemplate([savedA], 'snoonu', A)).toEqual(savedA);
+  });
+
+  it('recognises branch B with a layout saved for branch A and remaps its fields', () => {
+    const hit = detectTemplate([savedA], 'snoonu', B);
+    expect(hit?.id).toBe('snoonuA');
+    expect(hit?.fields).toEqual({ barcode1: B[0], name: B[1], available: B[2], price: B[3] });
+    expect(validateMapping('snoonu', hit!.fields, B)).toEqual([]);
+    expect(savedA.fields).toEqual(fieldsA); // the saved template is not modified
+  });
+
+  it('two headers with the same key give no match', () => {
+    expect(detectTemplate([savedA], 'snoonu', [...B, 'Availability for Al Meera Hypermarket Al Khor(Update)'])).toBeNull();
+    expect(detectTemplate([savedA], 'snoonu', [...A, B[3]])).toBeNull();
+  });
+
+  it('other sources still compare the literal header', () => {
+    const talabat = { id: 't', source: 'talabat', name: 't', version: 1, fields: { price: A[3] }, signature: [A[3]] };
+    expect(detectTemplate([talabat], 'talabat', [A[3]])?.id).toBe('t');
+    expect(detectTemplate([talabat], 'talabat', [B[3]])).toBeNull();
+    expect(looksLikeOtherSource([savedA], 'rafeeq', B)).toBe('snoonu');
+  });
+
+  it('ERP and Talabat layouts match and keep their fields', () => {
+    const erpFields = { barcode: 'UPC', nameEn: 'Item', price: 'Price', stock: 'Stock' };
+    const erp = { id: 'e', source: 'erp', name: 'e', version: 1, fields: erpFields, signature: signatureFor(erpFields, Object.values(erpFields)) };
+    expect(detectTemplate([erp], 'erp', ['UPC', 'Item', 'Price', 'Stock', 'Cost'])).toEqual(erp);
+    expect(detectTemplate([erp], 'erp', ['UPC', 'Item', 'Price'])).toBeNull();
+    const tFields = { marketplaceProductId: 'sku', barcode1: 'barcode 1', price: 'price', available: 'active' };
+    const tal = { id: 't', source: 'talabat', name: 't', version: 1, fields: tFields, signature: Object.values(tFields) };
+    expect(detectTemplate([tal], 'talabat', ['sku', 'barcode 1', 'barcode 2', 'name', 'price', 'active'])).toEqual(tal);
   });
 });
 
