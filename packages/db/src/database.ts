@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import type { Role } from './generated/enums.js';
 import { UploadRepository } from './uploads.js';
 import { CategoryRepository, ProductRepository } from './products.js';
+import { PricingRepository } from './pricing.js';
 
-export { UploadRepository, ProductRepository, CategoryRepository };
+export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository };
 export type { ProductFilter, ProductTab } from './products.js';
 
 export { PrismaClient };
@@ -75,10 +76,12 @@ export class TenantData {
   readonly uploads: UploadRepository;
   readonly products: ProductRepository;
   readonly categories: CategoryRepository;
+  readonly pricing: PricingRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
     this.categories = new CategoryRepository(tenantId, tx);
+    this.pricing = new PricingRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }

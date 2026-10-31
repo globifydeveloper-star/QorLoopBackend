@@ -17,7 +17,7 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { CONFIG, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
 import { UploadsController } from './uploads/uploads.controller.js';
 import { UploadsService } from './uploads/uploads.service.js';
 import { ProductsController } from './products/products.controller.js';
@@ -26,6 +26,9 @@ import { CategoriesController } from './products/categories.controller.js';
 import { CategoriesService } from './products/categories.service.js';
 import { S3Storage, type ObjectStorage } from '../../../packages/shared/src/storage.js';
 import { BullUploadQueue, type UploadQueue } from '../../../packages/shared/src/queue.js';
+import { NoopReconQueue, type ReconQueue } from '../../../packages/shared/src/recon.js';
+import { PricingController } from './pricing/pricing.controller.js';
+import { PricingService } from './pricing/pricing.service.js';
 
 @Controller()
 class SystemController {
@@ -68,7 +71,7 @@ class ErrorFilter implements ExceptionFilter {
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
   const storage = options.storage ?? new S3Storage({
@@ -83,10 +86,13 @@ export async function buildApp(config: Config, options: { database?: Database; c
     queue = new BullUploadQueue(queueRedis);
   }
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService,
+      { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
+      // R1 replaces the no-op with the recon recompute job.
+      { provide: RECON_QUEUE, useValue: options.recon ?? new NoopReconQueue() },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
@@ -134,7 +140,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     }
     if (req.method === 'OPTIONS') {
       if (!validOrigin) return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Trusted Origin required' }, requestId: req.id });
-      reply.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       reply.header('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token');
       return reply.code(204).send();
     }

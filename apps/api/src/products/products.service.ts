@@ -6,6 +6,9 @@ import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import { normalizeBarcode } from '../../../../packages/core/src/barcode.js';
 import { hasPermission } from '../../../../packages/core/src/roles.js';
 import { DEFAULT_READINESS_RULES, isReady, READINESS_REASONS } from '../../../../packages/core/src/products/readiness.js';
+import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
+import { RECON_QUEUE } from '../tokens.js';
+import { loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
 
 const MAX_SKIPPED_LISTED = 200;
 
@@ -48,7 +51,7 @@ function searchFilter(query: z.infer<typeof contracts.productListQuery>): Produc
 
 @Injectable()
 export class ProductsService {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(@Inject(AuthService) private readonly auth: AuthService, @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
 
   list(ctx: RequestContext, query: z.infer<typeof contracts.productListQuery>) {
     const after = query.cursor ? decodeCursor(query.cursor) : null;
@@ -58,8 +61,14 @@ export class ProductsService {
       const counts = await data.products.counts(filter);
       const page = rows.slice(0, query.limit);
       const showCost = canSeeCost(p.member.role);
+      if (!hasPermission(p.member.role, 'pricing.view')) {
+        return { items: page.map(r => item(r, showCost)), nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null, counts };
+      }
+      // Settings and rules once, product rules and offers for the whole page: a fixed number of queries per request.
+      const [pricing, inputs] = await Promise.all([loadPricing(data), productInputs(data, page)]);
+      const now = new Date();
       return {
-        items: page.map(r => item(r, showCost)),
+        items: page.map(r => ({ ...item(r, showCost), marketplacePrice: marketplacePrice(pricing, inputs.get(r.id)!.input, now) })),
         nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null,
         counts,
       };
@@ -67,10 +76,11 @@ export class ProductsService {
   }
 
   get(ctx: RequestContext, id: string) {
-    return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => this.detail(data, id, canSeeCost(p.member.role)));
+    return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => this.detail(data, id, p.member.role));
   }
 
-  private async detail(data: TenantData, id: string, showCost: boolean) {
+  private async detail(data: TenantData, id: string, role: Role) {
+    const showCost = canSeeCost(role);
     const product = await data.products.get(id);
     if (!product) throw new NotFoundException('Product not found');
     const [listings, category, subcategory] = await Promise.all([
@@ -83,11 +93,14 @@ export class ProductsService {
       ...item(product, showCost), size: product.size, erpActive: product.erpActive, createdAt: product.createdAt,
       category: name(category), subcategory: name(subcategory),
       listings: listings.map(l => ({ marketplaceId: l.marketplaceId, marketplaceProductId: l.marketplaceProductId, price: l.price.toNumber(), available: l.available, updatedAt: l.updatedAt })),
+      // marketplacePrice and the rule chain that explains it
+      ...(hasPermission(role, 'pricing.view') ? await productPricingView(data, product) : {}),
     };
   }
 
-  update(ctx: RequestContext, id: string, input: z.infer<typeof contracts.updateProduct>) {
-    return this.auth.authenticated(ctx, { permission: 'products.edit', mutation: true }, async (data, p) => {
+  /** A new category or subcategory can move the marketplace price, so it asks for a recon recompute after commit. */
+  async update(ctx: RequestContext, id: string, input: z.infer<typeof contracts.updateProduct>) {
+    const { detail, recategorised } = await this.auth.authenticated(ctx, { permission: 'products.edit', mutation: true }, async (data, p) => {
       const current = await data.products.get(id);
       if (!current) throw new NotFoundException('Product not found');
       if (input.expectedUpdatedAt && new Date(input.expectedUpdatedAt).getTime() !== current.updatedAt.getTime()) {
@@ -132,8 +145,11 @@ export class ProductsService {
         if (!written) throw new ConflictException('This product was changed by someone else; reload it and try again');
         for (const c of changes) await data.event('product.field_changed', p.user.id, id, ctx.requestId, c);
       }
-      return this.detail(data, id, canSeeCost(p.member.role));
+      const recategorised = changes.some(c => c.field === 'categoryId' || c.field === 'subcategoryId');
+      return { detail: await this.detail(data, id, p.member.role), recategorised };
     });
+    if (recategorised) await this.recon.enqueueRecon(ctx.tenantId, 'product.category');
+    return detail;
   }
 
   activate(ctx: RequestContext, input: z.infer<typeof contracts.activateProducts>) {

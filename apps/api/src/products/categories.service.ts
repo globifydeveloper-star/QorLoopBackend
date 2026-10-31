@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
 import type { TenantData } from '../../../../packages/db/src/database.js';
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
+import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
+import { RECON_QUEUE } from '../tokens.js';
 
 type CategoryRow = { id: string; parentId: string | null; nameEn: string; nameAr: string | null; sort: number };
 
@@ -12,7 +14,7 @@ function view(c: CategoryRow, productCount: number) {
 
 @Injectable()
 export class CategoriesService {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(@Inject(AuthService) private readonly auth: AuthService, @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
 
   /** Categories with their subcategories, by sort then name; productCount counts products filed under each. */
   tree(ctx: RequestContext) {
@@ -94,8 +96,9 @@ export class CategoriesService {
     return this.auth.authenticated(ctx, { permission: 'categories.manage' }, data => data.products.erpCategories());
   }
 
-  assignFromErp(ctx: RequestContext, id: string, input: z.infer<typeof contracts.assignFromErp>) {
-    return this.auth.authenticated(ctx, { permission: 'categories.manage', mutation: true }, async (data, p) => {
+  /** Filed products may now take a category price rule, so any update asks for a recon recompute after commit. */
+  async assignFromErp(ctx: RequestContext, id: string, input: z.infer<typeof contracts.assignFromErp>) {
+    const result = await this.auth.authenticated(ctx, { permission: 'categories.manage', mutation: true }, async (data, p) => {
       const category = await data.categories.get(id);
       if (!category) throw new NotFoundException('Category not found');
       if (category.parentId) throw new BadRequestException('Choose a top-level category; this one is a subcategory');
@@ -104,5 +107,7 @@ export class CategoriesService {
       await data.event('category.assigned_from_erp', p.user.id, id, ctx.requestId, { erpCategories, updated });
       return { updated };
     });
+    if (result.updated) await this.recon.enqueueRecon(ctx.tenantId, 'product.category');
+    return result;
   }
 }

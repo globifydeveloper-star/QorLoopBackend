@@ -7,22 +7,23 @@ import { loadConfig } from '../../../../packages/shared/src/config.js';
 import { unseal } from '../../../../packages/shared/src/security.js';
 import { MemoryStorage } from '../../../../packages/shared/src/storage.js';
 import { InlineUploadQueue } from '../../../../packages/shared/src/queue.js';
+import { RecordingReconQueue } from '../../../../packages/shared/src/recon.js';
 import { testDatabase } from './database.js';
 
 export const password = 'Correct horse battery staple!';
 export type Session = { cookie: string; csrf: string };
 export type Store = { id: string; hostname: string; owner: Session };
 
-/** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3). */
+/** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3, the recon job). */
 export function testServices() {
-  return { storage: new MemoryStorage(), queue: new InlineUploadQueue() };
+  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new RecordingReconQueue() };
 }
 
 export async function createHarness() {
   const fixture = await testDatabase();
-  const { storage, queue } = testServices();
+  const { storage, queue, recon } = testServices();
   const config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://test:test@localhost/test', AUTH_SECRET: 'test-only-secret-at-least-thirty-two-characters', APP_ORIGIN: 'http://dohafresh.localhost:3000' });
-  const api = await buildApp(config, { database: fixture.database, logger: false, storage, queue, rateLimitMax: 100000 });
+  const api = await buildApp(config, { database: fixture.database, logger: false, storage, queue, recon, rateLimitMax: 100000 });
   let counter = 0;
 
   function request(method: HTTPMethods, url: string, store: Pick<Store, 'hostname'>, session?: Session, payload?: Record<string, unknown>) {
@@ -59,7 +60,7 @@ export async function createHarness() {
     return sessionFrom(accepted);
   }
   return {
-    fixture, api, config, storage, queue, request, sessionFrom, createOwner, member,
+    fixture, api, config, storage, queue, recon, request, sessionFrom, createOwner, member,
     close: async () => { await api.app.close(); await fixture.close(); },
   };
 }

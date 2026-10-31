@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
@@ -69,3 +70,36 @@ export const updateCategory = z.object({
 export const assignFromErp = z.object({
   erpCategories: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
 }).strict();
+
+// ───────── Pricing ─────────
+/** Money and rule values are stored as DECIMAL(12,3): more decimals would be cut silently, so they are refused. */
+const threeDecimals = (n: z.ZodNumber) => n.refine(v => Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6, 'At most 3 decimal places');
+/** DECIMAL(12,3) holds less than 1,000,000,000. */
+const MAX_MONEY = 1_000_000_000;
+export const roundingOption = z.enum(ROUNDING_OPTIONS);
+/** Flat {mode, value}; 'same' takes no value. Extra fields (a category, a marketplace) go alongside. */
+const ruleWith = <S extends z.ZodRawShape>(extra: S) => z.discriminatedUnion('mode', [
+  z.object({ ...extra, mode: z.literal('percent'), value: threeDecimals(z.number().min(-90).max(1000)) }).strict(),
+  z.object({ ...extra, mode: z.literal('amount'), value: threeDecimals(z.number().min(-100000).max(100000)) }).strict(),
+  z.object({ ...extra, mode: z.literal('fixed'), value: threeDecimals(z.number().gt(0).lt(MAX_MONEY)) }).strict(),
+  z.object({ ...extra, mode: z.literal('same') }).strict(),
+]);
+export const priceRule = ruleWith({});
+export const marketplacePriceRule = ruleWith({ marketplaceId: z.enum(MARKETPLACES), rounding: roundingOption });
+export const updatePricingSettings = z.object({
+  defaultRule: priceRule.optional(),
+  rounding: roundingOption.optional(),
+  perMarketplaceEnabled: z.boolean().optional(),
+  compareReferenceDefault: z.enum(['marketplace', 'erp']).optional(),
+  /** The full set of per-marketplace rules: a marketplace left out loses its rule. */
+  marketplaceRules: z.array(marketplacePriceRule).max(MARKETPLACES.length)
+    .refine(rules => new Set(rules.map(r => r.marketplaceId)).size === rules.length, 'One rule per marketplace').optional(),
+}).strict().refine(v => Object.keys(v).length > 0, 'Nothing to change');
+const categoryKey = { categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
+export const categoryPriceRule = ruleWith(categoryKey);
+export const categoryPriceRuleKey = z.object(categoryKey).strict();
+export const productOffer = z.object({
+  price: threeDecimals(z.number().gt(0).lt(MAX_MONEY)),
+  validFrom: z.iso.datetime({ offset: true }).nullable().optional(),
+  validUntil: z.iso.datetime({ offset: true }).nullable().optional(),
+}).strict().refine(v => !v.validFrom || !v.validUntil || new Date(v.validUntil) > new Date(v.validFrom), { message: 'validUntil must be after validFrom', path: ['validUntil'] });

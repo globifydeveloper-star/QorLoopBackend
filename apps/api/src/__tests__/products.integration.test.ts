@@ -69,7 +69,7 @@ describe('product list', () => {
     expect(d.items).toHaveLength(5);
     const milk = d.items.find((i: { barcode: string }) => i.barcode === '6281000000011');
     expect(Object.keys(milk).sort()).toEqual(['barcode', 'brand', 'categoryId', 'costPrice', 'erpCategory', 'erpPrice', 'erpStock', 'id', 'inLatestErpFile',
-      'nameAr', 'nameEn', 'sku', 'status', 'subcategoryId', 'updatedAt'].sort());
+      'marketplacePrice', 'nameAr', 'nameEn', 'sku', 'status', 'subcategoryId', 'updatedAt'].sort());
     expect(milk).toMatchObject({ sku: 'SKU-1', erpPrice: 2.5, costPrice: 1.2, erpStock: 4, status: 'active', inLatestErpFile: true, categoryId: dairy, subcategoryId: milkSub });
     expect(r.body).not.toMatch(/imageKey|secret-key|storage/i);
   });
