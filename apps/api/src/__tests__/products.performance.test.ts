@@ -102,4 +102,44 @@ realPostgres('products at 25,000 rows (real PostgreSQL)', () => {
     // the index itself must still serve the name predicate.
     expect(indexPlan).toMatch(/Bitmap Index Scan on products_name_en_trgm_idx/);
   }, 600_000);
+
+  it('prices a 50-row page of 25,000 products with rules everywhere within budget', async () => {
+    const prisma = h.fixture.prisma;
+    // 20 categories x 5 subcategories, every product filed; rules on every category and half the subcategories;
+    // a product rule on every 10th product, an offer on every 25th (a third of them expired).
+    const parents = await Promise.all(Array.from({ length: 20 }, (_, i) => prisma.category.create({ data: { tenantId: s.id, nameEn: 'Cat ' + i } })));
+    const subs = (await Promise.all(parents.flatMap(p => Array.from({ length: 5 }, (_, j) =>
+      prisma.category.create({ data: { tenantId: s.id, nameEn: 'Sub ' + j, parentId: p.id } }))))).map(c => ({ id: c.id, parentId: c.parentId! }));
+    await prisma.$executeRawUnsafe(`
+      WITH numbered AS (SELECT id, row_number() OVER (ORDER BY id) AS n FROM products WHERE tenant_id = $1::uuid)
+      UPDATE products p SET category_id = (($2::uuid[])[1 + (n % 100)]), subcategory_id = (($3::uuid[])[1 + (n % 100)])
+      FROM numbered WHERE p.id = numbered.id`, s.id, subs.map(x => x.parentId), subs.map(x => x.id));
+    await prisma.categoryPriceRule.createMany({ data: [
+      ...parents.map(p => ({ tenantId: s.id, categoryId: p.id, mode: 'percent', value: 8 })),
+      ...subs.filter((_, i) => i % 2 === 0).map(x => ({ tenantId: s.id, categoryId: x.parentId, subcategoryId: x.id, mode: 'amount', value: 1.5 })),
+    ] });
+    await prisma.pricingSettings.create({ data: { tenantId: s.id, defaultRuleMode: 'percent', defaultRuleValue: 10, rounding: '0.25', perMarketplaceEnabled: true } });
+    await prisma.marketplacePriceRule.create({ data: { tenantId: s.id, marketplaceId: 'talabat', mode: 'percent', value: 15, rounding: '0.25' } });
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO product_price_rules (id, tenant_id, product_id, mode, value, updated_at)
+      SELECT gen_random_uuid(), tenant_id, id, 'fixed', 9.99, now() FROM (SELECT id, tenant_id, row_number() OVER (ORDER BY name_en, id) AS n FROM products WHERE tenant_id = $1::uuid) x WHERE n % 10 = 0`, s.id);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO product_offers (id, tenant_id, product_id, price, valid_until, updated_at)
+      SELECT gen_random_uuid(), tenant_id, id, 1.25, CASE WHEN n % 3 = 0 THEN now() - interval '1 day' ELSE NULL END, now()
+      FROM (SELECT id, tenant_id, row_number() OVER (ORDER BY name_en, id) AS n FROM products WHERE tenant_id = $1::uuid) x WHERE n % 25 = 0`, s.id);
+    await prisma.$executeRawUnsafe('ANALYZE');
+
+    const first = (await h.request('GET', '/api/products?limit=50', s, s.owner)).json().data;
+    const sources = new Set((first.items as { marketplacePrice: { source: string } }[]).map(i => i.marketplacePrice.source));
+    expect(first.items).toHaveLength(50);
+    expect([...sources]).toEqual(expect.arrayContaining(['category', 'offer', 'product', 'subcategory']));
+    const timings: Record<string, number> = {
+      'GET /api/products (priced)': await time(async () => expect((await h.request('GET', '/api/products?limit=50', s, s.owner)).statusCode).toBe(200)),
+      'GET /api/products?q=milk (priced)': await time(async () => expect((await h.request('GET', '/api/products?limit=50&q=milk', s, s.owner)).statusCode).toBe(200)),
+      'GET /api/products page 2 (priced)': await time(async () => expect((await h.request('GET', '/api/products?limit=50&cursor=' + first.nextCursor, s, s.owner)).statusCode).toBe(200)),
+      'GET /api/products/:id (chain)': await time(async () => expect((await h.request('GET', '/api/products/' + first.items[0].id, s, s.owner)).statusCode).toBe(200)),
+    };
+    console.log('[perf] ' + JSON.stringify({ products: PRODUCTS, categoryRules: 70, productRules: PRODUCTS / 10, offers: PRODUCTS / 25, medianMs: timings }, null, 2));
+    for (const [label, ms] of Object.entries(timings)) expect([label, ms <= SLOW_MS]).toEqual([label, true]);
+  }, 600_000);
 });
