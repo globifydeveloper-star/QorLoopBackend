@@ -19,9 +19,9 @@ export interface ReconCounts {
 
 /**
  * A full rewrite of 200,000 rows (first run, or a default-rule change at 50,000 products x 4 marketplaces) takes
- * 20-30 s on a laptop Postgres 18; leave room below the 120 s BullMQ job lock.
+ * 20-30 s on a laptop Postgres 18; leave room below the 180 s BullMQ job lock.
  */
-export const RECON_TIMEOUT_MS = 100_000;
+export const RECON_TIMEOUT_MS = 120_000;
 
 /**
  * Recomputes every recon row and summary of one tenant in ONE transaction, from one consistent snapshot of the

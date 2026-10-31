@@ -66,7 +66,7 @@ applyWorker.on('failed', (job, err) => {
 applyWorker.on('error', () => log.error('Upload apply worker failed'));
 
 // Recon: one coalesced recompute per tenant (deduplicated in BullReconQueue); a failed run keeps the previous results.
-const reconWorker = new Worker<ReconJob>(RECON_QUEUE_NAME, job => recomputeRecon(deps, job.data), { connection, concurrency: 1, lockDuration: 120_000 });
+const reconWorker = new Worker<ReconJob>(RECON_QUEUE_NAME, job => recomputeRecon(deps, job.data), { connection, concurrency: 1, lockDuration: 180_000 });
 reconWorker.on('failed', (job, err) => log.error({ jobId: job?.id, errorType: err.name }, 'Recon recompute attempt failed'));
 reconWorker.on('error', () => log.error('Recon worker failed'));
 
