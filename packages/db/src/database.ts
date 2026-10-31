@@ -5,13 +5,20 @@ import type { Role } from './generated/enums.js';
 import { UploadRepository } from './uploads.js';
 import { CategoryRepository, ProductRepository } from './products.js';
 import { PricingRepository } from './pricing.js';
+import { ReconRepository } from './recon.js';
 
-export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository };
+export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
+export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
 export type { ProductFilter, ProductTab } from './products.js';
 
 export { PrismaClient };
 export type { Role };
 type Transaction = Prisma.TransactionClient;
+
+/** Another run of the same background job holds the tenant's advisory lock. */
+export class BusyError extends Error {
+  constructor(job: string) { super(`${job} is already running for this store`); this.name = 'BusyError'; }
+}
 
 // Only this package sees the unrestricted Prisma client. HTTP services receive
 // the deliberately small tenant-scoped interface below.
@@ -42,6 +49,22 @@ export class Database {
       if (!rows.length) throw new Error('Tenant unavailable');
       return action(new TenantData(tenantId, tx));
     }, { maxWait: 10000, timeout });
+  }
+  /**
+   * For long background recomputes that read many tables and write only their own (the recon): ONE transaction on a
+   * consistent snapshot (REPEATABLE READ) WITHOUT the tenant row lock, so requests and upload applies are never kept
+   * waiting. Runs of the same `job` for a tenant are serialized by a transaction advisory lock instead; a run that finds
+   * it taken throws BusyError (the queue retries it).
+   */
+  async runSnapshot<T>(tenantId: string, job: string, action: (data: TenantData) => Promise<T>, { timeout = 20000 }: { timeout?: number } = {}): Promise<T> {
+    return this.client.$transaction(async tx => {
+      const [state] = await tx.$queryRaw<{ active: boolean; locked: boolean }[]>`
+        SELECT EXISTS (SELECT 1 FROM tenants WHERE id = ${tenantId}::uuid AND status = 'active') AS active,
+               pg_try_advisory_xact_lock(hashtextextended(${job + ':' + tenantId}, 0)) AS locked`;
+      if (!state?.active) throw new Error('Tenant unavailable');
+      if (!state.locked) throw new BusyError(job);
+      return action(new TenantData(tenantId, tx));
+    }, { maxWait: 10000, timeout, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {
@@ -77,11 +100,13 @@ export class TenantData {
   readonly products: ProductRepository;
   readonly categories: CategoryRepository;
   readonly pricing: PricingRepository;
+  readonly recon: ReconRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
     this.categories = new CategoryRepository(tenantId, tx);
     this.pricing = new PricingRepository(tenantId, tx);
+    this.recon = new ReconRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }

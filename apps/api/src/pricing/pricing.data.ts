@@ -2,7 +2,7 @@ import type { TenantData } from '../../../../packages/db/src/database.js';
 import type { MarketplaceId, RoundingOption, RuleMode } from '../../../../packages/core/src/constants.js';
 import {
   offerState, priceRuleChain, resolveMarketplacePrice, PRICE_RULE_ORDER,
-  type CategoryRuleItem, type OfferInput, type PriceRule, type PricingSettingsSnapshot, type ProductPricingInput,
+  type OfferInput, type PriceRule, type ProductPricingInput,
 } from '../../../../packages/core/src/pricing.js';
 
 type Decimalish = { toNumber(): number };
@@ -17,19 +17,9 @@ export const DEFAULT_PRICING = {
   defaultRuleMode: 'same', defaultRuleValue: 0, rounding: 'exact' as RoundingOption, perMarketplaceEnabled: false, compareReferenceDefault: 'marketplace',
 };
 
-/** Settings and every tenant-level rule, read once per request; products are then priced without further queries. */
-export async function loadPricing(data: TenantData) {
-  const [settings, marketplaceRules, categoryRules] = await Promise.all([
-    data.pricing.settings(), data.pricing.marketplaceRules(), data.pricing.categoryRules(),
-  ]);
-  const snapshot: PricingSettingsSnapshot = {
-    defaultRule: settings ? asRule(settings.defaultRuleMode, settings.defaultRuleValue) : { mode: 'same', value: 0 },
-    rounding: (settings?.rounding ?? DEFAULT_PRICING.rounding) as RoundingOption,
-    perMarketplaceEnabled: settings?.perMarketplaceEnabled ?? false,
-    marketplaceRules: Object.fromEntries(marketplaceRules.map(r => [r.marketplaceId, { ...asRule(r.mode, r.value), rounding: r.rounding as RoundingOption }])),
-  };
-  const rules: CategoryRuleItem[] = categoryRules.map(r => ({ categoryId: r.categoryId, subcategoryId: r.subcategoryId, rule: asRule(r.mode, r.value) }));
-  return { settings, snapshot, marketplaceRules, categoryRules: rules, categoryRuleRows: categoryRules };
+/** Settings and every tenant-level rule, read once per request (the recon worker reads the same snapshot). */
+export function loadPricing(data: TenantData) {
+  return data.pricing.snapshot();
 }
 export type TenantPricing = Awaited<ReturnType<typeof loadPricing>>;
 

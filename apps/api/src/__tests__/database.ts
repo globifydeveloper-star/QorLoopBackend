@@ -18,7 +18,8 @@ export async function testDatabase() {
     // Never reset an existing database. Each test run owns a fresh random schema.
     const schema = 'qorloop_test_' + randomUUID().replaceAll('-', '');
     // public stays on the path so an extension already installed there (pg_trgm) resolves; new tables go to the first schema.
-    const pool = new Pool({ connectionString: external, max: 1, options: '-c search_path=' + schema + ',public' });
+    // UTC like Database's own pool: adapter-pg reads and writes timestamptz without an offset.
+    const pool = new Pool({ connectionString: external, max: 1, options: '-c search_path=' + schema + ',public -c timezone=UTC' });
     await pool.query('CREATE SCHEMA "' + schema + '"');
     await pool.query(sql);
     adapter = new PrismaPg(pool, { schema });

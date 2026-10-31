@@ -1,6 +1,10 @@
 import type { Prisma } from './generated/client.js';
+import type { RoundingOption, RuleMode } from '../../core/src/constants.js';
+import type { CategoryRuleItem, PriceRule, PricingSettingsSnapshot } from '../../core/src/pricing.js';
 
 type Tx = Prisma.TransactionClient;
+type Decimalish = { toNumber(): number };
+const asRule = (mode: string, value: Decimalish): PriceRule => ({ mode: mode as RuleMode, value: value.toNumber() });
 
 /** A rule as stored: 'same' keeps value 0. */
 export type StoredRule = { mode: string; value: number };
@@ -22,6 +26,18 @@ export class PricingRepository {
       where: { tenantId: this.tenantId },
       select: { defaultRuleMode: true, defaultRuleValue: true, rounding: true, perMarketplaceEnabled: true, compareReferenceDefault: true, updatedAt: true },
     });
+  }
+  /** Settings and every tenant-level rule in the pricing engine's shape, read once; products are then priced without further queries. */
+  async snapshot() {
+    const [settings, marketplaceRules, categoryRules] = await Promise.all([this.settings(), this.marketplaceRules(), this.categoryRules()]);
+    const snapshot: PricingSettingsSnapshot = {
+      defaultRule: settings ? asRule(settings.defaultRuleMode, settings.defaultRuleValue) : { mode: 'same', value: 0 },
+      rounding: (settings?.rounding ?? 'exact') as RoundingOption,
+      perMarketplaceEnabled: settings?.perMarketplaceEnabled ?? false,
+      marketplaceRules: Object.fromEntries(marketplaceRules.map(r => [r.marketplaceId, { ...asRule(r.mode, r.value), rounding: r.rounding as RoundingOption }])),
+    };
+    const rules: CategoryRuleItem[] = categoryRules.map(r => ({ categoryId: r.categoryId, subcategoryId: r.subcategoryId, rule: asRule(r.mode, r.value) }));
+    return { settings, snapshot, marketplaceRules, categoryRules: rules, categoryRuleRows: categoryRules };
   }
   saveSettings(data: PricingSettingsWrite) {
     return this.tx.pricingSettings.upsert({ where: { tenantId: this.tenantId }, create: { ...data, tenantId: this.tenantId }, update: data });

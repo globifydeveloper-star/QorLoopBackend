@@ -528,28 +528,40 @@ model ReconRow {
   priceMismatchVsErp         Boolean  @default(false) @map("price_mismatch_vs_erp")
   priceMismatchVsMarketplace Boolean  @default(false) @map("price_mismatch_vs_marketplace")
   stockIssue                 String?  @map("stock_issue")
+  /// Status against the MARKETPLACE reference (expected price = the resolved Marketplace price).
   status                     String
+  /// Status against the ERP reference (expected price = the ERP price).
+  statusVsErp                String   @default("no_data") @map("status_vs_erp")
   lastUpdated                DateTime @default(now()) @map("last_updated") @db.Timestamptz
 
   @@unique([tenantId, productId, marketplaceId])
   @@index([tenantId, marketplaceId, status])
+  @@index([tenantId, marketplaceId, statusVsErp])
   @@map("recon_rows")
 }
 
+/// One row per tenant x marketplace x reference; the dashboard and the reports both read these rows.
 model ReconSummary {
-  id            String    @id @default(uuid()) @db.Uuid
-  tenantId      String    @map("tenant_id") @db.Uuid
-  tenant        Tenant    @relation(fields: [tenantId], references: [id])
-  marketplaceId String    @map("marketplace_id")
-  listed        Int       @default(0)
-  stock         Int       @default(0)
-  price         Int       @default(0)
-  total         Int       @default(0)
-  hasData       Boolean   @default(false) @map("has_data")
-  lastUploadAt  DateTime? @map("last_upload_at") @db.Timestamptz
-  stale         Boolean   @default(false)
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  marketplaceId  String    @map("marketplace_id")
+  /// marketplace (expected = the resolved Marketplace price) | erp (expected = the ERP price)
+  reference      String    @default("marketplace")
+  listed         Int       @default(0)
+  stock          Int       @default(0)
+  price          Int       @default(0)
+  total          Int       @default(0)
+  notListed      Int       @default(0) @map("not_listed")
+  noData         Int       @default(0) @map("no_data")
+  missingFromErp Int       @default(0) @map("missing_from_erp")
+  newCount       Int       @default(0) @map("new_count")
+  hasData        Boolean   @default(false) @map("has_data")
+  lastUploadAt   DateTime? @map("last_upload_at") @db.Timestamptz
+  stale          Boolean   @default(false)
+  computedAt     DateTime? @map("computed_at") @db.Timestamptz
 
-  @@unique([tenantId, marketplaceId])
+  @@unique([tenantId, marketplaceId, reference])
   @@map("recon_summaries")
 }
 
