@@ -20,6 +20,8 @@ import { Contract } from './http/contracts.js';
 import { CONFIG, STORAGE, UPLOAD_QUEUE } from './tokens.js';
 import { UploadsController } from './uploads/uploads.controller.js';
 import { UploadsService } from './uploads/uploads.service.js';
+import { ProductsController } from './products/products.controller.js';
+import { ProductsService } from './products/products.service.js';
 import { S3Storage, type ObjectStorage } from '../../../packages/shared/src/storage.js';
 import { BullUploadQueue, type UploadQueue } from '../../../packages/shared/src/queue.js';
 
@@ -79,10 +81,10 @@ export async function buildApp(config: Config, options: { database?: Database; c
     queue = new BullUploadQueue(queueRedis);
   }
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
+      AuthService, TeamService, UploadsService, ProductsService, { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
