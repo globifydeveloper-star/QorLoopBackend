@@ -1,10 +1,13 @@
 import type { Database } from '../../../packages/db/src/database.js';
 import type { ApplyUploadJob } from '../../../packages/shared/src/queue.js';
+import type { ReconQueue } from '../../../packages/shared/src/recon.js';
 import type { ErpRow, MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
 import { planErpApply, planListingApply, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
 
 export interface ApplyDeps {
   database: Database;
+  /** Asked for a recon recompute once an apply has committed. */
+  recon?: ReconQueue;
   log?: { info(o: object, m?: string): void; warn(o: object, m?: string): void };
 }
 
@@ -28,7 +31,7 @@ type Staged = { data: unknown };
 export type ApplyPhase = 'start' | 'create products' | 'update products' | 'flag missing' | 'listings' | 'audit' | 'finish';
 
 /** What failed, without row data: safe for logs and the audit trail. */
-export interface ApplyFailure { phase: ApplyPhase; errorType: string; sqlState: string | null; prismaCode: string | null; message: string; ms: number }
+export interface ApplyFailure<P extends string = ApplyPhase> { phase: P; errorType: string; sqlState: string | null; prismaCode: string | null; message: string; ms: number }
 
 // Prisma's own codes are P1xxx-P6xxx; SQLSTATE's only P class is P0 (PL/pgSQL).
 const PRISMA_CODE = /^P[1-9]\d{3}$/;
@@ -38,7 +41,7 @@ const SQLSTATE = /^(?!P[1-9])[0-9A-Z]{5}$/;
  * The error type, codes and the first line of the message cut at the first quote, so no cell value
  * (Postgres and Prisma quote values and identifiers) reaches a log. Walks Prisma's wrapping down to the driver error.
  */
-export function describeApplyError(e: unknown, phase: ApplyPhase, ms: number): ApplyFailure {
+export function describeApplyError<P extends string = ApplyPhase>(e: unknown, phase: P, ms: number): ApplyFailure<P> {
   let sqlState: string | null = null;
   let prismaCode: string | null = null;
   let driverMessage: string | null = null;
@@ -146,6 +149,9 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
   }
   if (!counts) return 'skipped';
   enter(phase);
+  // After commit, so the recompute reads the applied catalogue; it is coalesced with every other trigger of the tenant.
+  try { await deps.recon?.enqueueRecon(tenantId, 'upload.applied'); }
+  catch { deps.log?.warn({ tenantId, uploadId }, 'Could not queue the recon recompute after apply'); }
   deps.log?.info({ tenantId, uploadId, ...counts, ms: Date.now() - t0, timings }, 'Upload applied');
   if (skipped.length) {
     const reasons: Record<string, number> = {};

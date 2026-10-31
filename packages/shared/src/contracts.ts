@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
+import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
@@ -103,3 +104,17 @@ export const productOffer = z.object({
   validFrom: z.iso.datetime({ offset: true }).nullable().optional(),
   validUntil: z.iso.datetime({ offset: true }).nullable().optional(),
 }).strict().refine(v => !v.validFrom || !v.validUntil || new Date(v.validUntil) > new Date(v.validFrom), { message: 'validUntil must be after validFrom', path: ['validUntil'] });
+
+// ───────── Reconciliation ─────────
+export const reconReference = z.enum(RECON_REFERENCES);
+/** Without a reference, the tenant's compareReferenceDefault (pricing settings) applies. */
+export const reconSummaryQuery = z.object({ reference: reconReference.optional() }).strict();
+export const reconRowsQuery = z.object({
+  marketplaceId: z.enum(MARKETPLACES),
+  /** stock = a stock issue; price = a price mismatch for the reference; all = every row (urgent first). */
+  type: z.enum(['stock', 'price', 'all']).default('all'),
+  status: z.enum(RECON_STATUSES).optional(),
+  reference: reconReference.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().max(200).optional(),
+}).strict();

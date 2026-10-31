@@ -98,9 +98,12 @@ export class ProductsService {
     };
   }
 
-  /** A new category or subcategory can move the marketplace price, so it asks for a recon recompute after commit. */
+  /**
+   * A new category or subcategory can move the marketplace price, and a new status changes availability, so either
+   * asks for a recon recompute after commit.
+   */
   async update(ctx: RequestContext, id: string, input: z.infer<typeof contracts.updateProduct>) {
-    const { detail, recategorised } = await this.auth.authenticated(ctx, { permission: 'products.edit', mutation: true }, async (data, p) => {
+    const { detail, recategorised, restatused } = await this.auth.authenticated(ctx, { permission: 'products.edit', mutation: true }, async (data, p) => {
       const current = await data.products.get(id);
       if (!current) throw new NotFoundException('Product not found');
       if (input.expectedUpdatedAt && new Date(input.expectedUpdatedAt).getTime() !== current.updatedAt.getTime()) {
@@ -146,14 +149,17 @@ export class ProductsService {
         for (const c of changes) await data.event('product.field_changed', p.user.id, id, ctx.requestId, c);
       }
       const recategorised = changes.some(c => c.field === 'categoryId' || c.field === 'subcategoryId');
-      return { detail: await this.detail(data, id, p.member.role), recategorised };
+      const restatused = changes.some(c => c.field === 'status');
+      return { detail: await this.detail(data, id, p.member.role), recategorised, restatused };
     });
     if (recategorised) await this.recon.enqueueRecon(ctx.tenantId, 'product.category');
+    if (restatused) await this.recon.enqueueRecon(ctx.tenantId, 'product.status');
     return detail;
   }
 
-  activate(ctx: RequestContext, input: z.infer<typeof contracts.activateProducts>) {
-    return this.auth.authenticated(ctx, { permission: 'products.activate', mutation: true }, async (data, p) => {
+  /** Activated products become reconcilable (no longer 'new'): a recon recompute is asked for after commit. */
+  async activate(ctx: RequestContext, input: z.infer<typeof contracts.activateProducts>) {
+    const result = await this.auth.authenticated(ctx, { permission: 'products.activate', mutation: true }, async (data, p) => {
       const ids = 'ids' in input ? [...new Set(input.ids)] : null;
       const candidates = await data.products.activationCandidates(ids);
       const skipped: { id: string; reason: string }[] = [];
@@ -174,5 +180,7 @@ export class ProductsService {
       await data.event('products.activated', p.user.id, null, ctx.requestId, { mode: ids ? 'ids' : 'all', activated: activated.length, skipped: skipped.length });
       return { activated: activated.length, skipped: skipped.slice(0, MAX_SKIPPED_LISTED), skippedCount: skipped.length };
     });
+    if (result.activated) await this.recon.enqueueRecon(ctx.tenantId, 'product.activated');
+    return result;
   }
 }

@@ -26,9 +26,11 @@ import { CategoriesController } from './products/categories.controller.js';
 import { CategoriesService } from './products/categories.service.js';
 import { S3Storage, type ObjectStorage } from '../../../packages/shared/src/storage.js';
 import { BullUploadQueue, type UploadQueue } from '../../../packages/shared/src/queue.js';
-import { NoopReconQueue, type ReconQueue } from '../../../packages/shared/src/recon.js';
+import { BullReconQueue, type ReconQueue } from '../../../packages/shared/src/recon.js';
 import { PricingController } from './pricing/pricing.controller.js';
 import { PricingService } from './pricing/pricing.service.js';
+import { ReconController } from './recon/recon.controller.js';
+import { ReconService } from './recon/recon.service.js';
 
 @Controller()
 class SystemController {
@@ -79,20 +81,19 @@ export async function buildApp(config: Config, options: { database?: Database; c
     accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
   });
   let queueRedis: import('ioredis').Redis | undefined;
-  let queue = options.queue;
-  if (!queue) {
+  if (!options.queue || !options.recon) {
     const { Redis } = await import('ioredis');
     queueRedis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
-    queue = new BullUploadQueue(queueRedis);
   }
+  const queue = options.queue ?? new BullUploadQueue(queueRedis!);
+  const recon = options.recon ?? new BullReconQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, ReconService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
-      // R1 replaces the no-op with the recon recompute job.
-      { provide: RECON_QUEUE, useValue: options.recon ?? new NoopReconQueue() },
+      { provide: RECON_QUEUE, useValue: recon },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
@@ -147,7 +148,9 @@ export async function buildApp(config: Config, options: { database?: Database; c
   });
   server.addHook('onClose', async () => {
     if (redis) await redis.quit();
-    if (!options.queue) { await (queue as BullUploadQueue).close(); await queueRedis?.quit(); }
+    if (!options.queue) await (queue as BullUploadQueue).close();
+    if (!options.recon) await (recon as BullReconQueue).close();
+    await queueRedis?.quit();
     if (!options.database) await database.close();
   });
   app.useGlobalFilters(new ErrorFilter(Boolean(config.SENTRY_DSN)));

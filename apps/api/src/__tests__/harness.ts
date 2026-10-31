@@ -7,7 +7,7 @@ import { loadConfig } from '../../../../packages/shared/src/config.js';
 import { unseal } from '../../../../packages/shared/src/security.js';
 import { MemoryStorage } from '../../../../packages/shared/src/storage.js';
 import { InlineUploadQueue } from '../../../../packages/shared/src/queue.js';
-import { RecordingReconQueue } from '../../../../packages/shared/src/recon.js';
+import { InlineReconQueue } from '../../../../packages/shared/src/recon.js';
 import { testDatabase } from './database.js';
 
 export const password = 'Correct horse battery staple!';
@@ -16,7 +16,7 @@ export type Store = { id: string; hostname: string; owner: Session };
 
 /** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3, the recon job). */
 export function testServices() {
-  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new RecordingReconQueue() };
+  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new InlineReconQueue() };
 }
 
 export async function createHarness() {

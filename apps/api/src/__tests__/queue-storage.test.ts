@@ -4,6 +4,7 @@ import { Worker } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { BullUploadQueue, JOB_DEFAULTS, processJobId, type ProcessUploadJob } from '../../../../packages/shared/src/queue.js';
 import { S3Storage, storageKeys } from '../../../../packages/shared/src/storage.js';
+import { BullReconQueue, RECON_DEBOUNCE_MS, RECON_QUEUE_NAME, type ReconJob } from '../../../../packages/shared/src/recon.js';
 
 // A dedicated variable: the app's REDIS_URL (from .env) must never point tests at a shared Redis.
 const redisUrl = process.env.TEST_REDIS_URL;
@@ -30,6 +31,31 @@ describeRedis('BullMQ upload queue (real Redis)', () => {
     expect(seen).toHaveLength(1);
     expect(processJobId(job)).toBe(`process-${job.tenantId}-${job.uploadId}-1`);
   });
+  it('recon: a burst of triggers runs once; triggers during a run give exactly one follow-up run', async () => {
+    const recon = new BullReconQueue(connection);
+    const tenantId = randomUUID();
+    const runs: ReconJob[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let started!: () => void;
+    const first = new Promise<void>(r => { started = r; });
+    const worker = new Worker<ReconJob>(RECON_QUEUE_NAME, async j => {
+      if (j.data.tenantId !== tenantId) return;
+      runs.push(j.data);
+      if (runs.length === 1) { started(); await gate; }
+    }, { connection });
+    try {
+      for (let i = 0; i < 20; i++) await recon.enqueueRecon(tenantId, 'manual');
+      await first;
+      for (let i = 0; i < 20; i++) await recon.enqueueRecon(tenantId, 'pricing.settings');
+      release();
+      await new Promise(r => setTimeout(r, RECON_DEBOUNCE_MS * 3));
+      expect(runs.map(r => r.reason)).toEqual(['manual', 'pricing.settings']);
+    } finally {
+      await worker.close();
+      await recon.close();
+    }
+  }, 30_000);
   it('retries with backoff and keeps failed jobs for inspection', () => {
     expect(JOB_DEFAULTS.attempts).toBe(3);
     expect(JOB_DEFAULTS.backoff.type).toBe('exponential');

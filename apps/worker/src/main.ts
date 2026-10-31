@@ -9,6 +9,8 @@ import { S3Storage } from '../../../packages/shared/src/storage.js';
 import { applyJobId, JOB_DEFAULTS, processJobId, QUEUES, type ApplyUploadJob, type ProcessUploadJob } from '../../../packages/shared/src/queue.js';
 import { markFailed, processUpload, recoverStuckUploads } from './process-upload.js';
 import { applyUpload, revertToReview } from './apply-upload.js';
+import { BullReconQueue, RECON_QUEUE_NAME, type ReconJob } from '../../../packages/shared/src/recon.js';
+import { recomputeRecon } from './recompute-recon.js';
 
 const config = loadConfig();
 const log = pino();
@@ -44,7 +46,8 @@ const storage = new S3Storage({
   bucket: config.S3_BUCKET, region: config.S3_REGION, endpoint: config.S3_ENDPOINT, forcePathStyle: config.S3_FORCE_PATH_STYLE,
   accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
 });
-const deps = { database, storage, log };
+const reconQueue = new BullReconQueue(connection);
+const deps = { database, storage, log, recon: reconQueue };
 const uploadQueue = new Queue(QUEUES.uploads, { connection, defaultJobOptions: JOB_DEFAULTS });
 const uploadWorker = new Worker<ProcessUploadJob>(QUEUES.uploads, job => processUpload(deps, job.data), { connection, concurrency: config.UPLOAD_CONCURRENCY, lockDuration: 120_000 });
 uploadWorker.on('failed', (job, err) => {
@@ -62,6 +65,11 @@ applyWorker.on('failed', (job, err) => {
 });
 applyWorker.on('error', () => log.error('Upload apply worker failed'));
 
+// Recon: one coalesced recompute per tenant (deduplicated in BullReconQueue); a failed run keeps the previous results.
+const reconWorker = new Worker<ReconJob>(RECON_QUEUE_NAME, job => recomputeRecon(deps, job.data), { connection, concurrency: 1, lockDuration: 120_000 });
+reconWorker.on('failed', (job, err) => log.error({ jobId: job?.id, errorType: err.name }, 'Recon recompute attempt failed'));
+reconWorker.on('error', () => log.error('Recon worker failed'));
+
 const sweep = setInterval(() => {
   recoverStuckUploads(deps, async (j, kind) => {
     if (kind === 'apply') await applyQueue.add('apply-upload', j, { jobId: applyJobId(j) });
@@ -76,9 +84,9 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   clearInterval(sweep);
-  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await uploadQueue.close(); await applyQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
+  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await reconWorker.close(); await uploadQueue.close(); await applyQueue.close(); await reconQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
 }
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());
-log.info('Email and upload workers ready');
+log.info('Email, upload and recon workers ready');
 
