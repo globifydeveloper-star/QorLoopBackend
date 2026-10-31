@@ -75,9 +75,14 @@ export class ProductRepository {
       select: { marketplaceId: true, marketplaceProductId: true, price: true, available: true, updatedAt: true },
     });
   }
-  /** Compare-and-set on updated_at; returns false when the product changed since it was read. */
+  /**
+   * Compare-and-set on updated_at; returns false when the product changed since it was read.
+   * `seen` is a JS Date (milliseconds) while rows written by SQL now() before date_trunc may hold microseconds,
+   * so the match is "within the millisecond either side", not equality.
+   */
   async update(id: string, seen: Date, data: Pick<Prisma.ProductUncheckedUpdateManyInput, 'nameAr' | 'categoryId' | 'subcategoryId' | 'status' | 'updatedBy'>) {
-    const r = await this.tx.product.updateMany({ where: { tenantId: this.tenantId, id, updatedAt: seen }, data });
+    const updatedAt = { gt: new Date(seen.getTime() - 1), lt: new Date(seen.getTime() + 1) };
+    const r = await this.tx.product.updateMany({ where: { tenantId: this.tenantId, id, updatedAt }, data });
     return r.count === 1;
   }
 
@@ -93,7 +98,7 @@ export class ProductRepository {
   async activate(ids: string[], actorId: string) {
     if (!ids.length) return [];
     const rows = await this.tx.$queryRaw<{ id: string }[]>`
-      UPDATE products SET status = 'active', updated_by = ${actorId}, updated_at = now()
+      UPDATE products SET status = 'active', updated_by = ${actorId}, updated_at = date_trunc('milliseconds', now())
       WHERE tenant_id = ${this.tenantId}::uuid AND status = 'new' AND id = ANY(${ids}::uuid[])
       RETURNING id`;
     return rows.map(r => r.id);
@@ -130,7 +135,7 @@ export class ProductRepository {
   /** Sets the category of uncategorised products whose trimmed ERP category is one of `erpCategories`. */
   assignCategoryFromErp(categoryId: string, erpCategories: string[], actorId: string) {
     return this.tx.$executeRaw`
-      UPDATE products SET category_id = ${categoryId}::uuid, updated_by = ${actorId}, updated_at = now()
+      UPDATE products SET category_id = ${categoryId}::uuid, updated_by = ${actorId}, updated_at = date_trunc('milliseconds', now())
       WHERE tenant_id = ${this.tenantId}::uuid AND category_id IS NULL AND btrim(erp_category) = ANY(${erpCategories}::text[])`;
   }
 

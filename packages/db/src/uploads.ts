@@ -133,7 +133,10 @@ export class UploadRepository {
       },
     });
   }
-  /** One INSERT ... SELECT FROM unnest(...) per 5,000 products: one bind parameter per column, not per value. */
+  /**
+   * One INSERT ... SELECT FROM unnest(...) per 5,000 products: one bind parameter per column, not per value.
+   * Timestamps are cut to milliseconds (here and below) so the updatedAt a client reads back as a JS Date matches the row.
+   */
   async createProducts(rows: NewProduct[]) {
     for (let i = 0; i < rows.length; i += 5000) {
       const c = rows.slice(i, i + 5000);
@@ -142,7 +145,7 @@ export class UploadRepository {
         INSERT INTO products (id, tenant_id, barcode, normalized_barcode, sku, name_en, name_ar, brand, erp_category,
                               erp_price, cost_price, erp_stock, erp_active, in_latest_erp_file, status, created_at, updated_at)
         SELECT gen_random_uuid(), ${this.tenantId}::uuid, v.barcode, v.barcode, v.sku, v.name_en, v.name_ar, v.brand, v.erp_category,
-               v.erp_price::numeric, v.cost_price::numeric, v.erp_stock::int, v.erp_active::boolean, true, v.status, now(), now()
+               v.erp_price::numeric, v.cost_price::numeric, v.erp_stock::int, v.erp_active::boolean, true, v.status, date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
         FROM unnest(
           ${c.map(r => r.normalizedBarcode)}::text[], ${c.map(r => r.sku)}::text[], ${c.map(r => r.nameEn)}::text[], ${c.map(r => r.nameAr)}::text[],
           ${c.map(r => r.brand)}::text[], ${c.map(r => r.erpCategory)}::text[], ${c.map(r => text(r.erpPrice))}::text[],
@@ -160,7 +163,7 @@ export class UploadRepository {
         UPDATE products AS p SET
           sku = v.sku, name_en = v.name_en, name_ar = v.name_ar, brand = v.brand, erp_category = v.erp_category,
           erp_price = v.erp_price::numeric, cost_price = v.cost_price::numeric, erp_stock = v.erp_stock::int,
-          erp_active = v.erp_active::boolean, in_latest_erp_file = v.in_latest::boolean, updated_at = now()
+          erp_active = v.erp_active::boolean, in_latest_erp_file = v.in_latest::boolean, updated_at = date_trunc('milliseconds', now())
         FROM unnest(
           ${c.map(r => r.id)}::uuid[], ${c.map(r => r.sku)}::text[], ${c.map(r => r.nameEn)}::text[], ${c.map(r => r.nameAr)}::text[],
           ${c.map(r => r.brand)}::text[], ${c.map(r => r.erpCategory)}::text[], ${c.map(r => text(r.erpPrice))}::text[],
@@ -173,7 +176,7 @@ export class UploadRepository {
   /** Full ERP list: products not in the file are flagged (never deactivated). Returns the flagged ids. */
   async flagMissingProducts(barcodes: string[]) {
     const rows = await this.tx.$queryRaw<{ id: string }[]>`
-      UPDATE products SET in_latest_erp_file = false, updated_at = now()
+      UPDATE products SET in_latest_erp_file = false, updated_at = date_trunc('milliseconds', now())
       WHERE tenant_id = ${this.tenantId}::uuid AND in_latest_erp_file AND NOT (normalized_barcode = ANY(${barcodes}::text[]))
       RETURNING id`;
     return rows.map(r => r.id);
@@ -185,14 +188,14 @@ export class UploadRepository {
       await this.tx.$executeRaw`
         INSERT INTO listings (id, tenant_id, marketplace_id, marketplace_product_id, product_id, barcodes, name, price, available, upload_id, created_at, updated_at)
         SELECT gen_random_uuid(), ${this.tenantId}::uuid, ${marketplaceId}, v.mpid, v.product_id,
-               ARRAY(SELECT jsonb_array_elements_text(v.barcodes::jsonb)), v.name, v.price::numeric, v.available::boolean, ${uploadId}::uuid, now(), now()
+               ARRAY(SELECT jsonb_array_elements_text(v.barcodes::jsonb)), v.name, v.price::numeric, v.available::boolean, ${uploadId}::uuid, date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
         FROM unnest(
           ${c.map(r => r.marketplaceProductId)}::text[], ${c.map(r => r.productId)}::uuid[], ${c.map(r => JSON.stringify(r.barcodes))}::text[],
           ${c.map(r => r.name)}::text[], ${c.map(r => String(r.price))}::text[], ${c.map(r => String(r.available))}::text[]
         ) AS v(mpid, product_id, barcodes, name, price, available)
         ON CONFLICT (tenant_id, marketplace_id, marketplace_product_id) DO UPDATE SET
           product_id = EXCLUDED.product_id, barcodes = EXCLUDED.barcodes, name = EXCLUDED.name, price = EXCLUDED.price,
-          available = EXCLUDED.available, upload_id = EXCLUDED.upload_id, updated_at = now()`;
+          available = EXCLUDED.available, upload_id = EXCLUDED.upload_id, updated_at = date_trunc('milliseconds', now())`;
     }
   }
   /** Full marketplace list: this marketplace's listings that are not in the file are removed. */

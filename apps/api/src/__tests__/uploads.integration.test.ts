@@ -883,4 +883,66 @@ describe('confirm and apply', () => {
     // the row number and reason are recorded, never the row's values
     expect(JSON.stringify([applied!.details, logged])).not.toMatch(/0123456|Leading zero/);
   });
+
+  describe('editing products the apply wrote (updated_at precision)', () => {
+    const detail = async (s: Store, who: Session, barcode: string) => {
+      const id = (await product(s, barcode)).id;
+      return { id, seen: (await h.request('GET', '/api/products/' + id, s, who)).json().data.updatedAt as string };
+    };
+    const patch = (s: Store, who: Session, id: string, body: Record<string, unknown>) => h.request('PATCH', '/api/products/' + id, s, who, body);
+    const subMillisecond = (s: Store) => h.fixture.prisma.$queryRawUnsafe<{ n: number }[]>(
+      `SELECT count(*)::int AS n FROM products WHERE tenant_id = $1::uuid
+         AND (updated_at <> date_trunc('milliseconds', updated_at) OR created_at <> date_trunc('milliseconds', created_at))`, s.id).then(r => r[0]!.n);
+
+    it('a created, then updated and flagged product takes a PATCH with the updatedAt from GET; a stale one is 409', async () => {
+      const { s, manager: m } = await store();
+      await apply(s, m, await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12], ['6281000000028', 'Milk', 4.5, 3]]), erpFields));
+      expect(await subMillisecond(s)).toBe(0);
+      const created = await detail(s, m, '6281000000011');
+      const first = await patch(s, m, created.id, { nameAr: 'لبن', expectedUpdatedAt: created.seen });
+      expect(first.statusCode).toBe(200);
+      // a genuine change in between: the earlier version is refused, the new one accepted
+      expect((await patch(s, m, created.id, { nameAr: 'لبن ٢', expectedUpdatedAt: created.seen })).statusCode).toBe(409);
+      expect((await patch(s, m, created.id, { nameAr: 'لبن ٢', expectedUpdatedAt: first.json().data.updatedAt })).statusCode).toBe(200);
+
+      // a second full import updates one product (new price) and flags the other as missing
+      const before = await detail(s, m, '6281000000011');
+      await apply(s, m, await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.95, 12]]), erpFields));
+      expect(await subMillisecond(s)).toBe(0);
+      expect((await patch(s, m, before.id, { nameAr: 'قديم', expectedUpdatedAt: before.seen })).statusCode).toBe(409); // the apply changed it
+      for (const barcode of ['6281000000011', '6281000000028']) {
+        const now = await detail(s, m, barcode);
+        expect((await patch(s, m, now.id, { nameAr: 'منتج', expectedUpdatedAt: now.seen })).statusCode).toBe(200);
+      }
+    });
+
+    it('a new product activated in bulk takes a PATCH with the updatedAt from GET', async () => {
+      const { s, manager: m } = await store();
+      await apply(s, m, await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12]]), erpFields));
+      await apply(s, m, await reviewed(s, m, await xlsx([erpHeader, ['6281000000028', 'Milk', 4.5, 3]]), erpFields, { contains: 'partial' }));
+      const fresh = await detail(s, m, '6281000000028');
+      const dairy = (await h.request('POST', '/api/categories', s, m, { nameEn: 'Dairy' })).json().data.id as string;
+      expect((await patch(s, m, fresh.id, { nameAr: 'حليب', categoryId: dairy, expectedUpdatedAt: fresh.seen })).statusCode).toBe(200);
+      expect((await h.request('POST', '/api/products/activate', s, m, { ids: [fresh.id] })).json().data.activated).toBe(1);
+      expect(await subMillisecond(s)).toBe(0);
+      const active = await detail(s, m, '6281000000028');
+      expect((await patch(s, m, active.id, { nameAr: 'حليب طازج', expectedUpdatedAt: active.seen })).statusCode).toBe(200);
+    });
+
+    it.each(['.123456', '.123999', '.999999'])('a row written earlier with microseconds (%s) is still editable, with or without expectedUpdatedAt', async fraction => {
+      const { s, manager: m } = await store();
+      await apply(s, m, await reviewed(s, m, await xlsx([erpHeader, ['6281000000011', 'Laban', 1.75, 12]]), erpFields));
+      const { id } = await detail(s, m, '6281000000011');
+      const legacy = async () => {
+        await h.fixture.prisma.$executeRawUnsafe(`UPDATE products SET updated_at = $2::timestamptz WHERE id = $1::uuid`, id, '2026-10-01 10:00:00' + fraction + '+00');
+        return (await detail(s, m, '6281000000011')).seen;
+      };
+      expect((await patch(s, m, id, { nameAr: 'أ', expectedUpdatedAt: await legacy() })).statusCode).toBe(200);
+      await legacy();
+      expect((await patch(s, m, id, { nameAr: 'ب' })).statusCode).toBe(200);
+      // one millisecond away is another version
+      const seen = await legacy();
+      expect((await patch(s, m, id, { nameAr: 'ج', expectedUpdatedAt: new Date(new Date(seen).getTime() - 1).toISOString() })).statusCode).toBe(409);
+    });
+  });
 });
