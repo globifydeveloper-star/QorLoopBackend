@@ -31,3 +31,41 @@ export const reviewQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 }).strict();
+
+// ───────── Products & categories ─────────
+export const productTab = z.enum(['all', 'active', 'inactive', 'new', 'missing']);
+export const productListQuery = z.object({
+  q: z.string().trim().max(200).optional(),
+  tab: productTab.default('all'),
+  categoryId: z.uuid().optional(),
+  subcategoryId: z.uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().max(1000).optional(),
+}).strict();
+export const updateProduct = z.object({
+  nameAr: z.string().trim().max(200).transform(v => v || null).optional(),
+  categoryId: z.uuid().nullable().optional(),
+  subcategoryId: z.uuid().nullable().optional(),
+  status: z.enum(['active', 'inactive']).optional(),
+  expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+}).strict();
+export const activateProducts = z.union([
+  z.object({ ids: z.array(z.uuid()).min(1).max(500) }).strict(),
+  z.object({ all: z.literal(true) }).strict(),
+]);
+const categoryName = z.string().trim().min(1).max(100);
+export const createCategory = z.object({
+  nameEn: categoryName,
+  nameAr: z.string().trim().max(100).transform(v => v || null).optional(),
+  parentId: z.uuid().nullable().optional(),
+  sort: z.number().int().min(-100000).max(100000).optional(),
+}).strict();
+export const updateCategory = z.object({
+  nameEn: categoryName.optional(),
+  nameAr: z.string().trim().max(100).transform(v => v || null).nullable().optional(),
+  parentId: z.uuid().nullable().optional(),
+  sort: z.number().int().min(-100000).max(100000).optional(),
+}).strict().refine(v => Object.keys(v).length > 0, 'Nothing to change');
+export const assignFromErp = z.object({
+  erpCategories: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+}).strict();
