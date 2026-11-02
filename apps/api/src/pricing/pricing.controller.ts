@@ -37,6 +37,20 @@ export const productPricing = {
   },
 };
 
+const marketplaceId = { type: 'string', enum: [...MARKETPLACES] };
+const priced = { type: 'object', properties: { price: { type: 'number' }, source } };
+export const inlinePricing = {
+  type: 'object', properties: {
+    productId: { type: 'string', format: 'uuid' }, marketplaceId, erpPrice: { type: 'number' },
+    previous: { ...priced, description: 'The price on marketplaceId before this request' },
+    resolved: { ...priced, description: 'The price on marketplaceId now (per-marketplace step included)' },
+    rule: { type: ['object', 'null'], description: "The product's own rule; send rule.updatedAt back as expectedRuleUpdatedAt", properties: { ...rule, updatedAt: { type: 'string', format: 'date-time' } } },
+    chain: { type: 'array', description: 'The rule order for marketplaceId: applied, overridden, not_set, expired, scheduled, disabled', items: { type: 'object' } },
+    marketplaces: { type: 'array', description: 'The price on every enabled marketplace: a product rule applies to all of them', items: { type: 'object', properties: { marketplaceId, price: { type: 'number' }, source } } },
+    changed: { type: 'boolean', description: 'false when the rule was already this one (or, on DELETE, there was none)' },
+  },
+};
+
 const count = { type: 'integer' };
 const byMarketplace = { type: 'object', description: 'Per other marketplace', additionalProperties: count };
 const adoptCounts = {
@@ -118,6 +132,20 @@ export class PricingController {
   @Contract("Adopt a marketplace's current listing prices as product rules, in one transaction; a repeat adopts nothing", dto.adoptPrices, adoptCounts)
   adoptApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.adoptPrices)) input: z.infer<typeof dto.adoptPrices>) {
     return this.pricing.adoptApply(context(req, this.config), input);
+  }
+
+  @Put('pricing/products/:id') @Access({ permission: 'pricing.edit' })
+  @Contract("Inline price edit: a fixed price or a percent over the ERP price, seen from one enabled marketplace, stored as the product's own rule (so it applies on every marketplace). Active products only; 409 when expectedRuleUpdatedAt is stale", dto.inlinePrice, inlinePricing)
+  setInlinePrice(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string, @Body(new ZodPipe(dto.inlinePrice)) input: z.infer<typeof dto.inlinePrice>) {
+    return this.pricing.setInlinePrice(context(req, this.config), id, input);
+  }
+
+  @Delete('pricing/products/:id') @Access({ permission: 'pricing.edit' })
+  @ApiQuery({ name: 'marketplaceId', required: true, enum: [...MARKETPLACES] })
+  @ApiQuery({ name: 'expectedRuleUpdatedAt', required: false, description: 'rule.updatedAt as last seen; 409 when the rule changed or is gone' })
+  @Contract("Inline 'back to the ERP price': remove the product's own rule so the category, per-marketplace and default rules apply again (no rule: changed false)", undefined, inlinePricing)
+  removeInlinePrice(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string, @Query(new ZodPipe(dto.inlinePriceRemove)) query: z.infer<typeof dto.inlinePriceRemove>) {
+    return this.pricing.removeInlinePrice(context(req, this.config), id, query);
   }
 
   @Put('products/:id/price-rule') @Access({ permission: 'pricing.edit' })

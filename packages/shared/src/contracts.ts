@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
 import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js';
 import { ADOPT_MODES } from '../../core/src/price-adoption.js';
+import { PRICE_CHANGE_MAX } from '../../core/src/price-change.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
@@ -115,6 +116,26 @@ export const adoptPrices = z.object({
     z.object({ all: z.literal(true) }).strict(),
     z.object({ categoryId: z.uuid(), subcategoryId: z.uuid().optional() }).strict(),
   ]),
+}).strict();
+
+/**
+ * The version of the product rule the client last saw (pricing.productRule.updatedAt, or rule.updatedAt of an inline
+ * answer): a different current rule gives 409. null = "I saw no rule"; omitted = no check.
+ */
+const expectedRuleUpdatedAt = z.iso.datetime({ offset: true }).nullable().optional();
+const inlineKey = { marketplaceId: z.enum(MARKETPLACES), expectedRuleUpdatedAt };
+/**
+ * Inline price edit of one product, seen from one marketplace: a fixed price, or a percent over the ERP price. Stored as
+ * the product's own rule, so it applies on every marketplace.
+ */
+export const inlinePrice = z.discriminatedUnion('mode', [
+  z.object({ ...inlineKey, mode: z.literal('fixed'), value: threeDecimals(z.number().gt(0).max(PRICE_CHANGE_MAX)) }).strict(),
+  z.object({ ...inlineKey, mode: z.literal('percent'), value: threeDecimals(z.number().min(-90).max(1000)) }).strict(),
+]);
+/** Query of DELETE /api/pricing/products/:id: the marketplace the answer is priced for, and the rule version seen. */
+export const inlinePriceRemove = z.object({
+  marketplaceId: z.enum(MARKETPLACES),
+  expectedRuleUpdatedAt: z.iso.datetime({ offset: true }).optional(),
 }).strict();
 
 // ───────── Reconciliation ─────────

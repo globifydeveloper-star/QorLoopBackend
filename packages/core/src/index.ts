@@ -7,3 +7,4 @@ export * from './upload/index.js';
 export * from './products/readiness.js';
 export * from './recon/index.js';
 export * from './price-adoption.js';
+export * from './price-change.js';

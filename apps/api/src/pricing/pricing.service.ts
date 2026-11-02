@@ -1,12 +1,17 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
 import type { TenantData } from '../../../../packages/db/src/database.js';
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import type { ReconQueue, ReconReason } from '../../../../packages/shared/src/recon.js';
-import { PRICE_RULE_ORDER } from '../../../../packages/core/src/pricing.js';
+import type { MarketplaceId } from '../../../../packages/core/src/constants.js';
+import { toFils } from '../../../../packages/core/src/money.js';
+import { PRICE_RULE_ORDER, resolveMarketplacePrice, type PriceRule } from '../../../../packages/core/src/pricing.js';
+import { MARKETPLACE_LABELS, PRICE_BOUND_MESSAGES, priceBoundIssue } from '../../../../packages/core/src/price-change.js';
 import { RECON_QUEUE } from '../tokens.js';
-import { DEFAULT_PRICING, loadPricing, productPricingView, ruleView, type TenantPricing } from './pricing.data.js';
+import {
+  DEFAULT_PRICING, enabledMarketplaceIds, loadPricing, marketplacePricingView, productInputs, productPricingView, ruleView, type TenantPricing,
+} from './pricing.data.js';
 import { adoptionCounts, adoptionPreview, planAdoption, type AdoptInput } from './price-adoption.js';
 
 type RuleInput = z.infer<typeof contracts.priceRule>;
@@ -19,6 +24,18 @@ const sameRule = (a: RuleView | null, b: RuleView | null) => JSON.stringify(a) =
  * maintenance), so a 50,000-product store needs more than a request's usual 20 s. The tenant row lock is held meanwhile.
  */
 const ADOPT_TIMEOUT_MS = 60_000;
+
+const invalid = (path: string, message: string) => new BadRequestException({ message: 'Validation failed', details: [{ path, message }] });
+
+/**
+ * Optimistic concurrency on the product rule: `expected` is the rule version the client saw (undefined = no check,
+ * null = no rule). Writes run under the tenant row lock (Database.run), so check-then-write cannot interleave.
+ */
+export function checkRuleVersion(expected: string | null | undefined, current: { updatedAt: Date } | undefined) {
+  if (expected === undefined) return;
+  const stale = expected === null ? current !== undefined : !current || new Date(expected).getTime() !== current.updatedAt.getTime();
+  if (stale) throw new ConflictException('This price was changed by someone else; reload it and try again');
+}
 
 function settingsView(p: TenantPricing) {
   const s = p.settings ?? { ...DEFAULT_PRICING, updatedAt: null };
@@ -173,6 +190,77 @@ export class PricingService {
       await data.pricing.deleteProductRule(id);
       await data.event('product.price_rule_deleted', actor, id, ctx.requestId, { old: ruleView(prior.mode, prior.value) });
       return { result: await productPricingView(data, product), changed: true };
+    });
+  }
+
+  /**
+   * What an inline edit needs: an active product of this store and a marketplace the store reconciles; then the pricing
+   * snapshot, the product's pricing inputs and its current rule, read once inside the request's transaction.
+   */
+  private async inlineTarget(data: TenantData, id: string, marketplaceId: MarketplaceId) {
+    const product = await this.product(data, id);
+    if (product.status !== 'active') throw invalid('productId', 'Only an active product can be priced; activate it first');
+    const enabled = await enabledMarketplaceIds(data);
+    if (!enabled.includes(marketplaceId)) throw invalid('marketplaceId', `${MARKETPLACE_LABELS[marketplaceId]} is not enabled for this store`);
+    const [pricing, inputs] = await Promise.all([loadPricing(data), productInputs(data, [product])]);
+    const { input, rule } = inputs.get(id)!;
+    const now = new Date();
+    const resolve = (productRule: PriceRule | null) =>
+      resolveMarketplacePrice({ ...input, productRule }, pricing.snapshot, pricing.categoryRules, { marketplace: marketplaceId, now });
+    return { product, enabled, pricing, input, rule, resolve };
+  }
+
+  /**
+   * Inline edit: sets the product's own rule (fixed price, or percent over the ERP price) so the product shows that
+   * price on `marketplaceId` (and, being the product's rule, on every marketplace). Refused when an offer decides the
+   * price now (the rule would not show) or the price falls outside 0 < price <= PRICE_CHANGE_MAX.
+   */
+  setInlinePrice(ctx: RequestContext, id: string, body: z.infer<typeof contracts.inlinePrice>) {
+    const { marketplaceId, expectedRuleUpdatedAt, ...rule } = body;
+    return this.change(ctx, 'product.price_rule', async (data, actor) => {
+      const t = await this.inlineTarget(data, id, marketplaceId);
+      checkRuleVersion(expectedRuleUpdatedAt, t.rule);
+      const before = t.resolve(t.input.productRule ?? null);
+      const after = t.resolve(rule);
+      if (after.source === 'offer') throw invalid('offer', 'A current offer sets this price; change or remove the offer first');
+      const issue = priceBoundIssue(toFils(after.price));
+      if (issue) throw invalid('value', PRICE_BOUND_MESSAGES[issue]);
+      const old = t.rule ? ruleView(t.rule.mode, t.rule.value) : null;
+      const next = ruleView(rule.mode, rule.value);
+      const changed = !sameRule(old, next);
+      if (changed) {
+        await data.pricing.setProductRule(id, rule);
+        await data.event('product.price_rule_set', actor, id, ctx.requestId, { old, new: next, via: 'pricing.inline', marketplaceId, oldPrice: before.price, newPrice: after.price });
+      }
+      const view = await marketplacePricingView(data, t.product, marketplaceId, t.enabled, t.pricing);
+      return { result: { ...view, previous: { price: before.price, source: before.source }, changed }, changed };
+    });
+  }
+
+  /**
+   * Inline "back to the ERP price": removes the product's own rule, so the price follows the category, per-marketplace
+   * and default rules again. No rule is not an error (changed: false), so a repeated click answers the same.
+   */
+  removeInlinePrice(ctx: RequestContext, id: string, query: z.infer<typeof contracts.inlinePriceRemove>) {
+    const { marketplaceId, expectedRuleUpdatedAt } = query;
+    return this.change(ctx, 'product.price_rule', async (data, actor) => {
+      const t = await this.inlineTarget(data, id, marketplaceId);
+      checkRuleVersion(expectedRuleUpdatedAt, t.rule);
+      const before = t.resolve(t.input.productRule ?? null);
+      let changed = false;
+      if (t.rule) {
+        const after = t.resolve(null);
+        if (after.source === 'offer') throw invalid('offer', 'A current offer sets this price; change or remove the offer first');
+        const issue = priceBoundIssue(toFils(after.price), false);
+        if (issue) throw invalid('marketplaceId', PRICE_BOUND_MESSAGES[issue]);
+        await data.pricing.deleteProductRule(id);
+        await data.event('product.price_rule_deleted', actor, id, ctx.requestId, {
+          old: ruleView(t.rule.mode, t.rule.value), via: 'pricing.inline', marketplaceId, oldPrice: before.price, newPrice: after.price,
+        });
+        changed = true;
+      }
+      const view = await marketplacePricingView(data, t.product, marketplaceId, t.enabled, t.pricing);
+      return { result: { ...view, previous: { price: before.price, source: before.source }, changed }, changed };
     });
   }
 
