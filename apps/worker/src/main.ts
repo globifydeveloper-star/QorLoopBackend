@@ -11,6 +11,8 @@ import { markFailed, processUpload, recoverStuckUploads } from './process-upload
 import { applyUpload, revertToReview } from './apply-upload.js';
 import { BullReconQueue, RECON_QUEUE_NAME, type ReconJob } from '../../../packages/shared/src/recon.js';
 import { recomputeRecon } from './recompute-recon.js';
+import { GENERATED_FILES_QUEUE, type GenerateFileJob } from '../../../packages/shared/src/generated-files.js';
+import { generateFile } from './generate-file.js';
 
 const config = loadConfig();
 const log = pino();
@@ -70,6 +72,10 @@ const reconWorker = new Worker<ReconJob>(RECON_QUEUE_NAME, job => recomputeRecon
 reconWorker.on('failed', (job, err) => log.error({ jobId: job?.id, errorType: err.name }, 'Recon recompute attempt failed'));
 reconWorker.on('error', () => log.error('Recon worker failed'));
 
+const generationWorker = new Worker<GenerateFileJob>(GENERATED_FILES_QUEUE, job => generateFile(deps, job.data), { connection, concurrency: 1, lockDuration: 120_000 });
+generationWorker.on('failed', job => log.error({ jobId: job?.id }, 'Marketplace file generation attempt failed'));
+generationWorker.on('error', () => log.error('Marketplace file generation worker failed'));
+
 const sweep = setInterval(() => {
   recoverStuckUploads(deps, async (j, kind) => {
     if (kind === 'apply') await applyQueue.add('apply-upload', j, { jobId: applyJobId(j) });
@@ -84,9 +90,9 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   clearInterval(sweep);
-  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await reconWorker.close(); await uploadQueue.close(); await applyQueue.close(); await reconQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
+  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await reconWorker.close(); await generationWorker.close(); await uploadQueue.close(); await applyQueue.close(); await reconQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
 }
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());
-log.info('Email, upload and recon workers ready');
+log.info('Email, upload, recon and generated-file workers ready');
 
