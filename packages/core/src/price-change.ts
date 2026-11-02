@@ -69,7 +69,7 @@ export function roundToStep(price: number, rounding: BulkRounding): number {
 
 /**
  * price x (100 +/- percent) / 100, rounded ONCE to the step (one exact division, no intermediate rounding), so
- * 4.50 + 5 % is 4.725 (none), 4.70 (0.05) or 4.75 (0.25).
+ * 4.40 + 5 % is 4.62 (none), 4.60 (0.05) or 4.50 (0.25), and 5.50 + 15 % is exactly 6.325.
  */
 export function changeByPercent(price: number, percent: number, direction: 'increase' | 'decrease', rounding: BulkRounding): number {
   const p = thousandths(percent);

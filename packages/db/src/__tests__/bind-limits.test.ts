@@ -111,4 +111,13 @@ describe('bulk statements stay under the Postgres bind-parameter limit', () => {
     expect(statements).toHaveLength(n / PRODUCT_RULE_WRITE_BATCH + n / 5_000);
     expect(statements.filter(s => s.params > PG_MAX_BIND_PARAMS)).toEqual([]);
   });
+
+  it('removing 100,000 product rules (bulk match ERP) is one statement with two parameters', async () => {
+    const { tx, statements } = recordingTx();
+    const repo = new PricingRepository(randomUUID(), tx as unknown as ConstructorParameters<typeof PricingRepository>[1]);
+    await repo.deleteProductRules(Array.from({ length: 100_000 }, () => randomUUID()));
+    await repo.deleteProductRules([]);
+    // the tenant and one uuid[]; an empty list sends nothing
+    expect(statements).toEqual([{ what: '$executeRaw', params: 2 }]);
+  });
 });
