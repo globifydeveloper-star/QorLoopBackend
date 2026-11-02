@@ -23,11 +23,11 @@ export const errorSchema = {
 };
 const errorResponses = () => [400, 401, 403, 404, 409, 429, 500, 503].map(status => ApiResponse({ status, schema: errorSchema }));
 
-export function Contract(summary: string, body?: ZodTypeAny, response: Record<string, unknown> = { type: 'object', additionalProperties: true }) {
+export function Contract(summary: string, body?: ZodTypeAny, response: Record<string, unknown> = { type: 'object', additionalProperties: true }, status = 200) {
   return applyDecorators(
     ApiOperation({ summary }),
     ...(body ? [ApiBody({ schema: jsonSchema(body) })] : []),
-    ApiResponse({ status: 200, schema: { type: 'object', required: ['data'], properties: { data: response } } }),
+    ApiResponse({ status, schema: { type: 'object', required: ['data'], properties: { data: response } } }),
     ...errorResponses(),
   );
 }

@@ -17,7 +17,7 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { CONFIG, GENERATED_FILES_QUEUE, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
 import { UploadsController } from './uploads/uploads.controller.js';
 import { UploadsService } from './uploads/uploads.service.js';
 import { ProductsController } from './products/products.controller.js';
@@ -31,6 +31,9 @@ import { PricingController } from './pricing/pricing.controller.js';
 import { PricingService } from './pricing/pricing.service.js';
 import { ReconController } from './recon/recon.controller.js';
 import { ReconService } from './recon/recon.service.js';
+import { GeneratedFilesController } from './generated-files/generated-files.controller.js';
+import { GeneratedFilesService } from './generated-files/generated-files.service.js';
+import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
 
 @Controller()
 class SystemController {
@@ -73,7 +76,7 @@ class ErrorFilter implements ExceptionFilter {
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
   const storage = options.storage ?? new S3Storage({
@@ -81,19 +84,21 @@ export async function buildApp(config: Config, options: { database?: Database; c
     accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
   });
   let queueRedis: import('ioredis').Redis | undefined;
-  if (!options.queue || !options.recon) {
+  if (!options.queue || !options.recon || !options.generatedFiles) {
     const { Redis } = await import('ioredis');
     queueRedis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
   }
   const queue = options.queue ?? new BullUploadQueue(queueRedis!);
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
+  const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, ReconService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, ReconService, GeneratedFilesService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
+      { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
@@ -150,6 +155,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     if (redis) await redis.quit();
     if (!options.queue) await (queue as BullUploadQueue).close();
     if (!options.recon) await (recon as BullReconQueue).close();
+    if (!options.generatedFiles) await (generatedFiles as BullGeneratedFilesQueue).close();
     await queueRedis?.quit();
     if (!options.database) await database.close();
   });

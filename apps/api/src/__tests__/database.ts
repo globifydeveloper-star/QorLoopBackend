@@ -15,6 +15,8 @@ export async function testDatabase() {
   let stop: () => Promise<void>;
   let adapter: PrismaPg;
   if (external) {
+    // External runs must use scripts/test-real-postgres.mjs (or an equally isolated throwaway database).
+    if (!/^\/qorloop_test_[a-f0-9]{32}$/.test(new URL(external).pathname)) throw new Error('Tests require a throwaway qorloop_test database');
     // Never reset an existing database. Each test run owns a fresh random schema.
     const schema = 'qorloop_test_' + randomUUID().replaceAll('-', '');
     // public stays on the path so an extension already installed there (pg_trgm) resolves; new tables go to the first schema.
