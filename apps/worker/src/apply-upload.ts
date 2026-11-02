@@ -1,4 +1,4 @@
-import type { Database } from '../../../packages/db/src/database.js';
+import type { AnalyzedTable, Database } from '../../../packages/db/src/database.js';
 import type { ApplyUploadJob } from '../../../packages/shared/src/queue.js';
 import type { ReconQueue } from '../../../packages/shared/src/recon.js';
 import type { ErpRow, MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
@@ -149,16 +149,25 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
   }
   if (!counts) return 'skipped';
   enter(phase);
+  // Fresh planner statistics for the table this apply rewrote, before the recompute and the next preview read it.
+  // Outside the apply transaction; a failure only costs plan quality until autovacuum catches up.
+  const analyzeMs = await analyzeAfterCommit(deps, tenantId, [upload.source === 'erp' ? 'products' : 'listings']);
   // After commit, so the recompute reads the applied catalogue; it is coalesced with every other trigger of the tenant.
   try { await deps.recon?.enqueueRecon(tenantId, 'upload.applied'); }
   catch { deps.log?.warn({ tenantId, uploadId }, 'Could not queue the recon recompute after apply'); }
-  deps.log?.info({ tenantId, uploadId, ...counts, ms: Date.now() - t0, timings }, 'Upload applied');
+  deps.log?.info({ tenantId, uploadId, ...counts, ms: Date.now() - t0, timings, analyzeMs }, 'Upload applied');
   if (skipped.length) {
     const reasons: Record<string, number> = {};
     for (const s of skipped) reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
     deps.log?.warn({ tenantId, uploadId, skipped: skipped.length, reasons }, 'Upload applied without rows the database would refuse');
   }
   return 'applied';
+}
+
+/** Database.analyze after a committed bulk write; never fails the job (returns null when it could not run). */
+export async function analyzeAfterCommit(deps: Pick<ApplyDeps, 'database' | 'log'>, tenantId: string, tables: readonly AnalyzedTable[]) {
+  try { return await deps.database.analyze(tables); }
+  catch { deps.log?.warn({ tenantId, tables }, 'Could not refresh planner statistics'); return null; }
 }
 
 /** Back to needs_review so the user can retry. Also used when BullMQ has exhausted every attempt. */

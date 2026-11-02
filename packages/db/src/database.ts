@@ -21,6 +21,10 @@ export class BusyError extends Error {
   constructor(job: string) { super(`${job} is already running for this store`); this.name = 'BusyError'; }
 }
 
+/** Tables whose statistics a bulk job refreshes after commit (Database.analyze). */
+export const ANALYZED_TABLES = ['products', 'listings', 'recon_rows'] as const;
+export type AnalyzedTable = typeof ANALYZED_TABLES[number];
+
 // Only this package sees the unrestricted Prisma client. HTTP services receive
 // the deliberately small tenant-scoped interface below.
 export class Database {
@@ -46,7 +50,10 @@ export class Database {
     return this.client.$transaction(async tx => {
       // A tenant row lock serializes invitation consumption, MFA/recovery replay,
       // membership changes and last-Owner checks, including across API replicas.
-      const rows = await tx.$queryRaw<{id: string}[]>`SELECT id FROM tenants WHERE id = ${tenantId}::uuid AND status = 'active' FOR UPDATE`;
+      // NO KEY UPDATE, not UPDATE (ADR 012): it still conflicts with itself, FOR SHARE, FOR UPDATE and any UPDATE or
+      // DELETE of the tenant row, but not with the FOR KEY SHARE that every foreign-key insert (recon rows, products,
+      // listings, audit events) takes on it, so a long recompute's inserts no longer make every request wait.
+      const rows = await tx.$queryRaw<{id: string}[]>`SELECT id FROM tenants WHERE id = ${tenantId}::uuid AND status = 'active' FOR NO KEY UPDATE`;
       if (!rows.length) throw new Error('Tenant unavailable');
       return action(new TenantData(tenantId, tx));
     }, { maxWait: 10000, timeout });
@@ -74,6 +81,20 @@ export class Database {
       if (!tenant) throw new Error('Tenant unavailable');
       return action(new TenantData(tenantId, tx));
     }, { maxWait: 10000, timeout: 20000, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+  /**
+   * Refreshes planner statistics after a committed bulk write (apply, recompute), so the next query on a freshly
+   * loaded table is planned from real row counts instead of waiting for autovacuum. Outside any transaction; SKIP_LOCKED
+   * returns at once when autovacuum (or another ANALYZE) is already on the table. Statistics are per table, not per
+   * tenant, so only allow-listed table names are accepted.
+   */
+  async analyze(tables: readonly AnalyzedTable[]): Promise<number> {
+    const names = [...new Set(tables)];
+    if (!names.length) return 0;
+    if (names.some(t => !ANALYZED_TABLES.includes(t))) throw new Error('Table not allowed for ANALYZE');
+    const t0 = Date.now();
+    await this.client.$executeRawUnsafe(`ANALYZE (SKIP_LOCKED) ${names.map(t => `"${t}"`).join(', ')}`);
+    return Date.now() - t0;
   }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {

@@ -3,7 +3,7 @@ import type { ReconMarketplaceState } from '../../../packages/db/src/recon.js';
 import type { ReconJob } from '../../../packages/shared/src/recon.js';
 import { MARKETPLACES } from '../../../packages/core/src/constants.js';
 import { computeReconRows, diffReconRows, enabledMarketplaces, isStale } from '../../../packages/core/src/recon/index.js';
-import { describeApplyError, type ApplyFailure } from './apply-upload.js';
+import { analyzeAfterCommit, describeApplyError, type ApplyFailure } from './apply-upload.js';
 
 export interface ReconDeps {
   database: Database;
@@ -72,8 +72,10 @@ export async function recomputeRecon(deps: ReconDeps, job: ReconJob): Promise<Re
       return { products: products.length, marketplaces: marketplaces.length, rows: rows.length, inserted, updated, removed, summaries };
     }, { timeout: RECON_TIMEOUT_MS });
     enter(phase);
+    // Fresh planner statistics once the rows changed, outside the recompute transaction (an unchanged run skips it).
+    const analyzeMs = counts.inserted + counts.updated + counts.removed ? await analyzeAfterCommit(deps, tenantId, ['recon_rows']) : 0;
     // counts and timings only, never row data; the tenant row lock is never taken (tenantLockMs is always 0)
-    deps.log?.info({ tenantId, reason, ...counts, ms: Date.now() - t0, tenantLockMs: 0, timings }, 'Recon recomputed');
+    deps.log?.info({ tenantId, reason, ...counts, ms: Date.now() - t0, tenantLockMs: 0, timings, analyzeMs }, 'Recon recomputed');
     return counts;
   } catch (e) {
     const failed = phase;

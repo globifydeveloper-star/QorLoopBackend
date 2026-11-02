@@ -14,6 +14,8 @@ export async function testDatabase() {
   const sql = (await Promise.all(dirs.map(d => readFile('packages/db/prisma/migrations/' + d + '/migration.sql', 'utf8')))).join('\n');
   let stop: () => Promise<void>;
   let adapter: PrismaPg;
+  /** Real PostgreSQL only: another Database on the same schema with its own pool, for genuinely concurrent transactions. */
+  let pooled: ((max: number) => Promise<{ database: Database; close: () => Promise<void> }>) | null = null;
   if (external) {
     // External runs must use scripts/test-real-postgres.mjs (or an equally isolated throwaway database).
     if (!/^\/qorloop_test_[a-f0-9]{32}$/.test(new URL(external).pathname)) throw new Error('Tests require a throwaway qorloop_test database');
@@ -25,6 +27,12 @@ export async function testDatabase() {
     await pool.query('CREATE SCHEMA "' + schema + '"');
     await pool.query(sql);
     adapter = new PrismaPg(pool, { schema });
+    pooled = async max => {
+      const extra = new Pool({ connectionString: external, max, options: '-c search_path=' + schema + ',public -c timezone=UTC' });
+      const database = new Database('postgresql://test:test@localhost/test', new PrismaClient({ adapter: new PrismaPg(extra, { schema }) }));
+      await database.connect();
+      return { database, close: async () => { await database.close(); await extra.end(); } };
+    };
     stop = async () => {
       if (!/^qorloop_test_[a-f0-9]{32}$/.test(schema)) throw new Error('Unsafe test cleanup');
       await pool.query('DROP SCHEMA "' + schema + '" CASCADE');
@@ -44,6 +52,6 @@ export async function testDatabase() {
   const prisma = new PrismaClient({ adapter });
   const database = new Database('postgresql://test:test@localhost/test', prisma);
   await database.connect();
-  return { database, prisma, close: async () => { await database.close(); await stop(); } };
+  return { database, prisma, pooled, close: async () => { await database.close(); await stop(); } };
 }
 

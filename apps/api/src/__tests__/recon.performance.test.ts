@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { performance } from 'node:perf_hooks';
-import pg from 'pg';
 import { createHarness, type Harness, type Store } from './harness.js';
 import { recomputeRecon, type ReconCounts } from '../../../worker/src/recompute-recon.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
@@ -12,10 +11,11 @@ const PRODUCTS = Number(process.env.RECON_SCALE_PRODUCTS) || 50_000;
 const LISTED: Record<string, number> = { talabat: 0.9, snoonu: 0.85, rafeeq: 0.7, keeta: 0.6 };
 /** A request that takes the tenant row lock while a recompute runs must not wait for it. */
 const LOCKED_REQUEST_BUDGET_MS = 1_000;
+/** When the locked request is sent, after the first full recompute starts: early, mid and late in its insert phase. */
+const PROBE_AT_MS = [3_000, 6_000, 12_000];
 /** An incremental run (few rows changed) at full scale. */
 const INCREMENTAL_BUDGET_MS = 10_000;
 
-const { Client } = pg;
 
 let h: Harness;
 let s: Store;
@@ -70,26 +70,32 @@ realPostgres(`recon at ${PRODUCTS.toLocaleString('en')} products x 4 marketplace
   afterAll(async () => { await h?.close(); });
 
   it('recomputes, never holds the tenant lock, and the summary equals a direct recount', async () => {
-    // A second connection (the harness pool has one) takes the tenant row lock the way every API write does,
-    // while a full recompute runs: it must not wait for the recompute.
-    const [{ schema }] = await h.fixture.prisma.$queryRaw<{ schema: string }[]>`SELECT current_schema() AS schema`;
-    const probe = new Client({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema},public` });
-    await probe.connect();
+    // A second pool (the harness pool has one connection) takes the tenant row lock exactly the way every API write
+    // does, through Database.run, while the first full recompute inserts 200,000 rows (each insert takes FOR KEY SHARE on
+    // the tenant row through recon_rows_tenant_id_fkey): it must not wait for the recompute (G12). Probed early, mid
+    // and late in the write phase; every probe must land while the recompute is still running.
+    const probeDb = await h.fixture.pooled!(2);
     const lockedRequest = async () => {
       const t = performance.now();
-      await probe.query('BEGIN');
-      await probe.query('SELECT id FROM tenants WHERE id = $1::uuid FOR UPDATE', [s.id]);
-      await probe.query('COMMIT');
+      await probeDb.database.run(s.id, async d => d.tenantId);
       return Math.round(performance.now() - t);
     };
-    let probeMs = 0;
+    const probes: { atMs: number; waitedMs: number; recomputeStillRunning: boolean }[] = [];
     const cold = await (async () => {
-      const running = run();
-      await new Promise(r => setTimeout(r, 3_000)); // well inside the write phase
-      probeMs = await lockedRequest();
+      let settled = false;
+      const t0 = performance.now();
+      const running = run().finally(() => { settled = true; });
+      for (const at of PROBE_AT_MS) {
+        await new Promise(r => setTimeout(r, Math.max(0, at - (performance.now() - t0))));
+        const atMs = Math.round(performance.now() - t0);
+        const waitedMs = await lockedRequest();
+        probes.push({ atMs, waitedMs, recomputeStillRunning: !settled });
+      }
       return running;
     })();
-    await probe.end();
+    await probeDb.close();
+    // when the inserts began (start + load + compute), from the recompute's own phase timings
+    const writeStartedMs = (cold.timings.start ?? 0) + (cold.timings.load ?? 0) + (cold.timings.compute ?? 0);
     const warm = await run();
     // an ERP-like change: 1% of products change stock, 1% of Talabat listings change price
     await h.fixture.prisma.$executeRaw`UPDATE products SET erp_stock = erp_stock + 10 WHERE tenant_id = ${s.id}::uuid AND (hashtext(id::text) % 100) = 0`;
@@ -100,7 +106,7 @@ realPostgres(`recon at ${PRODUCTS.toLocaleString('en')} products x 4 marketplace
     const changed = await run('pricing.settings');
     const report = (r: Awaited<ReturnType<typeof run>>) => ({ wallMs: r.wallMs, tenantLockMs: r.tenantLockMs, rows: r.rows, inserted: r.inserted, updated: r.updated, removed: r.removed, timings: r.timings });
     console.log(JSON.stringify({
-      products: PRODUCTS, lockedRequestDuringFullRunMs: probeMs,
+      products: PRODUCTS, lockedRequestsDuringFullRun: probes, writeStartedMs,
       firstRun: report(cold), unchanged: report(warm), incremental: report(incremental), afterDefaultRuleChange: report(changed),
     }, null, 2));
 
@@ -109,7 +115,13 @@ realPostgres(`recon at ${PRODUCTS.toLocaleString('en')} products x 4 marketplace
     expect(incremental.updated).toBeGreaterThan(0);
     expect(incremental.updated).toBeLessThan(PRODUCTS * 4 / 10);
     expect(changed.updated).toBeGreaterThan(PRODUCTS);
-    expect(probeMs).toBeLessThan(LOCKED_REQUEST_BUDGET_MS);
+    expect(probes).toHaveLength(PROBE_AT_MS.length);
+    for (const p of probes) {
+      expect(p.recomputeStillRunning).toBe(true);
+      expect(p.waitedMs).toBeLessThan(LOCKED_REQUEST_BUDGET_MS);
+    }
+    // at least the later probes ran while the inserts (and their FOR KEY SHARE locks) were held, or the check proves nothing
+    expect(probes.filter(p => p.atMs > writeStartedMs).length).toBeGreaterThanOrEqual(2);
     for (const r of [warm, incremental]) expect(r.wallMs).toBeLessThan(INCREMENTAL_BUDGET_MS);
 
     // the stored summaries are exactly a recount of the stored rows, per marketplace and reference
