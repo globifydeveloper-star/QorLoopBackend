@@ -1,8 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
 import ExcelJS from 'exceljs';
-import { GenerationBlocked, generatedFileName, planGeneratedFile, writeGeneratedFile, type GenerateParams } from '../generated-files.js';
+import { GenerationBlocked, duplicateRowsWarning, generatedFileName, planGeneratedFile, writeGeneratedFile, type GenerateParams } from '../generated-files.js';
 import { readSpreadsheetValues } from '../upload/parse.js';
-import { talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows, fixtureRecon, marketplaceWorkbook } from './fixtures/marketplace-files.js';
+import { talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows, snoonuRowsWithDuplicate, barcodes, fixtureRecon, marketplaceWorkbook } from './fixtures/marketplace-files.js';
 
 const params: GenerateParams = { marketplaceId: 'talabat', kind: 'stock_price', scope: 'mismatches', reference: 'marketplace' };
 const read = (buffer: Buffer, format: 'xlsx' | 'csv' = 'xlsx') => readSpreadsheetValues({ path: '', buffer }, format);
@@ -13,7 +13,7 @@ describe('marketplace round trip', () => {
     const headers = snoonu ? snoonuHeaders : talabatHeaders, mapping = snoonu ? snoonuMapping : talabatMapping;
     const original = await read(await marketplaceWorkbook(headers, snoonu ? snoonuRows : talabatRows, true));
     const plan = planGeneratedFile(original, mapping, headers, fixtureRecon(snoonu), { ...params, marketplaceId: source });
-    expect(plan).toMatchObject({ productCount: 3, priceChanges: 2, availabilityChanges: 3, notInFile: 1, largestPriceChange: { name: 'Milk', from: 1.75, to: 2.5 } });
+    expect(plan).toMatchObject({ productCount: 3, rowsToWrite: 3, duplicateRows: null, priceChanges: 2, availabilityChanges: 3, notInFile: 1, largestPriceChange: { name: 'Milk', from: 1.75, to: 2.5 } });
     const written = await read(await writeGeneratedFile(plan, 'xlsx'));
     expect(written.sheetName).toBe('Marketplace');
     expect(written.raw[0]).toEqual(original.raw[0]); // preamble
@@ -98,7 +98,7 @@ describe('marketplace round trip', () => {
     expect(plan.firstRows[0]).toEqual({ ' id ': 'T0', ' price ': "'\r2.50", ' active ': "'\rFalse" });
   });
 
-  it('blocks unmapped or missing headers, quantities even for price files, duplicate identifiers, and empty selections', () => {
+  it('blocks unmapped or missing headers, quantities even for price files, two recon rows for one identifier, and empty selections', () => {
     const sheet = { sheetName: 'S', raw: [['id', 'price', 'active'], ['T0', '1.75', true]] };
     const mapping = { marketplaceProductId: 'id', price: 'price', available: 'active' };
     const plan = (m: unknown, headers: string[] = sheet.raw[0] as string[], raw = sheet.raw, rows = fixtureRecon().slice(0, 1)) => planGeneratedFile({ ...sheet, raw }, m, headers, rows, params);
@@ -109,8 +109,50 @@ describe('marketplace round trip', () => {
     expect(() => plan({ ...mapping, price: 'old' })).toThrow('headers no longer include');
     expect(() => plan(mapping, undefined, [sheet.raw[0], ['T0', '1.75', 4]])).toThrow('quantities');
     expect(() => planGeneratedFile({ ...sheet, raw: [sheet.raw[0], ['T0', '1.75', '6']] }, mapping, sheet.raw[0], fixtureRecon().slice(0, 1), { ...params, kind: 'price' })).toThrow('quantities');
-    expect(() => plan(mapping, undefined, [sheet.raw[0], sheet.raw[1], sheet.raw[1]])).toThrow('duplicate');
     expect(() => plan(mapping, undefined, undefined, [])).toThrow(GenerationBlocked);
+    expect(() => plan(mapping, undefined, undefined, [...fixtureRecon().slice(0, 1), { ...fixtureRecon()[0], productId: 'other' }])).toThrow('Multiple reconciliation rows');
+  });
+
+  it('writes the same expected values to every row of a duplicated identifier and leaves other rows and cells untouched', async () => {
+    const original = await read(await marketplaceWorkbook(snoonuHeaders, snoonuRowsWithDuplicate, true));
+    const plan = planGeneratedFile(original, snoonuMapping, snoonuHeaders, fixtureRecon(true), { ...params, marketplaceId: 'snoonu' });
+    // Same selection as the unique-identifier Snoonu file: Milk, Fruit, Missing ERP. Milk now has two rows.
+    expect(plan).toMatchObject({ productCount: 3, rowsToWrite: 4, priceChanges: 2, availabilityChanges: 3, notInFile: 1, duplicateRows: { products: 1, extraRows: 1 } });
+    expect(duplicateRowsWarning('Snoonu', plan.duplicateRows)).toBe('1 product appears on more than one row of the Snoonu file; all its rows are updated');
+    expect(duplicateRowsWarning('Snoonu', { products: 37, extraRows: 37 })).toBe('37 products appear on more than one row of the Snoonu file; all their rows are updated');
+    const written = await read(await writeGeneratedFile(plan, 'xlsx'));
+    expect(written.raw.slice(0, 2)).toEqual(original.raw.slice(0, 2));
+    expect(written.raw).toHaveLength(2 + plan.rowsToWrite);
+    // Source rows 0 (Milk), 1 (Fruit), 2 (Milk again), 4 (Missing ERP) in source order; Bread (3) is in sync.
+    const sourceIndexes = [0, 1, 2, 4];
+    sourceIndexes.forEach((sourceIndex, resultIndex) => {
+      const before = original.raw[sourceIndex + 2], after = written.raw[resultIndex + 2];
+      for (let column = 0; column < snoonuHeaders.length; column++) {
+        if (column !== 2 && column !== 3) expect(after[column] ?? null).toEqual(before[column] ?? null);
+      }
+      expect(typeof after[2]).toBe('string');
+      expect(typeof after[3]).toBe('string');
+    });
+    const [milk, , milkAgain] = written.raw.slice(2);
+    expect(milk.slice(2)).toEqual(['False', '2.50']);
+    expect(milkAgain).toEqual(['00' + barcodes[0], 'Milk 1L (second listing)', 'FALSE', '2.500']); // own casing and decimals
+    expect(Number(milkAgain[3])).toBe(Number(milk[3]));
+    expect(plan.firstRows).toHaveLength(plan.rowsToWrite);
+  });
+
+  it('reports no duplicates and equal product and row counts for unique identifiers', async () => {
+    for (const [headers, rows, mapping, snoonu] of [[talabatHeaders, talabatRows, talabatMapping, false], [snoonuHeaders, snoonuRows, snoonuMapping, true]] as const) {
+      const plan = planGeneratedFile(await read(await marketplaceWorkbook([...headers], rows.map(r => [...r]))), mapping, headers, fixtureRecon(snoonu), params);
+      expect(plan).toMatchObject({ productCount: 3, rowsToWrite: 3, duplicateRows: null });
+      expect(duplicateRowsWarning('Talabat', plan.duplicateRows)).toBeNull();
+    }
+  });
+
+  it('counts a duplicated product once for price changes even when only one of its rows already had the new price', () => {
+    const sheet = { sheetName: 'S', raw: [['id', 'price', 'active'], ['T0', '2.50', false], ['T0', '1.75', true], [' T0 ', '2.5', false]] };
+    const plan = planGeneratedFile(sheet, { marketplaceProductId: 'id', price: 'price', available: 'active' }, ['id', 'price', 'active'], fixtureRecon().slice(0, 1), params);
+    expect(plan).toMatchObject({ productCount: 1, rowsToWrite: 3, priceChanges: 1, availabilityChanges: 1, duplicateRows: { products: 1, extraRows: 2 } });
+    expect(plan.rows.slice(1)).toEqual([['T0', '2.50', false], ['T0', '2.50', false], [' T0 ', '2.5', false]]);
   });
 
   it('uses Qatar time, the requested label and a safe file name', () => {

@@ -32,13 +32,13 @@ export class GeneratedFilesService {
   }
 
   async preview(ctx: RequestContext, input: Input) {
-    const { inputs, plan } = await this.prepare(ctx, input, 'files.preview');
-    const { productCount, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows } = plan;
+    const { inputs, plan, warnings } = await this.prepare(ctx, input, 'files.preview');
+    const { productCount, rowsToWrite, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows } = plan;
     const ageDays = Math.floor((Date.now() - inputs.upload.createdAt.getTime()) / 86_400_000);
     return {
-      productCount, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows,
+      productCount, rowsToWrite, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows,
       sourceFile: { name: inputs.upload.fileName, uploadedAt: inputs.upload.createdAt },
-      warnings: ageDays >= 1 ? [`The marketplace file is ${ageDays} ${ageDays === 1 ? 'day' : 'days'} old`] : [],
+      warnings: [...(ageDays >= 1 ? [`The marketplace file is ${ageDays} ${ageDays === 1 ? 'day' : 'days'} old`] : []), ...warnings],
       referenceUsed: inputs.referenceUsed,
     };
   }

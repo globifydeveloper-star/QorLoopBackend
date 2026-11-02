@@ -89,8 +89,11 @@ function writeAvailable(original: unknown, available: boolean | null): PlainCell
 }
 
 export interface FilePlan {
-  productCount: number; priceChanges: number; availabilityChanges: number; notInFile: number;
+  /** Products written. rowsToWrite is larger when a product appears on several source rows. */
+  productCount: number; rowsToWrite: number; priceChanges: number; availabilityChanges: number; notInFile: number;
   largestPriceChange: { name: string; from: number; to: number } | null;
+  /** Written products whose identifier is on more than one source row, and the rows beyond the first. */
+  duplicateRows: { products: number; extraRows: number } | null;
   firstRows: Record<string, PlainCell>[];
   /** Original preamble + header, followed by selected rows in source order. Plain values only. */
   rows: PlainCell[][]; sheetName: string; delimiter: string;
@@ -122,27 +125,35 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
     }
   }
   const identify = idField === 'barcode1' ? normalizeBarcode : str;
-  const sourceById = new Map<string, number>();
+  // Rows sharing an identifier are the same product (e.g. a Snoonu export listing a barcode twice): all are written alike.
+  const sourceById = new Map<string, number[]>();
   for (let i = 0; i < sourceRows.length; i++) {
     const id = identify(sourceRows[i][idColumn]);
     if (!id) continue;
-    if (sourceById.has(id)) throw new GenerationBlocked('The source file has duplicate mapped identifiers. Upload a file with unique identifiers.');
-    sourceById.set(id, i);
+    const indexes = sourceById.get(id);
+    if (indexes) indexes.push(i); else sourceById.set(id, [i]);
   }
   const selected = recon.filter(r => selectedForFile(r, p));
   const targets = new Map<number, FileReconRow>();
-  let notInFile = 0;
+  const matchedIds = new Set<string>();
+  let notInFile = 0, duplicateProducts = 0, extraRows = 0;
   for (const row of selected) {
-    const index = row.marketplaceProductId === null ? undefined : sourceById.get(identify(row.marketplaceProductId));
-    if (index === undefined) { notInFile++; continue; }
-    if (targets.has(index)) throw new GenerationBlocked('Multiple reconciliation rows match one file row. Reconcile the marketplace again.');
-    targets.set(index, row);
+    const id = row.marketplaceProductId === null ? '' : identify(row.marketplaceProductId);
+    const indexes = id ? sourceById.get(id) : undefined;
+    if (!indexes) { notInFile++; continue; }
+    if (matchedIds.has(id)) throw new GenerationBlocked('Multiple reconciliation rows match one file row. Reconcile the marketplace again.');
+    matchedIds.add(id);
+    for (const index of indexes) targets.set(index, row);
+    if (indexes.length > 1) { duplicateProducts++; extraRows += indexes.length - 1; }
   }
   if (!targets.size) throw new GenerationBlocked('There is nothing to update for this selection.');
   const plan: FilePlan = {
-    productCount: targets.size, priceChanges: 0, availabilityChanges: 0, notInFile, largestPriceChange: null, firstRows: [],
+    productCount: matchedIds.size, rowsToWrite: targets.size, priceChanges: 0, availabilityChanges: 0, notInFile, largestPriceChange: null,
+    duplicateRows: duplicateProducts ? { products: duplicateProducts, extraRows } : null, firstRows: [],
     rows: sheet.raw.slice(0, headerIndex + 1).map(row => Array.from(row, plain)), sheetName: sheet.sheetName, delimiter: sheet.delimiter ?? ',',
   };
+  // Change counts are per product: a product counts once even when several of its rows change.
+  const priceChanged = new Set<FileReconRow>(), availabilityChanged = new Set<FileReconRow>();
   const aliases = headersForRow(sheet.raw[headerIndex].map(plain));
   const usedPreviewHeaders = new Set<string>();
   const previewHeaders = aliases.map((alias, i) => {
@@ -164,18 +175,27 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
       if (!Number.isFinite(from)) throw new GenerationBlocked('A mapped price cell is not a plain number. Upload a fresh marketplace file.');
       const delta = Math.abs(expected! - from);
       if (Math.round(delta * 1000) !== 0) {
-        plan.priceChanges++;
+        priceChanged.add(row);
         if (delta > largest) { largest = delta; plan.largestPriceChange = { name: row.name, from, to: expected! }; }
       }
     }
     if (p.kind !== 'price') {
       values[availableColumn] = plain(writeAvailable(original[availableColumn], row.erpAvailable));
-      if (values[availableColumn] !== plain(original[availableColumn])) plan.availabilityChanges++;
+      if (values[availableColumn] !== plain(original[availableColumn])) availabilityChanged.add(row);
     }
     plan.rows.push(values);
     if (plan.firstRows.length < 10) plan.firstRows.push(Object.fromEntries(previewHeaders.map((h, i) => [h, values[i] ?? null])));
   }
+  plan.priceChanges = priceChanged.size;
+  plan.availabilityChanges = availabilityChanged.size;
   return plan;
+}
+
+/** Preview/audit text for products that appear on several rows of the source file. */
+export function duplicateRowsWarning(marketplace: string, duplicates: FilePlan['duplicateRows']): string | null {
+  if (!duplicates) return null;
+  const one = duplicates.products === 1;
+  return `${duplicates.products} ${one ? 'product appears' : 'products appear'} on more than one row of the ${marketplace} file; all ${one ? 'its' : 'their'} rows are updated`;
 }
 
 export async function writeGeneratedFile(plan: FilePlan, format: 'xlsx' | 'csv'): Promise<Buffer> {

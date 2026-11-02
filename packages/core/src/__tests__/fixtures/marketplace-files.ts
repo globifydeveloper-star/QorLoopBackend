@@ -16,6 +16,12 @@ export const talabatRows = [
   ['T3', 'Missing ERP', '5.00', true, null, false, null, null, null, barcodes[3], null, null, null, null, null, null, 'Other'],
 ];
 export const snoonuRows = talabatRows.map((row, i) => [barcodes[i], row[1], row[3] ? 'True' : 'False', row[2]]);
+/**
+ * The real Snoonu export lists some barcodes on two rows. Milk appears again (zero-padded barcode, its own name,
+ * text casing and decimals) after Fruit, so source order and cell-by-cell preservation are both observable.
+ */
+export const snoonuDuplicateRow = ['00' + barcodes[0], 'Milk 1L (second listing)', 'TRUE', '1.750'];
+export const snoonuRowsWithDuplicate = [snoonuRows[0], snoonuRows[1], snoonuDuplicateRow, snoonuRows[2], snoonuRows[3]];
 
 export function fixtureRecon(snoonu = false): FileReconRow[] {
   return Array.from({ length: 6 }, (_, i) => ({

@@ -19,15 +19,22 @@ the other value is all. `reference` is erp/marketplace, defaulting to the store'
 
 | Route | Permission | Result inside data |
 | --- | --- | --- |
-| POST /api/generated-files/preview | files.preview | productCount, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows, sourceFile, warnings, referenceUsed |
+| POST /api/generated-files/preview | files.preview | productCount, rowsToWrite, priceChanges, availabilityChanges, notInFile, largestPriceChange, firstRows, sourceFile, warnings, referenceUsed |
 | POST /api/generated-files | files.generate | HTTP 202, `{jobId}` |
 | GET /api/generated-files/jobs/:jobId | files.view | `{state, fileId?, message?}` |
 | GET /api/generated-files | files.view | Array of history records, newest first |
 | GET /api/generated-files/:id/download | files.download | `{url, fileName, expiresAt}` |
 
-Preview counts are numbers. `largestPriceChange` is null or `{name, from, to}` (numeric prices).
-`firstRows` is up to ten objects keyed by source column headers, containing the plain values to be written.
-`sourceFile` is `{name, uploadedAt}`. `warnings` is an array of plain messages. `referenceUsed` is the resolved reference.
+Preview counts are integers. `productCount` is the number of products written; `priceChanges` and
+`availabilityChanges` count products (once each, however many of their rows change). `rowsToWrite` is the number of
+data rows in the file; it equals `productCount` unless some products appear on more than one source row.
+`largestPriceChange` is null or `{name, from, to}` (numeric prices).
+`firstRows` is up to ten objects keyed by source column headers, containing the plain values of the first rows to be written.
+`sourceFile` is `{name, uploadedAt}`. `warnings` is an array of plain messages: the upload-age warning and, when written
+products share identifiers with other source rows, e.g. `37 products appear on more than one row of the Snoonu file; all
+their rows are updated` (singular: `1 product appears ... all its rows are updated`). `referenceUsed` is the resolved reference.
+GeneratedFile.productCount and history keep counting products. The file.generated event also records `rowsToWrite`,
+`duplicateProducts`, `duplicateExtraRows` (rows beyond each product's first) and the same `warnings`.
 Preview creates no generated object, row, job or audit event; normal authentication still touches the session.
 
 Job states are queued/running/done/failed. BullMQ's delayed retry is queued. Failures return a generic message,
@@ -52,8 +59,16 @@ The output contains the original preamble/header and only the selected rows foun
 order. It retains every source column, including columns outside Qorloop's mapping. Confirm with the marketplace/client
 that partial updates are accepted before uploading a mismatches file; Qorloop does not upload marketplace files itself.
 The saved mapping identifies columns. Barcode fallback uses the existing barcode normalisation; marketplace IDs use
-the upload parser's trimmed string identity. Missing source rows increment notInFile and are skipped. Ambiguous duplicate
-source IDs block generation. No IDs or column roles are guessed from header text.
+the upload parser's trimmed string identity. Missing source rows increment notInFile and are skipped. No IDs or column
+roles are guessed from header text.
+
+Several source rows with the same identifier are the same product. The real Snoonu export lists 37 barcodes on two rows each.
+Applying the upload keeps the first row (the others are row errors), so recon holds one row per product. Generation writes
+that product's expected price/availability to every one of its rows, each converted to that row's own cell type, text
+decimals and boolean spelling. All other columns, and every unselected row, stay unchanged. The preview warns and counts
+products and rows separately (above). Two recon rows resolving to one identifier still block ("Multiple reconciliation rows
+match one file row"). Identifiers are never a reason to block on their own; generation blocks only when the identifying
+column is not mapped or is missing from the file, along with the other price/availability/header/cell-type reasons here.
 
 Only the fields requested by kind are written, using stored recon expected prices and erp_available. Changes count
 actual differences from the source values. Numbers and booleans keep their types. Text prices keep existing decimal
@@ -86,7 +101,8 @@ expiresAt enforces 30-day access/history retention. Physical object deletion rem
 ## Validation
 
 Fixtures use headers and cell types inspected from the actual Talabat and Snoonu exports in D:/Qorloop-test.
-Core tests compare every non-target cell, selection/reference combinations, CSV quoting, safety and blocked cases.
+Core tests compare every non-target cell, selection/reference combinations, CSV quoting, safety and blocked cases,
+and a Snoonu fixture with a duplicated barcode (both rows updated alike, other cells untouched, counts and warning).
 API tests run the actual upload/apply/recon/generation pipeline with in-memory storage/queues and isolated PostgreSQL.
 The same harness supports embedded PGlite. The real PostgreSQL scale check uses 25,000 source rows and 14,000 updates.
 

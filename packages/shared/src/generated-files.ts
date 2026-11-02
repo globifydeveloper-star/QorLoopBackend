@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import type { Database, TenantData } from '../../db/src/database.js';
-import { GenerationBlocked, planGeneratedFile, type GenerateParams } from '../../core/src/generated-files.js';
+import { GenerationBlocked, duplicateRowsWarning, planGeneratedFile, type GenerateParams } from '../../core/src/generated-files.js';
 import { ParseError, readSpreadsheetValues } from '../../core/src/upload/parse.js';
 import { extensionOf, inspectFile } from '../../core/src/upload/safety.js';
 import { UPLOAD_LIMITS } from '../../core/src/upload/constants.js';
@@ -105,7 +105,9 @@ export async function prepareGeneration(storage: ObjectStorage, inputs: Generati
     if (!inspected.ok) throw new GenerationBlocked(inspected.reason);
     const sheet = await readSpreadsheetValues({ path, buffer }, ext === '.csv' ? 'csv' : 'xlsx');
     const plan = planGeneratedFile(sheet, upload.mapping, upload.headers, rows, p);
-    return ext === '.csv' ? { plan, ext: '.csv' as const, format: 'csv' as const } : { plan, ext: '.xlsx' as const, format: 'xlsx' as const };
+    const duplicates = duplicateRowsWarning(label, plan.duplicateRows);
+    const warnings = duplicates ? [duplicates] : [];
+    return ext === '.csv' ? { plan, warnings, ext: '.csv' as const, format: 'csv' as const } : { plan, warnings, ext: '.xlsx' as const, format: 'xlsx' as const };
   } catch (e) {
     if (e instanceof ParseError) throw new GenerationBlocked(e.code === 'no_header'
       ? "The source file's headers no longer include the mapped columns. Upload a fresh marketplace file."

@@ -24,7 +24,7 @@ export async function generateFile(deps: GenerationDeps, job: GenerateFileJob): 
     if (prior) return { fileId: prior.id };
     const inputs = await generationInputs(deps.database, job.tenantId, job);
     enter('round-trip');
-    const { plan, ext, format } = await prepareGeneration(deps.storage, inputs, job);
+    const { plan, warnings, ext, format } = await prepareGeneration(deps.storage, inputs, job);
     enter('serialize');
     const body = await writeGeneratedFile(plan, format);
     const generatedAt = new Date();
@@ -32,7 +32,10 @@ export async function generateFile(deps: GenerationDeps, job: GenerateFileJob): 
     const fileName = generatedFileName(label, job.kind, generatedAt, ext);
     // An attempt owns its object. A timed-out/stalled attempt must never overwrite/delete a later winner's file.
     const storageKey = storageKeys.generated(job.tenantId, randomUUID(), ext);
-    const counts = { productCount: plan.productCount, priceChanges: plan.priceChanges, availabilityChanges: plan.availabilityChanges, notInFile: plan.notInFile };
+    const counts = {
+      productCount: plan.productCount, rowsToWrite: plan.rowsToWrite, priceChanges: plan.priceChanges, availabilityChanges: plan.availabilityChanges, notInFile: plan.notInFile,
+      duplicateProducts: plan.duplicateRows?.products ?? 0, duplicateExtraRows: plan.duplicateRows?.extraRows ?? 0,
+    };
     enter('store');
     await deps.database.run(job.tenantId, async d => {
       // Another attempt might have finished while this one was parsing. It must not overwrite its object.
@@ -45,7 +48,7 @@ export async function generateFile(deps: GenerationDeps, job: GenerateFileJob): 
           expiresAt: new Date(generatedAt.getTime() + 30 * 86_400_000),
         });
         await d.event('file.generated', job.actorId, id, job.requestId, {
-          marketplaceId: job.marketplaceId, kind: job.kind, scope: job.scope, reference: job.reference, sourceUploadId: inputs.upload.id, ...counts,
+          marketplaceId: job.marketplaceId, kind: job.kind, scope: job.scope, reference: job.reference, sourceUploadId: inputs.upload.id, ...counts, warnings,
         });
       } catch (e) {
         // This key belongs only to this attempt, including if the database transaction has timed out.

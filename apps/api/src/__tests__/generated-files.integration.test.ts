@@ -11,7 +11,7 @@ import { readSpreadsheetValues } from '../../../../packages/core/src/upload/pars
 import { generationJobId, generatedFileId, type GenerateFileJob } from '../../../../packages/shared/src/generated-files.js';
 import { storageKeys } from '../../../../packages/shared/src/storage.js';
 import { TenantData } from '../../../../packages/db/src/database.js';
-import { talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows, barcodes, marketplaceWorkbook } from '../../../../packages/core/src/__tests__/fixtures/marketplace-files.js';
+import { talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows, snoonuRowsWithDuplicate, barcodes, marketplaceWorkbook } from '../../../../packages/core/src/__tests__/fixtures/marketplace-files.js';
 
 let h: Harness, a: Store, b: Store;
 let manager: Session, analyst: Session, uploadId: string, original: Buffer;
@@ -269,6 +269,34 @@ describe('generated files API and worker', () => {
     expect(output.raw).toHaveLength(preview.productCount + 1);
     expect(output.raw[1]).toEqual(['T0', 'Milk', '2.00', 'False', barcodes[0]]);
     expect((await h.fixture.prisma.upload.findUniqueOrThrow({ where: { id: csvId } })).status).toBe('applied');
+  });
+
+  it('a Snoonu file listing a barcode on two rows updates both rows alike, warns, and keeps one recon row per product', async () => {
+    const source = await marketplaceWorkbook(snoonuHeaders, snoonuRowsWithDuplicate);
+    await applyFile('snoonu', source, snoonuMapping);
+    const recon = await h.fixture.prisma.reconRow.findMany({ where: { tenantId: a.id, marketplaceId: 'snoonu', actualPrice: { not: null } } });
+    const distinct = new Set(snoonuRowsWithDuplicate.map(row => String(row[0]).replace(/^0+/, '')));
+    expect(recon).toHaveLength(distinct.size); // products listed, not file rows
+    const input = { marketplaceId: 'snoonu', kind: 'stock_price', scope: 'all', reference: 'erp' };
+    const response = await post('/preview', input);
+    expect(response.statusCode).toBe(200);
+    const preview = response.json().data;
+    const warning = '1 product appears on more than one row of the Snoonu file; all its rows are updated';
+    expect(preview).toMatchObject({ rowsToWrite: preview.productCount + 1, warnings: [warning] });
+    const job = { ...await freshJob(), marketplaceId: 'snoonu' as const, kind: 'stock_price' as const };
+    const { fileId } = await generateFile(deps(), job);
+    const file = await h.fixture.prisma.generatedFile.findUniqueOrThrow({ where: { id: fileId } });
+    expect(file.productCount).toBe(preview.productCount);
+    const before = await readSpreadsheetValues({ path: '', buffer: source }, 'xlsx');
+    const output = await readSpreadsheetValues({ path: '', buffer: h.storage.objects.get(file.storageKey)! }, 'xlsx');
+    expect(output.raw).toHaveLength(preview.rowsToWrite + 1);
+    const milk = output.raw.slice(1).filter(row => String(row[0]).endsWith(barcodes[0]));
+    expect(milk).toHaveLength(2);
+    expect(milk.map(row => row.slice(0, 2))).toEqual([before.raw[1].slice(0, 2), before.raw[3].slice(0, 2)]);
+    // ERP price 2 and ERP qty 0 for Milk; each row keeps its own text casing and decimals.
+    expect(milk.map(row => row.slice(2))).toEqual([['False', '2.00'], ['FALSE', '2.000']]);
+    const event = await h.fixture.prisma.auditEvent.findFirstOrThrow({ where: { tenantId: a.id, action: 'file.generated', entityId: fileId } });
+    expect(event.details).toMatchObject({ productCount: preview.productCount, rowsToWrite: preview.rowsToWrite, duplicateProducts: 1, duplicateExtraRows: 1, warnings: [warning] });
   });
 
   it('documents all five endpoints and the 202 response', () => {

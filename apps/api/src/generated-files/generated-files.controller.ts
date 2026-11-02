@@ -11,9 +11,11 @@ import { GeneratedFilesService } from './generated-files.service.js';
 const count = { type: 'integer', minimum: 0 };
 const date = { type: 'string', format: 'date-time' };
 const previewSchema = {
-  type: 'object', required: ['productCount', 'priceChanges', 'availabilityChanges', 'notInFile', 'largestPriceChange', 'firstRows', 'sourceFile', 'warnings', 'referenceUsed'],
+  type: 'object', required: ['productCount', 'rowsToWrite', 'priceChanges', 'availabilityChanges', 'notInFile', 'largestPriceChange', 'firstRows', 'sourceFile', 'warnings', 'referenceUsed'],
   properties: {
-    productCount: count, priceChanges: count, availabilityChanges: count, notInFile: count,
+    productCount: count,
+    rowsToWrite: { ...count, description: 'Data rows in the file; larger than productCount when a product appears on several source rows' },
+    priceChanges: count, availabilityChanges: count, notInFile: count,
     largestPriceChange: { type: ['object', 'null'], properties: { name: { type: 'string' }, from: { type: 'number' }, to: { type: 'number' } } },
     firstRows: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean', 'null'] } } },
     sourceFile: { type: 'object', properties: { name: { type: 'string' }, uploadedAt: date } },
