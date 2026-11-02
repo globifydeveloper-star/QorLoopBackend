@@ -24,7 +24,7 @@ export interface ParsedSheet {
 
 const HEADER_SCAN_ROWS = 10;
 
-function cellValue(v: unknown): unknown {
+export function cellValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
   // A big number in a date-formatted cell (e.g. a barcode) loads as an Invalid Date: an empty cell, not a failed file
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
@@ -43,8 +43,8 @@ function isFilled(v: unknown): boolean {
   return v !== null && v !== undefined && String(v).trim() !== '';
 }
 
-/** Turns raw row arrays into a header + keyed rows. The header is the first row with 2+ filled cells. */
-export function rowsToSheet(sheetName: string, raw: unknown[][], rowOffset = 1): ParsedSheet {
+/** Shared by uploads and generated files: the first row with 2+ filled cells in the first ten rows. */
+export function headerRowIndex(raw: unknown[][]): number {
   let headerIdx = -1;
   for (let i = 0; i < Math.min(raw.length, HEADER_SCAN_ROWS); i++) {
     if (raw[i].filter(isFilled).length >= 2) {
@@ -53,15 +53,25 @@ export function rowsToSheet(sheetName: string, raw: unknown[][], rowOffset = 1):
     }
   }
   if (headerIdx < 0) throw new ParseError('no_header', 'No header row was found in the first 10 rows');
+  return headerIdx;
+}
 
+/** Mapping aliases only: output files retain the original, untrimmed header cells. */
+export function headersForRow(row: unknown[]): string[] {
   const seen = new Map<string, number>();
-  const headers = raw[headerIdx].map((h, i) => {
+  return Array.from(row, (h, i) => {
     let name = isFilled(h) ? String(h).trim() : `Column ${i + 1}`;
     const n = (seen.get(name) ?? 0) + 1;
     seen.set(name, n);
     if (n > 1) name = `${name} (${n})`;
     return name;
   });
+}
+
+/** Turns raw row arrays into a header + keyed rows. The header is the first row with 2+ filled cells. */
+export function rowsToSheet(sheetName: string, raw: unknown[][], rowOffset = 1): ParsedSheet {
+  const headerIdx = headerRowIndex(raw);
+  const headers = headersForRow(raw[headerIdx]);
 
   const rows: SheetRow[] = [];
   const rowNumbers: number[] = [];
@@ -85,7 +95,9 @@ export function guardRowCount(count: number) {
 // Non-streaming loader: the streaming WorkbookReader (exceljs 4.4 + unzipper 0.10) fails intermittently on
 // Node 24. Loading the whole workbook is safe here because inspectFile() has already capped the file at
 // 25 MB and rejected zip bombs before the worker gets this far.
-async function parseXlsxBuffer(buf: Buffer): Promise<ParsedSheet> {
+export interface SpreadsheetValues { sheetName: string; raw: unknown[][]; delimiter?: string }
+
+async function parseXlsxBuffer(buf: Buffer): Promise<SpreadsheetValues> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf as unknown as ArrayBuffer);
   for (const ws of wb.worksheets) {
@@ -104,12 +116,12 @@ async function parseXlsxBuffer(buf: Buffer): Promise<ParsedSheet> {
       raw.push(values);
     });
     if (raw.length === 0) continue;
-    return rowsToSheet(ws.name, raw);
+    return { sheetName: ws.name, raw };
   }
   throw new ParseError('empty', 'The workbook has no data');
 }
 
-async function parseXlsFile(path: string): Promise<ParsedSheet> {
+async function parseXlsFile(path: string): Promise<SpreadsheetValues> {
   // Legacy BIFF is the only place SheetJS is used; the file already passed inspectFile() and runs in the worker.
   const XLSX = await import('xlsx');
   const wb = XLSX.readFile(path, { cellDates: true, cellFormula: false, sheetStubs: false });
@@ -117,7 +129,7 @@ async function parseXlsFile(path: string): Promise<ParsedSheet> {
   if (!name) throw new ParseError('empty', 'The workbook has no data');
   const raw = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true });
   guardRowCount(raw.length - 1);
-  return rowsToSheet(name, raw.map((r) => r.map(cellValue)));
+  return { sheetName: name, raw: raw.map((r) => r.map(cellValue)) };
 }
 
 function detectDelimiter(sample: string): string {
@@ -127,24 +139,25 @@ function detectDelimiter(sample: string): string {
   return counts[0][1] > 0 ? counts[0][0] : ',';
 }
 
-async function parseCsvBuffer(buf: Buffer): Promise<ParsedSheet> {
+async function parseCsvBuffer(buf: Buffer): Promise<SpreadsheetValues> {
   const text = buf.toString('utf8');
+  const delimiter = detectDelimiter(text);
   const raw: unknown[][] = [];
   const parser = Readable.from([text]).pipe(
-    parseCsv({ bom: true, delimiter: detectDelimiter(text), relax_column_count: true, relax_quotes: true, skip_empty_lines: false }),
+    parseCsv({ bom: true, delimiter, relax_column_count: true, relax_quotes: true, skip_empty_lines: false }),
   );
   for await (const rec of parser) {
     raw.push(rec as unknown[]);
     guardRowCount(raw.length - 1);
   }
-  return rowsToSheet('csv', raw);
+  return { sheetName: 'csv', raw, delimiter };
 }
 
 /** Step "Read": parse a file already on disk (workers download to a temp file first). */
-export async function parseSpreadsheet(
+export async function readSpreadsheetValues(
   source: { path: string; buffer?: Buffer },
   format: FileFormat,
-): Promise<ParsedSheet> {
+): Promise<SpreadsheetValues> {
   try {
     if (format === 'xls') return await parseXlsFile(source.path);
     const fs = await import('node:fs/promises');
@@ -155,4 +168,9 @@ export async function parseSpreadsheet(
     if (e instanceof ParseError) throw e;
     throw new ParseError('unreadable', 'The file could not be read. It may be damaged or password-protected.');
   }
+}
+
+export async function parseSpreadsheet(source: { path: string; buffer?: Buffer }, format: FileFormat): Promise<ParsedSheet> {
+  const sheet = await readSpreadsheetValues(source, format);
+  return rowsToSheet(sheet.sheetName, sheet.raw);
 }
