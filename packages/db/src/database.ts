@@ -6,6 +6,7 @@ import { UploadRepository } from './uploads.js';
 import { CategoryRepository, ProductRepository } from './products.js';
 import { PricingRepository } from './pricing.js';
 import { ReconRepository } from './recon.js';
+import { GeneratedFilesRepository } from './generated-files.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
@@ -66,6 +67,14 @@ export class Database {
       return action(new TenantData(tenantId, tx));
     }, { maxWait: 10000, timeout, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
+  /** Consistent multi-table inputs for preview/generation, without a tenant lock or an exclusive job lock. */
+  async readSnapshot<T>(tenantId: string, action: (data: TenantData) => Promise<T>): Promise<T> {
+    return this.client.$transaction(async tx => {
+      const tenant = await tx.tenant.findFirst({ where: { id: tenantId, status: 'active' }, select: { id: true } });
+      if (!tenant) throw new Error('Tenant unavailable');
+      return action(new TenantData(tenantId, tx));
+    }, { maxWait: 10000, timeout: 20000, isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.slug}))`;
@@ -101,12 +110,14 @@ export class TenantData {
   readonly categories: CategoryRepository;
   readonly pricing: PricingRepository;
   readonly recon: ReconRepository;
+  readonly generatedFiles: GeneratedFilesRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
     this.categories = new CategoryRepository(tenantId, tx);
     this.pricing = new PricingRepository(tenantId, tx);
     this.recon = new ReconRepository(tenantId, tx);
+    this.generatedFiles = new GeneratedFilesRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }

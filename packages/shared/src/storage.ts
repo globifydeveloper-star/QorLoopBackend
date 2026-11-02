@@ -1,4 +1,5 @@
 import { createWriteStream } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -20,6 +21,7 @@ export interface ObjectStorage {
   head(key: string): Promise<{ size: number } | null>;
   downloadTo(key: string, path: string): Promise<void>;
   delete(key: string): Promise<void>;
+  put(key: string, data: Buffer, contentType: string): Promise<void>;
 }
 
 /** Keys are always built here, never from client input, and always carry the tenant prefix. */
@@ -78,16 +80,24 @@ export class S3Storage implements ObjectStorage {
   async delete(key: string) {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.opts.bucket, Key: key }));
   }
+  async put(key: string, data: Buffer, contentType: string) {
+    await this.client.send(new PutObjectCommand({ Bucket: this.opts.bucket, Key: key, Body: data, ContentType: contentType, ServerSideEncryption: 'AES256' }));
+  }
 }
 
 /** In-memory storage for tests and local development without an object store. Never use in production. */
 export class MemoryStorage implements ObjectStorage {
   readonly objects = new Map<string, Buffer>();
+  readonly downloads = new Map<string, { key: string; expiresAt: number }>();
   async presignUpload(key: string, o: { contentType: string; size: number; ttlSeconds: number }): Promise<SignedUpload> {
     return { url: `memory://${key}`, method: 'PUT', headers: { 'Content-Type': o.contentType }, expiresAt: new Date(Date.now() + o.ttlSeconds * 1000) };
   }
-  async presignDownload(key: string) { return `memory://${key}`; }
-  put(key: string, data: Buffer) { this.objects.set(key, data); }
+  async presignDownload(key: string, opts: { fileName: string; ttlSeconds: number }) {
+    const url = `memory://download/${randomUUID()}`;
+    this.downloads.set(url, { key, expiresAt: Date.now() + opts.ttlSeconds * 1000 });
+    return url;
+  }
+  async put(key: string, data: Buffer) { this.objects.set(key, data); }
   async head(key: string) { const o = this.objects.get(key); return o ? { size: o.length } : null; }
   async downloadTo(key: string, path: string) {
     const o = this.objects.get(key);

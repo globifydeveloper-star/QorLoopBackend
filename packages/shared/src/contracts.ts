@@ -130,3 +130,11 @@ export const reconRowsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(200).optional(),
 }).strict();
+
+// Preview and generation intentionally take the same strict input.
+export const generateMarketplaceFile = z.object({
+  marketplaceId: z.enum(MARKETPLACES),
+  kind: z.enum(['stock', 'price', 'stock_price']),
+  scope: z.enum(['mismatches', 'all']).default('mismatches'),
+  reference: reconReference.optional(),
+}).strict();
