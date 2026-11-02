@@ -7,12 +7,18 @@ import type { ReconQueue, ReconReason } from '../../../../packages/shared/src/re
 import { PRICE_RULE_ORDER } from '../../../../packages/core/src/pricing.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { DEFAULT_PRICING, loadPricing, productPricingView, ruleView, type TenantPricing } from './pricing.data.js';
+import { adoptionCounts, adoptionPreview, planAdoption, type AdoptInput } from './price-adoption.js';
 
 type RuleInput = z.infer<typeof contracts.priceRule>;
 type RuleView = ReturnType<typeof ruleView>;
 /** 'same' is stored with value 0. */
 const stored = (r: RuleInput) => ({ mode: r.mode, value: r.mode === 'same' ? 0 : r.value });
 const sameRule = (a: RuleView | null, b: RuleView | null) => JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Adopting writes one rule per product: 23,000 rules took ~4 s on a laptop PostgreSQL 18 (index and foreign-key
+ * maintenance), so a 50,000-product store needs more than a request's usual 20 s. The tenant row lock is held meanwhile.
+ */
+const ADOPT_TIMEOUT_MS = 60_000;
 
 function settingsView(p: TenantPricing) {
   const s = p.settings ?? { ...DEFAULT_PRICING, updatedAt: null };
@@ -32,8 +38,8 @@ export class PricingService {
   constructor(@Inject(AuthService) private readonly auth: AuthService, @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
 
   /** Runs a pricing.edit change; after it commits, asks for a recon recompute if anything changed. */
-  private async change<T>(ctx: RequestContext, reason: ReconReason, work: (data: TenantData, userId: string) => Promise<{ result: T; changed: boolean }>) {
-    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true }, (data, p) => work(data, p.user.id));
+  private async change<T>(ctx: RequestContext, reason: ReconReason, work: (data: TenantData, userId: string) => Promise<{ result: T; changed: boolean }>, timeout?: number) {
+    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true, timeout }, (data, p) => work(data, p.user.id));
     if (changed) await this.recon.enqueueRecon(ctx.tenantId, reason);
     return result;
   }
@@ -192,6 +198,43 @@ export class PricingService {
       }
       return { result: await productPricingView(data, product), changed };
     });
+  }
+
+  private async checkAdoptScope(data: TenantData, input: AdoptInput) {
+    if ('categoryId' in input.scope) await this.checkCategoryKey(data, input.scope.categoryId, input.scope.subcategoryId ?? null);
+  }
+
+  /** What adopting the source marketplace's prices would do; writes nothing. */
+  adoptPreview(ctx: RequestContext, input: AdoptInput) {
+    return this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true }, async data => {
+      await this.checkAdoptScope(data, input);
+      const { products, plan } = await planAdoption(data, input);
+      return adoptionPreview(data, input, products, plan);
+    });
+  }
+
+  /**
+   * Adopts in one transaction, planned under the tenant row lock: set-based rule writes, ONE 'pricing.prices_adopted'
+   * summary event, and 'product.price_rule_set' only for products whose own different rule is replaced. A run that
+   * adopts nothing (a repeat) writes nothing and queues no recompute.
+   */
+  adoptApply(ctx: RequestContext, input: AdoptInput) {
+    return this.change(ctx, 'pricing.adopt', async (data, actor) => {
+      await this.checkAdoptScope(data, input);
+      const { products, plan } = await planAdoption(data, input);
+      const counts = adoptionCounts(products, plan);
+      if (plan.adopt.length) {
+        await data.pricing.upsertProductRules(plan.adopt.map(r => ({ productId: r.productId, mode: r.rule.mode, value: r.rule.value })));
+        await data.products.auditEvents(actor, ctx.requestId, plan.adopt.filter(r => r.previousRule).map(r => ({
+          action: 'product.price_rule_set', entityId: r.productId,
+          details: { old: ruleView(r.previousRule!.mode, r.previousRule!.value), new: ruleView(r.rule.mode, r.rule.value), via: 'pricing.adopt' },
+        })));
+        await data.event('pricing.prices_adopted', actor, null, ctx.requestId, {
+          sourceMarketplaceId: input.sourceMarketplaceId, mode: input.mode, onlyWithoutRule: input.onlyWithoutRule, scope: input.scope, ...counts,
+        });
+      }
+      return { result: counts, changed: plan.adopt.length > 0 };
+    }, ADOPT_TIMEOUT_MS);
   }
 
   deleteOffer(ctx: RequestContext, id: string) {

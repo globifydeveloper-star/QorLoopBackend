@@ -69,6 +69,16 @@ export class ProductRepository {
   get(id: string) {
     return this.tx.product.findFirst({ where: { tenantId: this.tenantId, id }, select: productSelect });
   }
+  /** Every product's position in the list order (name, id); one packed value, not one object per product. */
+  async nameOrder(): Promise<Map<string, number>> {
+    const [row] = await this.tx.$queryRaw<{ packed: string | null }[]>`
+      SELECT string_agg(id::text, ',' ORDER BY name_en, id) AS packed FROM products WHERE tenant_id = ${this.tenantId}::uuid`;
+    return new Map((row?.packed ? row.packed.split(',') : []).map((id, i) => [id, i]));
+  }
+  /** Name and barcode of a few products (examples on a screen). */
+  labels(ids: string[]) {
+    return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, select: { id: true, nameEn: true, barcode: true } });
+  }
   listings(productId: string) {
     return this.tx.listing.findMany({
       where: { tenantId: this.tenantId, productId }, orderBy: [{ marketplaceId: 'asc' }, { marketplaceProductId: 'asc' }],

@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Inject, Param, ParseUUIDPipe, Put, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Param, ParseUUIDPipe, Post, Put, Query, Req } from '@nestjs/common';
 import { ApiCookieAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 import * as dto from '../../../../packages/shared/src/contracts.js';
 import type { Config } from '../../../../packages/shared/src/config.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
 import { PRICE_RULE_ORDER } from '../../../../packages/core/src/pricing.js';
+import { ADOPT_SKIP_REASONS } from '../../../../packages/core/src/price-adoption.js';
 import { CONFIG } from '../tokens.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract, ZodPipe } from '../http/contracts.js';
@@ -33,6 +34,42 @@ export const productPricing = {
         marketplaces: { type: 'array', description: 'Per-marketplace prices, only when per-marketplace pricing is on', items: { type: 'object', properties: { marketplaceId: { type: 'string' }, price: { type: 'number' }, source } } },
       },
     },
+  },
+};
+
+const count = { type: 'integer' };
+const byMarketplace = { type: 'object', description: 'Per other marketplace', additionalProperties: count };
+const adoptCounts = {
+  type: 'object', properties: {
+    products: { ...count, description: 'Products in scope' }, adopted: count, created: { ...count, description: 'Products that had no rule' },
+    replaced: { ...count, description: 'Products whose own rule is replaced (onlyWithoutRule false)' },
+    fixedFallback: { ...count, description: 'percent mode: products given a fixed rule because no percent reaches the listing price' },
+    fallbacks: { type: 'object', properties: { rounding: count, range: { ...count, description: 'Outside -90..1000 %' } } },
+    skipped: { type: 'object', properties: Object.fromEntries(ADOPT_SKIP_REASONS.map(r => [r, count])) },
+    conflicts: { type: 'object', description: 'Adopted products listed elsewhere at a different price (beyond the recon tolerance)', properties: { products: count, byMarketplace } },
+  },
+};
+const adoptRow = {
+  type: 'object', properties: {
+    productId: { type: 'string', format: 'uuid' }, nameEn: { type: 'string' }, barcode: { type: 'string' }, erpPrice: { type: 'number' },
+    currentPrice: { type: 'number' }, currentSource: source, newPrice: { type: 'number' }, difference: { type: 'number', description: 'newPrice - currentPrice' },
+    rule: { type: 'object', properties: rule }, fallback: { type: ['string', 'null'], enum: ['rounding', 'range', null] },
+    previousRule: { type: ['object', 'null'], properties: rule },
+  },
+};
+const adoptPreview = {
+  type: 'object', properties: {
+    ...adoptCounts.properties, willAdopt: count,
+    conflicts: {
+      type: 'object', properties: {
+        products: count, byMarketplace,
+        examples: { type: 'array', maxItems: 20, items: { type: 'object', properties: {
+          productId: { type: 'string' }, nameEn: { type: 'string' }, barcode: { type: 'string' }, marketplaceId: { type: 'string' }, sourcePrice: { type: 'number' }, otherPrice: { type: 'number' },
+        } } },
+      },
+    },
+    largestDifferences: { type: 'array', maxItems: 10, items: adoptRow },
+    rows: { type: 'array', maxItems: 10, description: 'The first products adopted, in list order', items: adoptRow },
   },
 };
 
@@ -69,6 +106,18 @@ export class PricingController {
   @Contract('Remove a category or subcategory rule (404 when there is none)')
   deleteCategoryRule(@Req() req: AppRequest, @Query(new ZodPipe(dto.categoryPriceRuleKey)) key: z.infer<typeof dto.categoryPriceRuleKey>) {
     return this.pricing.deleteCategoryRule(context(req, this.config), key);
+  }
+
+  @Post('pricing/adopt/preview') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract("What adopting a marketplace's current listing prices as product rules would do: counts, skips by reason, other-marketplace conflicts, the largest changes and the first rows (writes nothing)", dto.adoptPrices, adoptPreview)
+  adoptPreview(@Req() req: AppRequest, @Body(new ZodPipe(dto.adoptPrices)) input: z.infer<typeof dto.adoptPrices>) {
+    return this.pricing.adoptPreview(context(req, this.config), input);
+  }
+
+  @Post('pricing/adopt/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract("Adopt a marketplace's current listing prices as product rules, in one transaction; a repeat adopts nothing", dto.adoptPrices, adoptCounts)
+  adoptApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.adoptPrices)) input: z.infer<typeof dto.adoptPrices>) {
+    return this.pricing.adoptApply(context(req, this.config), input);
   }
 
   @Put('products/:id/price-rule') @Access({ permission: 'pricing.edit' })

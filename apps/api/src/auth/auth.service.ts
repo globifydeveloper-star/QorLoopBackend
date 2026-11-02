@@ -55,8 +55,9 @@ export class AuthService {
     await data.touchSession(session.id);
     return { session, user: session.user, member, tenant };
   }
-  authenticated<T>(ctx: RequestContext, options: {partial?: boolean; mutation?: boolean; permission?: Permission}, action: (data: TenantData, principal: Principal) => Promise<T>) {
-    return this.db.run(ctx.tenantId, async data => action(data, await this.checkSession(data, ctx, options)));
+  /** `timeout` (ms) only for the few bulk requests that must stay one transaction (adopting prices); others keep Database.run's 20 s. */
+  authenticated<T>(ctx: RequestContext, options: {partial?: boolean; mutation?: boolean; permission?: Permission; timeout?: number}, action: (data: TenantData, principal: Principal) => Promise<T>) {
+    return this.db.run(ctx.tenantId, async data => action(data, await this.checkSession(data, ctx, options)), { timeout: options.timeout });
   }
   private publicUser(user: {id: string; email: string; name: string}) { return { id: user.id, email: user.email, name: user.name }; }
 

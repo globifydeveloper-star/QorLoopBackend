@@ -6,6 +6,7 @@ export type ReconReason =
   | 'pricing.settings'
   | 'pricing.category_rule'
   | 'product.price_rule'
+  | 'pricing.adopt'
   | 'product.offer'
   | 'product.category'
   | 'product.status'

@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '../generated/client.js';
 import { UploadRepository } from '../uploads.js';
 import { ReconRepository, RECON_ROW_COLUMNS, RECON_WRITE_BATCH } from '../recon.js';
+import { PricingRepository, PRODUCT_RULE_WRITE_BATCH } from '../pricing.js';
+import { ProductRepository } from '../products.js';
 import type { ReconRowResult } from '../../../core/src/recon/index.js';
 import type { NewProduct, ProductWrite } from '../../../core/src/upload/apply.js';
 
@@ -92,6 +94,21 @@ describe('bulk statements stay under the Postgres bind-parameter limit', () => {
     expect(writes.length).toBe(40);
     // unnest: one parameter per column whatever the batch size, so the batch is sized for memory, not for the limit
     expect(new Set(writes.map(s => s.params))).toEqual(new Set([RECON_ROW_COLUMNS]));
+    expect(statements.filter(s => s.params > PG_MAX_BIND_PARAMS)).toEqual([]);
+  });
+
+  it('adopting 100,000 product rules (with their events) binds a fixed number of parameters per statement', async () => {
+    const { tx, statements } = recordingTx();
+    const n = 100_000;
+    const ids = Array.from({ length: n }, () => randomUUID());
+    await new PricingRepository(randomUUID(), tx as unknown as ConstructorParameters<typeof PricingRepository>[1])
+      .upsertProductRules(ids.map((productId, i) => ({ productId, mode: i % 2 ? 'fixed' : 'percent', value: 12.345 })));
+    await new ProductRepository(randomUUID(), tx as unknown as ConstructorParameters<typeof ProductRepository>[1])
+      .auditEvents(randomUUID(), 'req', ids.map(entityId => ({ action: 'product.price_rule_set', entityId, details: { old: { mode: 'fixed', value: 1 }, new: { mode: 'fixed', value: 2 } } })));
+    const rules = statements.slice(0, n / PRODUCT_RULE_WRITE_BATCH);
+    // the tenant plus product ids, modes and values
+    expect(new Set(rules.map(s => s.params))).toEqual(new Set([4]));
+    expect(statements).toHaveLength(n / PRODUCT_RULE_WRITE_BATCH + n / 5_000);
     expect(statements.filter(s => s.params > PG_MAX_BIND_PARAMS)).toEqual([]);
   });
 });

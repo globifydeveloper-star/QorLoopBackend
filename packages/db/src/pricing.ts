@@ -11,7 +11,10 @@ export type StoredRule = { mode: string; value: number };
 export type PricingSettingsWrite = Pick<Prisma.PricingSettingsUncheckedCreateInput,
   'defaultRuleMode' | 'defaultRuleValue' | 'rounding' | 'perMarketplaceEnabled' | 'compareReferenceDefault'>;
 
-const ruleSelect = { id: true, mode: true, value: true, updatedAt: true } satisfies Prisma.CategoryPriceRuleSelect;
+/** Product rules per statement of upsertProductRules. */
+export const PRODUCT_RULE_WRITE_BATCH = 5_000;
+
+const ruleSelect ={ id: true, mode: true, value: true, updatedAt: true } satisfies Prisma.CategoryPriceRuleSelect;
 
 /**
  * Every method adds tenant_id. Rows with a nullable column in their unique key (category rules without a
@@ -87,6 +90,23 @@ export class PricingRepository {
   }
   async deleteProductRule(productId: string) {
     return (await this.tx.productPriceRule.deleteMany({ where: { tenantId: this.tenantId, productId } })).count;
+  }
+  /**
+   * Creates or replaces many product rules: one INSERT ... SELECT FROM unnest(...) per PRODUCT_RULE_WRITE_BATCH rules,
+   * three array bind parameters whatever the batch size. Values are sent as 3-decimal text (DECIMAL(12,3) exactly);
+   * timestamps are cut to milliseconds like the upload apply, so updatedAt read back as a JS Date matches the row.
+   */
+  async upsertProductRules(rules: { productId: string; mode: string; value: number }[]) {
+    let written = 0;
+    for (let i = 0; i < rules.length; i += PRODUCT_RULE_WRITE_BATCH) {
+      const c = rules.slice(i, i + PRODUCT_RULE_WRITE_BATCH);
+      written += await this.tx.$executeRaw`
+        INSERT INTO product_price_rules (id, tenant_id, product_id, mode, value, created_at, updated_at)
+        SELECT gen_random_uuid(), ${this.tenantId}::uuid, v.product_id, v.mode, v.value::numeric, date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
+        FROM unnest(${c.map(r => r.productId)}::uuid[], ${c.map(r => r.mode)}::text[], ${c.map(r => r.value.toFixed(3))}::text[]) AS v(product_id, mode, value)
+        ON CONFLICT (tenant_id, product_id) DO UPDATE SET mode = EXCLUDED.mode, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
+    }
+    return written;
   }
 
   offers(productIds: string[]) {
