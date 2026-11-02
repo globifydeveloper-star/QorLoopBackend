@@ -48,7 +48,8 @@ price or availability, at 50,000 products x 4 marketplaces.
 | 1% of products and listings changed | ~700 updated | 6-8 s |
 | Default rule changed (every price moves) | 73,500 updated | 18-19 s |
 
-A request that takes the tenant row lock during the first run waits 12-31 ms. Summary endpoint ~30 ms, rows endpoint
+A request through `Database.run` during the first run waits 5-210 ms (ADR 012; with the earlier
+FOR UPDATE lock, requests waited for the whole run once its inserts began, G12). Summary endpoint ~30 ms, rows endpoint
 150-300 ms. The long runs are bound by this server's index maintenance: a plain `INSERT ... SELECT` of 200,000
 recon rows takes 17.8 s in psql, and a price-only `UPDATE` of all of them 11.5 s.
 
