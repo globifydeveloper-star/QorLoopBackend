@@ -7,6 +7,7 @@ export type ReconReason =
   | 'pricing.category_rule'
   | 'product.price_rule'
   | 'pricing.adopt'
+  | 'pricing.bulk'
   | 'product.offer'
   | 'product.category'
   | 'product.status'

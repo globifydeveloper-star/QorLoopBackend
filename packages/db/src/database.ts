@@ -10,7 +10,7 @@ import { GeneratedFilesRepository } from './generated-files.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
-export type { ProductFilter, ProductTab } from './products.js';
+export type { PricingSelection, ProductFilter, ProductTab } from './products.js';
 
 export { PrismaClient };
 export type { Role };

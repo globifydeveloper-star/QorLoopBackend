@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
 import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js';
 import { ADOPT_MODES } from '../../core/src/price-adoption.js';
-import { PRICE_CHANGE_MAX } from '../../core/src/price-change.js';
+import {
+  BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
+} from '../../core/src/price-change.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
@@ -140,6 +142,53 @@ export const inlinePriceRemove = z.object({
 
 // ───────── Reconciliation ─────────
 export const reconReference = z.enum(RECON_REFERENCES);
+
+// ───────── Bulk price changes (preview and apply take the same body; apply adds the idempotency key) ─────────
+/** A recon status of the stored row on the operation's marketplace, or price_mismatch (the price flag) for the reference. */
+export const BULK_RECON_FILTERS = ['price_mismatch', ...RECON_STATUSES] as const;
+export const bulkSelection = z.union([
+  /** Explicit products (the list's checkboxes); unknown or other-store ids are counted as blocked, not_found. */
+  z.object({ productIds: z.array(z.uuid()).min(1).max(BULK_PRODUCT_IDS_MAX) }).strict(),
+  /** Every ACTIVE product matching all given conditions ({} = every active product); at most BULK_PRICE_LIMIT. */
+  z.object({
+    filter: z.object({
+      /** The product list's search: English name (contains), SKU (exact), barcode (normalised, prefix). */
+      q: z.string().trim().min(1).max(200).optional(),
+      categoryId: z.uuid().optional(),
+      subcategoryId: z.uuid().optional(),
+      /** true: only products listed on the operation's marketplace; false: only products not listed there. */
+      listed: z.boolean().optional(),
+      reconStatus: z.enum(BULK_RECON_FILTERS).optional(),
+      /** Which recon status reconStatus reads; default: the tenant's compareReferenceDefault. */
+      reference: reconReference.optional(),
+    }).strict(),
+  }).strict(),
+]);
+const bulkRounding = { rounding: z.enum(BULK_ROUNDINGS).default('none') };
+const bulkAmount = threeDecimals(z.number().gt(0).max(PRICE_CHANGE_MAX));
+export const bulkAction = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('set_fixed'), price: threeDecimals(z.number().gt(0).max(PRICE_CHANGE_MAX)) }).strict(),
+  z.object({ type: z.literal('increase_percent'), percent: threeDecimals(z.number().gt(0).max(BULK_PERCENT_INCREASE_MAX)), ...bulkRounding }).strict(),
+  z.object({ type: z.literal('decrease_percent'), percent: threeDecimals(z.number().gt(0).max(BULK_PERCENT_DECREASE_MAX)), ...bulkRounding }).strict(),
+  z.object({ type: z.literal('increase_amount'), amount: bulkAmount, ...bulkRounding }).strict(),
+  z.object({ type: z.literal('decrease_amount'), amount: bulkAmount, ...bulkRounding }).strict(),
+  z.object({ type: z.literal('match_marketplace') }).strict(),
+  z.object({ type: z.literal('match_erp') }).strict(),
+]);
+const bulkShape = {
+  /** Must be enabled for the store: prices are computed, compared and (match_marketplace) matched on it. */
+  marketplaceId: z.enum(MARKETPLACES),
+  selection: bulkSelection,
+  action: bulkAction,
+};
+export const bulkPricePreview = z.object(bulkShape).strict();
+export const bulkPriceApply = z.object({
+  ...bulkShape,
+  /** Chosen by the client once per intended change (a UUID): a repeat with the same key and body applies nothing again. */
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
+  /** previewToken from the preview: when the re-planned writes differ, 409 instead of applying something else. */
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
 /** Without a reference, the tenant's compareReferenceDefault (pricing settings) applies. */
 export const reconSummaryQuery = z.object({ reference: reconReference.optional() }).strict();
 export const reconRowsQuery = z.object({

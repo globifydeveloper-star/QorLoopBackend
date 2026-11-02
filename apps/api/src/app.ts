@@ -29,6 +29,7 @@ import { BullUploadQueue, type UploadQueue } from '../../../packages/shared/src/
 import { BullReconQueue, type ReconQueue } from '../../../packages/shared/src/recon.js';
 import { PricingController } from './pricing/pricing.controller.js';
 import { PricingService } from './pricing/pricing.service.js';
+import { BulkPricingService } from './pricing/bulk-pricing.service.js';
 import { ReconController } from './recon/recon.controller.js';
 import { ReconService } from './recon/recon.service.js';
 import { GeneratedFilesController } from './generated-files/generated-files.controller.js';
@@ -95,7 +96,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, ReconService, GeneratedFilesService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },

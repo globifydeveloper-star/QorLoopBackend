@@ -109,6 +109,24 @@ export class PricingRepository {
     return written;
   }
 
+  /** Removes the rules of many products in one statement (one uuid[] bind parameter whatever the count). */
+  async deleteProductRules(productIds: string[]) {
+    if (!productIds.length) return 0;
+    return this.tx.$executeRaw`
+      DELETE FROM product_price_rules WHERE tenant_id = ${this.tenantId}::uuid AND product_id = ANY(${productIds}::uuid[])`;
+  }
+
+  /**
+   * The bulk price change applied with this idempotency key since `since` (its single 'pricing.bulk_applied' audit
+   * event, which stores the key). The created_at bound keeps the lookup on the (tenant_id, created_at) index.
+   */
+  bulkOperation(idempotencyKey: string, since: Date) {
+    return this.tx.auditEvent.findFirst({
+      where: { tenantId: this.tenantId, action: 'pricing.bulk_applied', createdAt: { gte: since }, details: { path: ['idempotencyKey'], equals: idempotencyKey } },
+      orderBy: { createdAt: 'desc' }, select: { id: true, details: true, createdAt: true },
+    });
+  }
+
   offers(productIds: string[]) {
     return this.tx.productOffer.findMany({
       where: { tenantId: this.tenantId, productId: { in: productIds } }, orderBy: { createdAt: 'asc' },

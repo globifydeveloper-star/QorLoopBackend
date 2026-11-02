@@ -6,10 +6,12 @@ import type { Config } from '../../../../packages/shared/src/config.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
 import { PRICE_RULE_ORDER } from '../../../../packages/core/src/pricing.js';
 import { ADOPT_SKIP_REASONS } from '../../../../packages/core/src/price-adoption.js';
+import { BULK_BLOCK_REASONS, BULK_PRICE_LIMIT } from '../../../../packages/core/src/price-change.js';
 import { CONFIG } from '../tokens.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract, ZodPipe } from '../http/contracts.js';
 import { PricingService } from './pricing.service.js';
+import { BulkPricingService } from './bulk-pricing.service.js';
 
 const rule = { mode: { type: 'string', enum: ['percent', 'amount', 'fixed', 'same'] }, value: { type: 'number', description: 'Absent for same' } };
 const settings = {
@@ -87,11 +89,61 @@ const adoptPreview = {
   },
 };
 
+const bulkRow = {
+  type: 'object', properties: {
+    productId: { type: 'string', format: 'uuid' }, nameEn: { type: 'string' }, barcode: { type: 'string' }, marketplaceId,
+    oldPrice: { type: 'number', description: 'Resolved price on marketplaceId now' }, oldSource: source,
+    newPrice: { type: 'number' }, newSource: source, difference: { type: 'number', description: 'newPrice - oldPrice' },
+    previousRule: { type: ['object', 'null'], properties: rule }, rule: { type: ['object', 'null'], description: 'null = the product rule is removed (match_erp)', properties: rule },
+  },
+};
+const bulkCountsSchema = {
+  selected: { ...count, description: 'willChange + unchanged + blocked' }, willChange: count, unchanged: count, blocked: count,
+  blockedReasons: { type: 'array', items: { type: 'object', properties: { reason: { type: 'string', enum: [...BULK_BLOCK_REASONS] }, message: { type: 'string' }, count } } },
+  otherMarketplaces: { type: 'array', description: 'Changed products whose price also moves on another enabled marketplace (a product rule applies to all)', items: { type: 'object', properties: { marketplaceId, products: count } } },
+};
+const bulkPreviewSchema = {
+  type: 'object', properties: {
+    marketplaceId, action: { type: 'object' }, selection: { type: 'object' },
+    reference: { type: 'string', enum: ['marketplace', 'erp'], description: 'Only with a reconStatus filter: the reference it read' },
+    limit: { ...count, description: `At most ${BULK_PRICE_LIMIT} products per change` },
+    ...bulkCountsSchema,
+    largestIncrease: { ...bulkRow, type: ['object', 'null'] }, largestDecrease: { ...bulkRow, type: ['object', 'null'] },
+    rows: { type: 'array', maxItems: 10, description: 'The first changes, in product list order', items: bulkRow },
+    previewToken: { type: 'string', description: 'Send it with apply: 409 if the re-planned writes differ' },
+  },
+};
+const bulkApplySchema = {
+  type: 'object', properties: {
+    operationId: { type: 'string', format: 'uuid', description: "The 'pricing.bulk_applied' audit event" },
+    replayed: { type: 'boolean', description: 'true: this idempotency key was already applied; nothing was written again' },
+    appliedAt: { type: 'string', format: 'date-time' },
+    ...bulkCountsSchema,
+    created: { ...count, description: 'Rules created (the product had none)' }, replaced: count, removed: { ...count, description: 'Rules removed (match_erp)' },
+  },
+};
+
 @ApiTags('Pricing')
 @ApiCookieAuth()
 @Controller('api')
 export class PricingController {
-  constructor(@Inject(PricingService) private readonly pricing: PricingService, @Inject(CONFIG) private readonly config: Config) {}
+  constructor(
+    @Inject(PricingService) private readonly pricing: PricingService,
+    @Inject(BulkPricingService) private readonly bulk: BulkPricingService,
+    @Inject(CONFIG) private readonly config: Config,
+  ) {}
+
+  @Post('pricing/bulk/preview') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
+  @Contract(`What a bulk price change would do on one marketplace (at most ${BULK_PRICE_LIMIT} products): counts, blocked reasons, the largest increase and decrease, the first 10 rows and a preview token. Writes nothing`, dto.bulkPricePreview, bulkPreviewSchema)
+  bulkPreview(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkPricePreview)) input: z.infer<typeof dto.bulkPricePreview>) {
+    return this.bulk.preview(context(req, this.config), input);
+  }
+
+  @Post('pricing/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
+  @Contract('Apply a bulk price change, re-planned from current data, in one transaction with one audit event; the same idempotencyKey and body answers the first result again (replayed: true), another body 409; a stale previewToken 409', dto.bulkPriceApply, bulkApplySchema)
+  bulkApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkPriceApply)) input: z.infer<typeof dto.bulkPriceApply>) {
+    return this.bulk.apply(context(req, this.config), input);
+  }
 
   @Get('pricing/settings') @Access({ permission: 'pricing.view' })
   @Contract('Default rule, rounding, per-marketplace switch and rules, comparison reference and the rule order', undefined, settings)

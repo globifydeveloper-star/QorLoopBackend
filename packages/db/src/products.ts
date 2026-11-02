@@ -24,6 +24,20 @@ export const productSelect = {
   status: true, inLatestErpFile: true, createdAt: true, updatedAt: true,
 } satisfies Prisma.ProductSelect;
 
+/** A bulk price change's filter: the product list's search and category, on one marketplace. */
+export interface PricingSelection extends ProductFilter {
+  marketplaceId: string;
+  /** true: only products with a listing on marketplaceId; false: only products without one. */
+  listed?: boolean;
+  /** Only products whose stored recon row on marketplaceId has this status (or, price_mismatch, the price flag) for `reference`. */
+  recon?: { status: string; reference: 'marketplace' | 'erp' };
+}
+
+/** What a bulk price change prices and shows of each product. */
+const pricingSelect = {
+  id: true, nameEn: true, barcode: true, status: true, erpPrice: true, categoryId: true, subcategoryId: true,
+} satisfies Prisma.ProductSelect;
+
 /** `ILIKE` reads % _ and \ as wildcards and escape; a search for "50%" means the text. */
 const likeText = (s: string) => s.replace(/[\\%_]/g, m => '\\' + m);
 
@@ -54,6 +68,32 @@ export class ProductRepository {
       orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], take, select: productSelect,
     });
   }
+  /** Active products only: a new or inactive product is not priced by a bulk change. */
+  private pricingWhere(s: PricingSelection): Prisma.ProductWhereInput {
+    const erp = s.recon?.reference === 'erp';
+    const recon: Prisma.ReconRowWhereInput | null = !s.recon ? null
+      : s.recon.status === 'price_mismatch' ? (erp ? { priceMismatchVsErp: true } : { priceMismatchVsMarketplace: true })
+        : erp ? { statusVsErp: s.recon.status } : { status: s.recon.status };
+    return {
+      AND: [
+        this.where(s), { status: 'active' },
+        ...(s.listed === undefined ? [] : [{ listings: s.listed ? { some: { marketplaceId: s.marketplaceId } } : { none: { marketplaceId: s.marketplaceId } } }]),
+        ...(recon ? [{ reconRows: { some: { marketplaceId: s.marketplaceId, ...recon } } }] : []),
+      ],
+    };
+  }
+  /** A bulk price selection in list order (name, id), at most `take` rows (ask for one more than the limit). */
+  pricingSelection(s: PricingSelection, take: number) {
+    return this.tx.product.findMany({ where: this.pricingWhere(s), orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], take, select: pricingSelect });
+  }
+  pricingSelectionCount(s: PricingSelection) {
+    return this.tx.product.count({ where: this.pricingWhere(s) });
+  }
+  /** The given products of this store (any status; another store's ids are simply absent), in list order. */
+  pricingProducts(ids: string[]) {
+    return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], select: pricingSelect });
+  }
+
   /** Every tab count from one grouped query. */
   async counts(f: ProductFilter): Promise<Record<ProductTab, number>> {
     const groups = await this.tx.product.groupBy({ by: ['status', 'inLatestErpFile'], where: this.where(f), _count: { _all: true } });

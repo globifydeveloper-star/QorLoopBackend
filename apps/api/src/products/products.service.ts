@@ -43,7 +43,7 @@ export function decodeCursor(cursor: string) {
 }
 
 /** A search reads as a barcode when it holds only digits, spaces, dashes and dots (e.g. "06281 000.0"). */
-function searchFilter(query: z.infer<typeof contracts.productListQuery>): ProductFilter {
+export function searchFilter(query: Pick<z.infer<typeof contracts.productListQuery>, 'q' | 'categoryId' | 'subcategoryId'>): ProductFilter {
   const q = query.q || undefined;
   const barcode = q && /^[\d\s.-]+$/.test(q) ? normalizeBarcode(q) : '';
   return { q, barcodePrefix: barcode || undefined, categoryId: query.categoryId, subcategoryId: query.subcategoryId };
