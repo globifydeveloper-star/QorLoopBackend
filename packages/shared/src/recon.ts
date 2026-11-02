@@ -50,7 +50,8 @@ export class BullReconQueue implements ReconQueue {
 
 /**
  * Test double with BullReconQueue's coalescing: per tenant at most one run active and one waiting; triggers while one
- * waits are absorbed. `drain()` resolves when no run is active or waiting.
+ * waits are absorbed. `drain()` resolves when no run is active or waiting; runs start in the background, so call it
+ * before closing anything the handler uses (the test harness does, before closing the database).
  */
 export class InlineReconQueue implements ReconQueue {
   readonly calls: { tenantId: string; reason: ReconReason }[] = [];

@@ -36,8 +36,14 @@ export class Database {
       adapter: new PrismaPg({ connectionString: url, max: 5, connectionTimeoutMillis: 5000, options: '-c timezone=UTC' }),
     });
   }
-  connect() { return this.client.$connect(); }
-  close() { return this.client.$disconnect(); }
+  private isClosed = false;
+  connect() { this.isClosed = false; return this.client.$connect(); }
+  close() { this.isClosed = true; return this.client.$disconnect(); }
+  /**
+   * True from close() until the next connect(). Prisma connects lazily, so a query after close() silently opens a new
+   * pool; background work that outlives a shutdown checks this instead of writing (recomputeRecon's failure event).
+   */
+  get closed() { return this.isClosed; }
   async ping() { await this.client.$queryRaw`SELECT 1`; }
   async resolve(hostname: string, pinnedId?: string) {
     return this.client.tenant.findFirst({

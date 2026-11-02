@@ -82,10 +82,15 @@ export async function recomputeRecon(deps: ReconDeps, job: ReconJob): Promise<Re
     enter(failed);
     const failure: ReconFailure = describeApplyError(e, failed, Date.now() - t0);
     deps.log?.warn({ tenantId, reason, ...failure, timings }, 'Recon recompute failed; previous results kept');
-    try {
-      await database.run(tenantId, d => d.event('recon.failed', null, null, undefined, { reason, ...failure }));
-    } catch {
-      deps.log?.warn({ tenantId }, 'Could not record the recon failure');
+    // A run that outlived a shutdown must not reopen the pool just to record its failure (Database.closed).
+    if (database.closed) {
+      deps.log?.warn({ tenantId }, 'Database closed; recon failure not recorded');
+    } else {
+      try {
+        await database.run(tenantId, d => d.event('recon.failed', null, null, undefined, { reason, ...failure }));
+      } catch {
+        deps.log?.warn({ tenantId }, 'Could not record the recon failure');
+      }
     }
     throw e;
   }

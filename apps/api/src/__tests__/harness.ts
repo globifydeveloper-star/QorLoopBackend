@@ -62,7 +62,9 @@ export async function createHarness() {
   }
   return {
     fixture, api, config, storage, queue, recon, generatedFiles, request, sessionFrom, createOwner, member,
-    close: async () => { await api.app.close(); await fixture.close(); },
+    // App first (no request can queue another recompute), then every queued/in-flight recompute, then the database:
+    // a recompute still running after teardown fails on the closed database and touches modules Jest has torn down.
+    close: async () => { await api.app.close(); await recon.drain(); await fixture.close(); },
   };
 }
 export type Harness = Awaited<ReturnType<typeof createHarness>>;
