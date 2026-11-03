@@ -2,6 +2,8 @@
 
 Date: 2026-11-03. Inspection only; implementation is paused for the storage decision below.
 
+Subsequent owner decision: schema-free GET only, four required steps, three optional steps, and no profile step or review audit writes. The original proposal below is historical; [ADR 015](../decisions/015-onboarding.md) records the implemented scope.
+
 ## Provisioning and first sign-in
 
 - `infra/provision-store.ts` implements `npm run provision:store -- --name ... --slug ... --owner-email ... [--hostname ...]`. It runs existing migrations, then calls `AuthService.provision`. It is an internal command, not an HTTP endpoint. It does not provision infrastructure. It was not executed during this inspection.
