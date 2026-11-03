@@ -200,6 +200,9 @@ model AuditEvent {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([tenantId, createdAt])
+  @@index([tenantId, entityId, createdAt(sort: Desc), id(sort: Desc)], map: "audit_events_tenant_entity_time_idx")
+  @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)], map: "audit_events_tenant_time_id_idx")
+  // Partial GIN expression index on details->'changes': 202611030001_activity_indexes.
   @@map("audit_events")
 }
 

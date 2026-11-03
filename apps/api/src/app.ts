@@ -36,6 +36,8 @@ import { GeneratedFilesController } from './generated-files/generated-files.cont
 import { GeneratedFilesService } from './generated-files/generated-files.service.js';
 import { SettingsController } from './settings/settings.controller.js';
 import { SettingsService } from './settings/settings.service.js';
+import { ActivityController } from './activity/activity.controller.js';
+import { ActivityService } from './activity/activity.service.js';
 import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
 
 @Controller()
@@ -95,10 +97,10 @@ export async function buildApp(config: Config, options: { database?: Database; c
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
   const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },

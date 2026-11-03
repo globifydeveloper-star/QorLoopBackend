@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
 import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js';
 import { ADOPT_MODES } from '../../core/src/price-adoption.js';
+import { ACTIVITY_GROUPS } from '../../core/src/activity.js';
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
@@ -100,6 +101,7 @@ export const updatePricingSettings = z.object({
   marketplaceRules: z.array(marketplacePriceRule).max(MARKETPLACES.length)
     .refine(rules => new Set(rules.map(r => r.marketplaceId)).size === rules.length, 'One rule per marketplace').optional(),
 }).strict().refine(v => Object.keys(v).length > 0, 'Nothing to change');
+
 const settingsThresholds = z.object({
   priceTolerance: threeDecimals(z.number().min(0).max(100000)).optional(),
   stockThreshold: z.number().int().min(0).max(2147483647).optional(),
@@ -204,6 +206,15 @@ export const bulkPriceApply = z.object({
 }).strict();
 /** Without a reference, the tenant's compareReferenceDefault (pricing settings) applies. */
 export const reconSummaryQuery = z.object({ reference: reconReference.optional() }).strict();
+export const activityQuery = z.object({
+  productId: z.uuid().optional(),
+  eventType: z.enum(ACTIVITY_GROUPS).optional(),
+  actorId: z.union([z.uuid(), z.literal('system')]).optional(),
+  from: z.iso.datetime({ offset: true }).optional(),
+  to: z.iso.datetime({ offset: true }).optional(),
+  cursor: z.string().max(1000).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+}).strict().refine(v => !v.from || !v.to || Date.parse(v.from) <= Date.parse(v.to), { message: 'to must be on or after from', path: ['to'] });
 export const reconRowsQuery = z.object({
   marketplaceId: z.enum(MARKETPLACES),
   /** stock = a stock issue; price = a price mismatch for the reference; all = every row (urgent first). */
