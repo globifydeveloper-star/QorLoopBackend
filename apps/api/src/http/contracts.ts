@@ -21,7 +21,7 @@ export const errorSchema = {
     error: { type: 'object' as const, required: ['code', 'message'], properties: { code: { type: 'string' as const }, message: { type: 'string' as const }, details: { type: 'array' as const, items: { type: 'object' as const } } } },
   },
 };
-const errorResponses = () => [400, 401, 403, 404, 409, 429, 500, 503].map(status => ApiResponse({ status, schema: errorSchema }));
+const errorResponses = () => [400, 401, 403, 404, 409, 413, 415, 429, 500, 503].map(status => ApiResponse({ status, schema: errorSchema }));
 
 export function Contract(summary: string, body?: ZodTypeAny, response: Record<string, unknown> = { type: 'object', additionalProperties: true }, status = 200) {
   return applyDecorators(

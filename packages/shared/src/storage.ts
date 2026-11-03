@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export interface SignedUpload {
@@ -16,6 +16,7 @@ export interface SignedUpload {
 
 /** Private, tenant-prefixed object storage. Buckets are never public; downloads use short-lived signed URLs. */
 export interface ObjectStorage {
+  check(): Promise<void>;
   presignUpload(key: string, opts: { contentType: string; size: number; ttlSeconds: number }): Promise<SignedUpload>;
   presignDownload(key: string, opts: { fileName: string; ttlSeconds: number }): Promise<string>;
   head(key: string): Promise<{ size: number } | null>;
@@ -50,6 +51,7 @@ export class S3Storage implements ObjectStorage {
       requestChecksumCalculation: 'WHEN_REQUIRED',
     });
   }
+  async check() { await this.client.send(new HeadBucketCommand({ Bucket: this.opts.bucket }), { abortSignal: AbortSignal.timeout(1500) }); }
   async presignUpload(key: string, o: { contentType: string; size: number; ttlSeconds: number }): Promise<SignedUpload> {
     // ContentLength and ContentType are signed: storage rejects an upload of a different size or type.
     const command = new PutObjectCommand({ Bucket: this.opts.bucket, Key: key, ContentType: o.contentType, ContentLength: o.size, ServerSideEncryption: 'AES256' });
@@ -87,6 +89,7 @@ export class S3Storage implements ObjectStorage {
 
 /** In-memory storage for tests and local development without an object store. Never use in production. */
 export class MemoryStorage implements ObjectStorage {
+  async check() {}
   readonly objects = new Map<string, Buffer>();
   readonly downloads = new Map<string, { key: string; expiresAt: number }>();
   async presignUpload(key: string, o: { contentType: string; size: number; ttlSeconds: number }): Promise<SignedUpload> {

@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { Module, Controller, Get, Req, Inject, Catch, HttpException, ServiceUnavailableException, type ExceptionFilter, type ArgumentsHost, type NestInterceptor, type ExecutionContext, type CallHandler } from '@nestjs/common';
+import { Module, Controller, Get, Req, Inject, Catch, type ExceptionFilter, type ArgumentsHost, type NestInterceptor, type ExecutionContext, type CallHandler } from '@nestjs/common';
 import { NestFactory, APP_GUARD } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -17,7 +17,9 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG, GENERATED_FILES_QUEUE, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { CONFIG, GENERATED_FILES_QUEUE, READINESS, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { checkReadiness } from './http/readiness.js';
+import { sendError } from './http/errors.js';
 import { UploadsController } from './uploads/uploads.controller.js';
 import { UploadsService } from './uploads/uploads.service.js';
 import { ProductsController } from './products/products.controller.js';
@@ -42,14 +44,11 @@ import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../pack
 
 @Controller()
 class SystemController {
-  constructor(@Inject(Database) private readonly db: Database, @Inject(AuthService) private readonly auth: AuthService, @Inject(CONFIG) private readonly config: Config) {}
+  constructor(@Inject(READINESS) private readonly readiness: () => ReturnType<typeof checkReadiness>, @Inject(AuthService) private readonly auth: AuthService, @Inject(CONFIG) private readonly config: Config) {}
   @Get('health') @Access({ skipTenant: true }) @Contract('Liveness; no dependency or customer details')
   live() { return { status: 'ok' }; }
-  @Get('health/ready') @Access({ skipTenant: true }) @Contract('Readiness; returns 503 when PostgreSQL is unavailable')
-  async ready() {
-    try { await this.db.ping(); return { status: 'ok' }; }
-    catch { throw new ServiceUnavailableException('Database unavailable'); }
-  }
+  @Get('health/ready') @Access({ skipTenant: true }) @Contract('Component readiness: only database failure returns 503; Redis/storage failures are degraded (200)')
+  ready() { return this.readiness(); }
   @Get('api/me') @Access({}) @Contract('Authenticated compatibility alias for /api/auth/me')
   me(@Req() req: AppRequest) { return this.auth.me(context(req, this.config)); }
 }
@@ -64,24 +63,11 @@ class ErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const req = host.switchToHttp().getRequest<FastifyRequest>();
     const reply = host.switchToHttp().getResponse<FastifyReply>();
-    // @fastify/rate-limit throws the plain object from errorResponseBuilder (not an HttpException).
-    const plain = error as { statusCode?: unknown; error?: { message?: string } } | null;
-    const plainStatus = typeof plain?.statusCode === 'number' && plain.statusCode >= 400 && plain.statusCode < 500 ? plain.statusCode : undefined;
-    const status = error instanceof HttpException ? error.getStatus() : plainStatus ?? 500;
-    const response = error instanceof HttpException ? error.getResponse() : plainStatus ? { message: plain?.error?.message } : undefined;
-    const detail = typeof response === 'object' && response !== null ? response as { message?: string | string[]; details?: unknown } : {};
-    const message = status >= 500 ? (status === 503 ? 'Service unavailable' : 'Internal server error') : typeof response === 'string' ? response : detail.message ?? 'Request failed';
-    if (status >= 500) {
-      req.log.error({ requestId: req.id, errorType: error instanceof Error ? error.name : 'UnknownError' }, 'Request failed');
-      // Raw exceptions may contain ORM arguments, tokens or mail bodies.
-      if (this.reportErrors) void import('@sentry/node').then(Sentry => Sentry.captureException(new Error('Unhandled application error'), { tags: { requestId: req.id, errorType: error instanceof Error ? error.name : 'UnknownError' } }));
-    }
-    const codes: Record<number, string> = { 400: 'VALIDATION_ERROR', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CONFLICT', 429: 'RATE_LIMITED', 503: 'UNAVAILABLE' };
-    reply.code(status).send({ error: { code: codes[status] ?? 'INTERNAL_ERROR', message, ...(status < 500 && detail.details ? { details: detail.details } : {}) }, requestId: req.id });
+    sendError(error, req, reply, this.reportErrors);
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; logStream?: { write: (chunk: string) => void }; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue; redisHealth?: () => Promise<unknown> } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
   const storage = options.storage ?? new S3Storage({
@@ -100,6 +86,10 @@ export async function buildApp(config: Config, options: { database?: Database; c
     controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
+      { provide: READINESS, useValue: () => checkReadiness(() => database.ping(), options.redisHealth ?? (() => {
+        if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
+        return queueRedis.ping();
+      }), () => storage.check()) },
       AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
@@ -112,6 +102,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     bodyLimit: 32 * 1024, trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
     logger: options.logger === false ? false : {
       level: 'info',
+      ...(options.logStream ? { stream: options.logStream } : {}),
       redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'],
       serializers: { req: (req: FastifyRequest) => ({ method: req.method, path: req.url?.split('?')[0], host: req.headers?.host }) },
     },
@@ -147,6 +138,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     if (validOrigin) {
       reply.header('Access-Control-Allow-Origin', origin!);
       reply.header('Access-Control-Allow-Credentials', 'true');
+      reply.header('Access-Control-Expose-Headers', 'X-Request-ID');
       reply.header('Vary', 'Origin');
     }
     if (req.method === 'OPTIONS') {
@@ -156,6 +148,8 @@ export async function buildApp(config: Config, options: { database?: Database; c
       return reply.code(204).send();
     }
   });
+  server.addHook('onSend', async (req, reply) => { reply.header('X-Request-ID', req.id); reply.header('Cache-Control', 'no-store'); });
+  server.addHook('onResponse', async (req, reply) => { req.log.info({ requestId: req.id, statusCode: reply.statusCode }, 'Request completed'); });
   server.addHook('onClose', async () => {
     if (redis) await redis.quit();
     if (!options.queue) await (queue as BullUploadQueue).close();

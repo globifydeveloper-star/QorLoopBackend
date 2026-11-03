@@ -79,5 +79,14 @@ export class AuthController {
   @Get('me') @Access({})
   @Contract('Read the authenticated profile, effective permissions and store context')
   me(@Req() req: AppRequest) { return this.auth.me(context(req, this.config)); }
+  @Get('session') @Access({ public: true })
+  @Contract('Session state without extending idle expiry; 401 UNAUTHENTICATED or SESSION_EXPIRED, 200 authenticated/mfa_required/mfa_setup_required', undefined, {
+    type: 'object', properties: {
+      state: { type: 'string', enum: ['authenticated', 'mfa_required', 'mfa_setup_required'] },
+      expiresAt: { type: 'string', format: 'date-time' }, idleExpiresAt: { type: 'string', format: 'date-time' },
+      nextAction: { type: 'string', enum: ['none', 'verify_mfa', 'setup_mfa'] },
+    },
+  })
+  session(@Req() req: AppRequest) { return this.auth.sessionStatus(context(req, this.config)); }
 }
 

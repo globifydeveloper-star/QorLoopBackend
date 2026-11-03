@@ -37,22 +37,22 @@ export class AuthService {
     const tenant = await data.tenant();
     return role === 'owner' || tenant.settings?.mfaRequiredForAll ? 'enrollment' as const : 'full' as const;
   }
-  async checkSession(data: TenantData, ctx: RequestContext, options: { partial?: boolean; mutation?: boolean; permission?: Permission } = {}) {
+  async checkSession(data: TenantData, ctx: RequestContext, options: { partial?: boolean; mutation?: boolean; permission?: Permission; touch?: boolean } = {}) {
     const session = ctx.token ? await data.sessionByHash(digest(ctx.token)) : null;
-    if (!session || session.expiresAt <= new Date() || session.lastSeenAt.getTime() + this.config.SESSION_IDLE_MINUTES * 60_000 <= Date.now()) {
-      throw new UnauthorizedException('Session expired or invalid');
-    }
+    if (!session) throw new UnauthorizedException({ code: 'UNAUTHENTICATED', message: 'Sign in to continue' });
+    if (session.expiresAt <= new Date() || session.lastSeenAt.getTime() + this.config.SESSION_IDLE_MINUTES * 60_000 <= Date.now())
+      throw new UnauthorizedException({ code: 'SESSION_EXPIRED', message: 'Your session expired; sign in again' });
     const member = await data.membership(session.userId);
     if (!member?.active) throw new UnauthorizedException('Session expired or invalid');
-    if (options.mutation && (!ctx.csrf || !matchesDigest(ctx.csrf, session.csrfHash))) throw new ForbiddenException('CSRF token required');
+    if (options.mutation && (!ctx.csrf || !matchesDigest(ctx.csrf, session.csrfHash))) throw new ForbiddenException({ code: 'CSRF_REQUIRED', message: 'CSRF token required' });
     const tenant = await data.tenant();
     if (!options.partial && (session.assurance !== 'full' || ((member.role === 'owner' || tenant.settings?.mfaRequiredForAll) && !session.user.mfaSecret))) {
-      throw new ForbiddenException('MFA verification required');
+      throw new ForbiddenException({ code: session.user.mfaSecret ? 'MFA_REQUIRED' : 'MFA_SETUP_REQUIRED', message: 'MFA verification required' });
     }
     if (options.permission && !hasPermission(member.role, options.permission, tenant.settings?.analystCanExport ?? true)) {
       throw new ForbiddenException('Permission denied');
     }
-    await data.touchSession(session.id);
+    if (options.touch !== false) await data.touchSession(session.id);
     return { session, user: session.user, member, tenant };
   }
   /** `timeout` (ms) only for the few bulk requests that must stay one transaction (adopting prices); others keep Database.run's 20 s. */
@@ -106,6 +106,20 @@ export class AuthService {
       tenant: { id: p.tenant.id, name: p.tenant.name, slug: p.tenant.slug },
       mfaEnabled: Boolean(p.user.mfaSecret), expiresAt: p.session.expiresAt,
     }));
+  }
+  /** Public only at the guard layer so missing/expired cookies can receive a precise 401. No session touch. */
+  async sessionStatus(ctx: RequestContext) {
+    return this.db.readSnapshot(ctx.tenantId, async data => {
+      const p = await this.checkSession(data, ctx, { partial: true, touch: false });
+      const required = p.member.role === 'owner' || p.tenant.settings?.mfaRequiredForAll;
+      const state = !p.user.mfaSecret && required ? 'mfa_setup_required'
+        : p.session.assurance === 'full' ? 'authenticated' : this.state(p.session.assurance);
+      return {
+        state, expiresAt: p.session.expiresAt,
+        idleExpiresAt: new Date(Math.min(p.session.expiresAt.getTime(), p.session.lastSeenAt.getTime() + this.config.SESSION_IDLE_MINUTES * 60000)),
+        nextAction: state === 'authenticated' ? 'none' : state === 'mfa_required' ? 'verify_mfa' : 'setup_mfa',
+      };
+    });
   }
   async logout(ctx: RequestContext) {
     return this.authenticated(ctx, { partial: true, mutation: true }, async (data, p) => {

@@ -17,7 +17,7 @@ export type Store = { id: string; hostname: string; owner: Session };
 
 /** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3, the recon job). */
 export function testServices() {
-  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new InlineReconQueue(), generatedFiles: new InlineGeneratedFilesQueue() };
+  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new InlineReconQueue(), generatedFiles: new InlineGeneratedFilesQueue(), redisHealth: async () => undefined };
 }
 
 export async function createHarness() {
