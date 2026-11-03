@@ -100,6 +100,19 @@ export const updatePricingSettings = z.object({
   marketplaceRules: z.array(marketplacePriceRule).max(MARKETPLACES.length)
     .refine(rules => new Set(rules.map(r => r.marketplaceId)).size === rules.length, 'One rule per marketplace').optional(),
 }).strict().refine(v => Object.keys(v).length > 0, 'Nothing to change');
+const settingsThresholds = z.object({
+  priceTolerance: threeDecimals(z.number().min(0).max(100000)).optional(),
+  stockThreshold: z.number().int().min(0).max(2147483647).optional(),
+  staleHours: z.number().int().min(1).max(8760).optional(),
+}).strict().refine(v => Object.keys(v).length > 0, 'Nothing to change');
+export const updateTenantSettings = z.object({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  profile: z.object({ name: z.string().trim().min(1).max(100) }).strict().optional(),
+  thresholds: settingsThresholds.optional(),
+  pricing: updatePricingSettings.optional(),
+  security: z.object({ mfaRequiredForAll: z.boolean().optional(), analystCanExport: z.boolean().optional() })
+    .strict().refine(v => Object.keys(v).length > 0, 'Nothing to change').optional(),
+}).strict().refine(v => Object.keys(v).some(k => k !== 'expectedRevision'), 'Nothing to change');
 const categoryKey = { categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
 export const categoryPriceRule = ruleWith(categoryKey);
 export const categoryPriceRuleKey = z.object(categoryKey).strict();

@@ -37,7 +37,7 @@ export function checkRuleVersion(expected: string | null | undefined, current: {
   if (stale) throw new ConflictException('This price was changed by someone else; reload it and try again');
 }
 
-function settingsView(p: TenantPricing) {
+export function settingsView(p: TenantPricing) {
   const s = p.settings ?? { ...DEFAULT_PRICING, updatedAt: null };
   return {
     defaultRule: ruleView(s.defaultRuleMode, s.defaultRuleValue),
@@ -67,7 +67,11 @@ export class PricingService {
 
   /** One audit event per changed setting and per changed marketplace rule; an unchanged value writes nothing. */
   updateSettings(ctx: RequestContext, input: z.infer<typeof contracts.updatePricingSettings>) {
-    return this.change(ctx, 'pricing.settings', async (data, actor) => {
+    return this.change(ctx, 'pricing.settings', (data, actor) => this.writeSettings(data, actor, ctx.requestId, input));
+  }
+
+  /** Shared transactional writer; callers must authenticate and hold the tenant lock. */
+  async writeSettings(data: TenantData, actor: string, requestId: string, input: z.infer<typeof contracts.updatePricingSettings>) {
       const before = settingsView(await loadPricing(data));
       const next = {
         defaultRule: input.defaultRule ? ruleView(input.defaultRule.mode, stored(input.defaultRule).value) : before.defaultRule,
@@ -82,7 +86,7 @@ export class PricingService {
           defaultRuleMode: next.defaultRule.mode, defaultRuleValue: 'value' in next.defaultRule ? next.defaultRule.value : 0,
           rounding: next.rounding, perMarketplaceEnabled: next.perMarketplaceEnabled, compareReferenceDefault: next.compareReferenceDefault,
         });
-        for (const field of fields) await data.event('pricing.settings_changed', actor, null, ctx.requestId, { field, old: before[field], new: next[field] });
+        for (const field of fields) await data.event('pricing.settings_changed', actor, null, requestId, { field, old: before[field], new: next[field] });
       }
 
       let rulesChanged = 0;
@@ -95,18 +99,17 @@ export class PricingService {
           const prior = old.get(marketplaceId) ?? null;
           if (prior && JSON.stringify(prior) === JSON.stringify(rule)) continue;
           await data.pricing.setMarketplaceRule(marketplaceId, { ...stored(r), rounding: r.rounding });
-          await data.event('pricing.marketplace_rule_set', actor, null, ctx.requestId, { marketplaceId, old: prior, new: rule });
+          await data.event('pricing.marketplace_rule_set', actor, null, requestId, { marketplaceId, old: prior, new: rule });
           rulesChanged++;
         }
         for (const [marketplaceId, prior] of old) {
           if (wanted.has(marketplaceId)) continue;
           await data.pricing.deleteMarketplaceRule(marketplaceId);
-          await data.event('pricing.marketplace_rule_deleted', actor, null, ctx.requestId, { marketplaceId, old: prior });
+          await data.event('pricing.marketplace_rule_deleted', actor, null, requestId, { marketplaceId, old: prior });
           rulesChanged++;
         }
       }
       return { result: settingsView(await loadPricing(data)), changed: fields.length + rulesChanged > 0 };
-    });
   }
 
   categoryRules(ctx: RequestContext) {

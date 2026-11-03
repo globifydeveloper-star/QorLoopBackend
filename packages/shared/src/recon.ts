@@ -3,6 +3,7 @@ import { JOB_DEFAULTS } from './queue.js';
 
 /** Why the reconciliation must be recomputed; every change that can move a marketplace price or availability names one. */
 export type ReconReason =
+  | 'settings.changed'
   | 'pricing.settings'
   | 'pricing.category_rule'
   | 'product.price_rule'

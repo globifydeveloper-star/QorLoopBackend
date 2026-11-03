@@ -7,6 +7,7 @@ import { CategoryRepository, ProductRepository } from './products.js';
 import { PricingRepository } from './pricing.js';
 import { ReconRepository } from './recon.js';
 import { GeneratedFilesRepository } from './generated-files.js';
+import { SettingsRepository } from './settings.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
@@ -138,6 +139,7 @@ export class TenantData {
   readonly pricing: PricingRepository;
   readonly recon: ReconRepository;
   readonly generatedFiles: GeneratedFilesRepository;
+  readonly settings: SettingsRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
@@ -145,6 +147,7 @@ export class TenantData {
     this.pricing = new PricingRepository(tenantId, tx);
     this.recon = new ReconRepository(tenantId, tx);
     this.generatedFiles = new GeneratedFilesRepository(tenantId, tx);
+    this.settings = new SettingsRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }
