@@ -59,14 +59,14 @@ Standard errors use `{ error: { code, message, details? }, requestId }`: missing
 
 ## Exact PowerShell checks on the demo tenant
 
-Prerequisite: restart the demo API with this code through its existing development workflow. No migration or seed is needed. Sign in as an existing demo Owner/Admin in the app and complete its normal MFA challenge. Keep the cookie value private; do not paste it into chat or commands/history. In browser DevTools, locate the existing `qorloop` cookie for `qorloop-demo.localhost` and enter only its value at the hidden local prompt.
+Prerequisite: restart the demo API with this code through its existing development workflow. No migration or seed is needed. Use an existing demo Owner/Admin account with MFA enrollment already completed. Enter email, password and, when requested, the six-digit authenticator code into the local prompts, following the bulk-price check's login flow. Password and authenticator-code prompts are hidden; do not paste credentials into chat or commands/history.
 
 ```powershell
 Set-Location 'D:\Qorloop-backend'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\dev\onboarding-check.ps1'
 ```
 
-The script creates a local `WebRequestSession` containing that existing cookie and makes only this request:
+The script logs in through `POST /api/auth/login`, verifies MFA through `POST /api/auth/mfa/verify` when required, and keeps the rotated cookie in a local `WebRequestSession`. After authentication, it makes only this GET request:
 
 ```powershell
 $qorloopResponse = Invoke-WebRequest -UseBasicParsing -Method Get `
@@ -96,4 +96,4 @@ Expected final line:
 PASS: all four required steps done; Talabat and Snoonu applied. Optional rows show real remaining work.
 ```
 
-A failed expectation raises an error without changing demo business data. A 401 means obtain a current authenticated cookie; a 403 means finish MFA; a 404 may mean the API has not been restarted with this code. The script does not print authentication responses, credentials, cookies or tokens, does not log in/out, and does not upload, change pricing, apply files, generate files or recompute anything. The usual server-side session-activity touch still applies. These are expected demo results, not a claim of live verification.
+A failed expectation raises an error without changing demo business data. A 401 means rerun the login; a 403 means finish MFA; a 404 may mean the API has not been restarted with this code. The script does not print authentication responses, credentials, cookies or tokens. Authentication creates its normal session/audit records; after login the script is GET-only, including no logout POST. It does not upload, change pricing, apply files, generate files or recompute anything. The usual server-side session-activity touch still applies. These are expected demo results, not a claim of live verification.
