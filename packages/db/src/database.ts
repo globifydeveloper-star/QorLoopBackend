@@ -9,6 +9,7 @@ import { ReconRepository } from './recon.js';
 import { GeneratedFilesRepository } from './generated-files.js';
 import { SettingsRepository } from './settings.js';
 import { ActivityRepository } from './activity.js';
+import { OnboardingRepository } from './onboarding.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
@@ -142,6 +143,7 @@ export class TenantData {
   readonly generatedFiles: GeneratedFilesRepository;
   readonly settings: SettingsRepository;
   readonly activity: ActivityRepository;
+  readonly onboarding: OnboardingRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
@@ -151,6 +153,7 @@ export class TenantData {
     this.generatedFiles = new GeneratedFilesRepository(tenantId, tx);
     this.settings = new SettingsRepository(tenantId, tx);
     this.activity = new ActivityRepository(tenantId, tx);
+    this.onboarding = new OnboardingRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }

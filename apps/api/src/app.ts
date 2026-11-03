@@ -40,6 +40,8 @@ import { SettingsController } from './settings/settings.controller.js';
 import { SettingsService } from './settings/settings.service.js';
 import { ActivityController } from './activity/activity.controller.js';
 import { ActivityService } from './activity/activity.service.js';
+import { OnboardingController } from './onboarding/onboarding.controller.js';
+import { OnboardingService } from './onboarding/onboarding.service.js';
 import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
 
 @Controller()
@@ -83,14 +85,14 @@ export async function buildApp(config: Config, options: { database?: Database; c
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
   const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
       { provide: READINESS, useValue: () => checkReadiness(() => database.ping(), options.redisHealth ?? (() => {
         if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
         return queueRedis.ping();
       }), () => storage.check()) },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },
