@@ -5,7 +5,7 @@ import type { ProductFilter, Role, TenantData } from '../../../../packages/db/sr
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import { normalizeBarcode } from '../../../../packages/core/src/barcode.js';
 import { hasPermission } from '../../../../packages/core/src/roles.js';
-import { DEFAULT_READINESS_RULES, isReady, READINESS_REASONS } from '../../../../packages/core/src/products/readiness.js';
+import { DEFAULT_READINESS_RULES, isReady, missingDetails, READINESS_REASONS } from '../../../../packages/core/src/products/readiness.js';
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
@@ -92,6 +92,8 @@ export class ProductsService {
     return {
       ...item(product, showCost), size: product.size, erpActive: product.erpActive, createdAt: product.createdAt,
       category: name(category), subcategory: name(subcategory),
+      // informational only: activation does not require them (DEFAULT_READINESS_RULES)
+      ...missingDetails(product),
       listings: listings.map(l => ({ marketplaceId: l.marketplaceId, marketplaceProductId: l.marketplaceProductId, price: l.price.toNumber(), available: l.available, updatedAt: l.updatedAt })),
       // marketplacePrice and the rule chain that explains it
       ...(hasPermission(role, 'pricing.view') ? await productPricingView(data, product) : {}),
@@ -157,7 +159,10 @@ export class ProductsService {
     return detail;
   }
 
-  /** Activated products become reconcilable (no longer 'new'): a recon recompute is asked for after commit. */
+  /**
+   * Activated products become reconcilable (no longer 'new'): a recon recompute is asked for after commit.
+   * arabicNameMissing / categoryMissing count the activated products still lacking them; they never block.
+   */
   async activate(ctx: RequestContext, input: z.infer<typeof contracts.activateProducts>) {
     const result = await this.auth.authenticated(ctx, { permission: 'products.activate', mutation: true }, async (data, p) => {
       const ids = 'ids' in input ? [...new Set(input.ids)] : null;
@@ -178,7 +183,13 @@ export class ProductsService {
         action: 'product.field_changed', entityId, details: { field: 'status', old: 'new', new: 'active' },
       })));
       await data.event('products.activated', p.user.id, null, ctx.requestId, { mode: ids ? 'ids' : 'all', activated: activated.length, skipped: skipped.length });
-      return { activated: activated.length, skipped: skipped.slice(0, MAX_SKIPPED_LISTED), skippedCount: skipped.length };
+      const missing = activated.map(id => missingDetails(byId.get(id)!));
+      return {
+        activated: activated.length,
+        arabicNameMissing: missing.filter(m => m.arabicNameMissing).length,
+        categoryMissing: missing.filter(m => m.categoryMissing).length,
+        skipped: skipped.slice(0, MAX_SKIPPED_LISTED), skippedCount: skipped.length,
+      };
     });
     if (result.activated) await this.recon.enqueueRecon(ctx.tenantId, 'product.activated');
     return result;

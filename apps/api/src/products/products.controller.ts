@@ -41,9 +41,12 @@ export class ProductsController {
   }
 
   @Post('activate') @HttpCode(200) @Access({ permission: 'products.activate' })
-  @Contract('Activate new products that are ready (Arabic name and category by default): the given ids (max 500) or all new ones', dto.activateProducts, {
+  @Contract('Activate new products: the given ids (max 500) or all new ones. No Arabic name or category is required; ids that are unknown, of another store or not new are skipped', dto.activateProducts, {
     type: 'object', properties: {
-      activated: { type: 'integer' }, skippedCount: { type: 'integer' },
+      activated: { type: 'integer' },
+      arabicNameMissing: { type: 'integer', description: 'Activated products without an Arabic name (informational, never blocks)' },
+      categoryMissing: { type: 'integer', description: 'Activated products without a category (informational, never blocks)' },
+      skippedCount: { type: 'integer' },
       skipped: { type: 'array', description: 'First 200', items: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, reason: { type: 'string' } } } },
     },
   })
@@ -52,11 +55,11 @@ export class ProductsController {
   }
 
   @Get(':id') @Access({ permission: 'products.view' })
-  @Contract('One product with its marketplace listings and category names')
+  @Contract('One product with its marketplace listings, category names and the informational arabicNameMissing / categoryMissing flags')
   get(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string) { return this.products.get(context(req, this.config), id); }
 
   @Patch(':id') @Access({ permission: 'products.edit' })
-  @Contract('Edit the Qorloop-owned fields (Arabic name, category, subcategory, status). Activating needs products.activate and a ready product; expectedUpdatedAt gives 409 when the product changed', dto.updateProduct)
+  @Contract('Edit the Qorloop-owned fields (Arabic name, category, subcategory, status). Activating (also re-activating) needs products.activate, not an Arabic name or category; expectedUpdatedAt gives 409 when the product changed', dto.updateProduct)
   update(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string, @Body(new ZodPipe(dto.updateProduct)) input: z.infer<typeof dto.updateProduct>) {
     return this.products.update(context(req, this.config), id, input);
   }

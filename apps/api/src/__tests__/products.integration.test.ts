@@ -181,6 +181,7 @@ describe('product detail', () => {
     expect(r.statusCode).toBe(200);
     const d = r.json().data;
     expect(d).toMatchObject({ id, nameEn: 'Detail Milk', category: { id: dairy, nameEn: 'Dairy', nameAr: 'ألبان' }, subcategory: { id: milk, nameEn: 'Milk', nameAr: null } });
+    expect([d.arabicNameMissing, d.categoryMissing]).toEqual([true, false]);
     expect(d.listings).toEqual([{ marketplaceId: 'talabat', marketplaceProductId: 'T-1', price: 3.25, available: true, updatedAt: expect.any(String) }]);
     expect('costPrice' in d).toBe(false);
     expect(r.body).not.toMatch(/imageKey|hidden\.png/);
@@ -254,19 +255,38 @@ describe('editing a product', () => {
     await patch(id, { subcategoryId: bread });
     expect((await patch(id, { categoryId: null })).json().data).toMatchObject({ categoryId: null, subcategoryId: null });
   });
-  it('activates only a ready product; deactivating needs no readiness', async () => {
+  it('activates and re-activates without an Arabic name or category, reporting them as missing details', async () => {
     const id = await fresh();
-    const notReady = await patch(id, { status: 'active' });
-    expect(notReady.statusCode).toBe(400);
-    expect(notReady.json().error.details).toEqual([{ path: 'nameAr', message: 'Arabic name missing' }, { path: 'category', message: 'Category missing' }]);
-    const ok = await patch(id, { nameAr: 'حليب', categoryId: dairy, status: 'active' });
-    expect(ok.statusCode).toBe(200);
-    expect(ok.json().data.status).toBe('active');
+    const activated = await patch(id, { status: 'active' });
+    expect(activated.statusCode).toBe(200);
+    expect(activated.json().data).toMatchObject({ status: 'active', nameAr: null, categoryId: null, arabicNameMissing: true, categoryMissing: true });
     expect((await patch(id, { status: 'inactive' })).json().data.status).toBe('inactive');
-    expect((await patch(id, { status: 'active' })).json().data.status).toBe('active');
+    // re-activating a previously active product needs nothing more either
+    const again = await patch(id, { status: 'active' });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().data).toMatchObject({ status: 'active', arabicNameMissing: true, categoryMissing: true });
+    expect((await patch(id, { nameAr: 'حليب', categoryId: dairy })).json().data).toMatchObject({ status: 'active', arabicNameMissing: false, categoryMissing: false });
+    expect((await events(a, 'product.field_changed', id)).filter(e => (e.details as { field: string }).field === 'status').map(e => e.details)).toEqual([
+      { field: 'status', old: 'new', new: 'active' }, { field: 'status', old: 'active', new: 'inactive' }, { field: 'status', old: 'inactive', new: 'active' },
+    ]);
+  });
+  it('activation keeps its other checks: 403 without permission, 404 outside the store, 409 for a stale version', async () => {
+    const id = await fresh();
+    expect((await patch(id, { status: 'active' }, analyst)).statusCode).toBe(403);
+    const bBarcode = nextBarcode();
+    const foreign = (await seed(b, [{ barcode: bBarcode, nameEn: 'Beta new', status: 'new' }]))[bBarcode]!;
+    const notFound = [await patch(foreign, { status: 'active' }), await patch(randomUUID(), { status: 'active' })];
+    expect(notFound.map(r => [r.statusCode, r.json().error.code])).toEqual([[404, 'NOT_FOUND'], [404, 'NOT_FOUND']]);
+    expect((await h.fixture.prisma.product.findUniqueOrThrow({ where: { id: foreign } })).status).toBe('new');
+    const seen = (await h.request('GET', '/api/products/' + id, a, manager)).json().data.updatedAt;
+    const edited = await patch(id, { nameAr: 'أ', expectedUpdatedAt: seen });
+    const stale = await patch(id, { status: 'active', expectedUpdatedAt: seen });
+    expect([stale.statusCode, stale.json().error.code]).toEqual([409, 'CONFLICT']);
+    expect((await h.fixture.prisma.product.findUniqueOrThrow({ where: { id } })).status).toBe('new');
+    expect((await patch(id, { status: 'active', expectedUpdatedAt: edited.json().data.updatedAt })).json().data.status).toBe('active');
   });
   it('setting active needs products.activate on top of products.edit', async () => {
-    const id = await fresh({ nameAr: 'حليب', categoryId: dairy });
+    const id = await fresh();
     const perms = ROLE_PERMISSIONS.catalogue_manager;
     perms.splice(perms.indexOf('products.activate'), 1);
     try {
@@ -426,49 +446,55 @@ describe('activating new products', () => {
     cat = await category(s, { nameEn: 'Ready' });
   });
 
-  it('activates the ready ones among the given ids and says why the others were skipped', async () => {
+  it('activates the given new ids with or without Arabic name and category, and says why the others were skipped', async () => {
     const ids = await seed(s, [
-      { barcode: '7101', nameEn: 'Ready', status: 'new', nameAr: 'جاهز', categoryId: cat },
+      { barcode: '7101', nameEn: 'Complete', status: 'new', nameAr: 'جاهز', categoryId: cat },
       { barcode: '7102', nameEn: 'No Arabic', status: 'new', categoryId: cat },
       { barcode: '7103', nameEn: 'No category', status: 'new', nameAr: 'فئة' },
       { barcode: '7104', nameEn: 'Already active', status: 'active', nameAr: 'نشط', categoryId: cat },
+      { barcode: '7105', nameEn: 'Inactive', status: 'inactive' },
     ]);
     const foreign = Object.values(await seed(b, [{ barcode: nextBarcode(), nameEn: 'Beta new', status: 'new', nameAr: 'ب' }]))[0]!;
     const unknown = randomUUID();
-    const r = await activate({ ids: [ids['7101'], ids['7102'], ids['7103'], ids['7104'], foreign, unknown, ids['7101']] });
+    const r = await activate({ ids: [ids['7101'], ids['7102'], ids['7103'], ids['7104'], ids['7105'], foreign, unknown, ids['7101']] });
     expect(r.statusCode).toBe(200);
     expect(r.json().data).toEqual({
-      activated: 1, skippedCount: 5,
+      activated: 3, arabicNameMissing: 1, categoryMissing: 1, skippedCount: 4,
       skipped: [
-        { id: ids['7102'], reason: 'Arabic name missing' }, { id: ids['7103'], reason: 'Category missing' },
-        { id: ids['7104'], reason: 'Not a new product' }, { id: foreign, reason: 'Not found' }, { id: unknown, reason: 'Not found' },
+        { id: ids['7104'], reason: 'Not a new product' }, { id: ids['7105'], reason: 'Not a new product' },
+        { id: foreign, reason: 'Not found' }, { id: unknown, reason: 'Not found' },
       ],
     });
-    expect(await status(ids['7101']!)).toBe('active');
-    expect(await status(ids['7102']!)).toBe('new');
+    for (const barcode of ['7101', '7102', '7103']) expect(await status(ids[barcode]!)).toBe('active');
+    expect(await status(ids['7105']!)).toBe('inactive'); // bulk moves only new products; re-activation is a PATCH
     expect(await status(foreign)).toBe('new');
-    expect((await events(s, 'product.field_changed', ids['7101'])).map(e => e.details)).toEqual([{ field: 'status', old: 'new', new: 'active' }]);
+    expect((await events(s, 'product.field_changed', ids['7102'])).map(e => e.details)).toEqual([{ field: 'status', old: 'new', new: 'active' }]);
     const summary = await events(s, 'products.activated');
-    expect(summary.map(e => e.details)).toEqual([{ mode: 'ids', activated: 1, skipped: 5 }]);
+    expect(summary.map(e => e.details)).toEqual([{ mode: 'ids', activated: 3, skipped: 4 }]);
     expect(summary[0]!.actorId).toBeTruthy();
   });
-  it('all: activates every ready new product and caps the skipped list at 200', async () => {
+  it('all: activates every new product of this store and counts the ones still missing details', async () => {
     await seed(s, [
-      ...Array.from({ length: 30 }, (_, i) => ({ barcode: '72' + String(i).padStart(4, '0'), nameEn: 'Ready all ' + i, status: 'new', nameAr: 'ج', categoryId: cat })),
-      ...Array.from({ length: 205 }, (_, i) => ({ barcode: '73' + String(i).padStart(4, '0'), nameEn: 'Not ready ' + i, status: 'new' })),
+      ...Array.from({ length: 30 }, (_, i) => ({ barcode: '72' + String(i).padStart(4, '0'), nameEn: 'Complete all ' + i, status: 'new', nameAr: 'ج', categoryId: cat })),
+      ...Array.from({ length: 205 }, (_, i) => ({ barcode: '73' + String(i).padStart(4, '0'), nameEn: 'Bare ' + i, status: 'new' })),
     ]);
     const before = await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'new' } });
+    expect(before).toBe(235);
     const r = await activate({ all: true });
     expect(r.statusCode).toBe(200);
-    const d = r.json().data;
-    expect(d.activated).toBe(30);
-    expect(d.skippedCount).toBe(before - 30);
-    expect(d.skipped).toHaveLength(200);
-    expect(d.skipped.every((x: { reason: string }) => x.reason === 'Arabic name missing' || x.reason === 'Category missing')).toBe(true);
-    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'new', nameAr: { not: null }, categoryId: { not: null } } })).toBe(0);
+    expect(r.json().data).toEqual({ activated: 235, arabicNameMissing: 205, categoryMissing: 205, skipped: [], skippedCount: 0 });
+    expect(await h.fixture.prisma.product.count({ where: { tenantId: s.id, status: 'new' } })).toBe(0);
     expect(await h.fixture.prisma.product.count({ where: { tenantId: b.id, status: 'active' } })).toBe(0);
-    expect((await events(s, 'products.activated')).at(-1)?.details).toEqual({ mode: 'all', activated: 30, skipped: before - 30 });
-    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'product.field_changed', details: { path: ['new'], equals: 'active' } } })).toBe(31);
+    expect((await events(s, 'products.activated')).at(-1)?.details).toEqual({ mode: 'all', activated: 235, skipped: 0 });
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'product.field_changed', details: { path: ['new'], equals: 'active' } } })).toBe(238);
+  });
+  it('caps the skipped list at 200', async () => {
+    const r = await activate({ ids: Array.from({ length: 205 }, randomUUID) });
+    expect(r.statusCode).toBe(200);
+    const d = r.json().data;
+    expect([d.activated, d.arabicNameMissing, d.categoryMissing, d.skippedCount]).toEqual([0, 0, 0, 205]);
+    expect(d.skipped).toHaveLength(200);
+    expect(d.skipped.every((x: { reason: string }) => x.reason === 'Not found')).toBe(true);
   });
   it('needs products.activate and a strict body', async () => {
     expect((await activate({ all: true }, an)).statusCode).toBe(403);

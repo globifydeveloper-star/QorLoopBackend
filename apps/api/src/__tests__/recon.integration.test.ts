@@ -213,7 +213,7 @@ describe('triggers', () => {
     expect(recon.calls.slice(start).map(c => c.reason)).toEqual(['product.status']);
     // inactive and unlisted: in sync, no longer "not listed"
     expect((await h.fixture.prisma.reconRow.findFirstOrThrow({ where: { tenantId: a.id, marketplaceId: 'talabat', productId: d } })).status).toBe('in_sync');
-    // back to active without the readiness check (it has no Arabic name or category), as the first import made it
+    // back to active directly in the database (no recompute asked for), as the first import made it
     await h.fixture.prisma.product.update({ where: { id: d }, data: { status: 'active' } });
 
     // a second ERP import makes 'new' products; activating one asks for a recompute
