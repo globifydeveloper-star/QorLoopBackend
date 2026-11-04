@@ -8,6 +8,7 @@ import type { ProcessUploadJob } from '../../../packages/shared/src/queue.js';
 import { inspectFile, extensionOf } from '../../../packages/core/src/upload/safety.js';
 import { ParseError, parseSpreadsheet } from '../../../packages/core/src/upload/parse.js';
 import { detectTemplate, looksLikeOtherSource, suggestMapping, validateMapping, type TemplateLike } from '../../../packages/core/src/upload/mapping.js';
+import { currentVersions } from '../../../packages/core/src/upload/templates.js';
 import { exceedsInvalidShare, mapRows, type ErpRow, type MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
 import { buildErpReview, buildMarketplaceReview, type Review, type StoredReviewSummary } from '../../../packages/core/src/upload/review.js';
 import { UPLOAD_LIMITS } from '../../../packages/core/src/upload/constants.js';
@@ -72,7 +73,8 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
 
     // 4. Detect the layout: a saved/built-in mapping, the user's confirmed mapping, or ask for one.
     await step('detect', 45);
-    const templates = await database.run(tenantId, d => d.uploads.allMappings());
+    // Only the newest version of each saved layout: an edit (or a re-save under the same name) supersedes the older ones.
+    const templates = currentVersions(await database.run(tenantId, d => d.uploads.allMappings()));
     const asLike = (t: (typeof templates)[number]): TemplateLike => ({ id: t.id, source: t.source, name: t.name, version: t.version, fields: t.fields as Record<string, string>, signature: t.signature });
     const likes = templates.map(asLike);
     let fields = (upload.mapping as Record<string, string> | null) ?? null;

@@ -33,6 +33,13 @@ export const confirmMapping = z.object({
   fields: z.record(z.string().max(60), z.string().max(300)),
   saveAs: z.string().trim().min(1).max(100).optional(),
 }).strict();
+/** PUT /api/templates/:source. fields lists only the fields to change (null unmaps an optional one); expectedVersion is the version read. */
+export const updateTemplate = z.object({
+  name: z.string().trim().min(1).max(100),
+  expectedVersion: z.number().int().min(1),
+  fields: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,59}$/, 'Unknown field'), z.string().max(300).nullable())
+    .refine(f => Object.keys(f).length > 0, 'Change at least one field'),
+}).strict();
 export const reviewQuery = z.object({
   tab: z.enum(['price', 'stock', 'availability', 'new', 'unmatched', 'all']).default('all'),
   page: z.coerce.number().int().min(1).default(1),

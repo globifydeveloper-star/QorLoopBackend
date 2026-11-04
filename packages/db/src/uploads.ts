@@ -45,6 +45,10 @@ export class UploadRepository {
   allMappings() {
     return this.tx.inputTemplate.findMany({ where: { OR: [{ tenantId: this.tenantId }, { tenantId: null }] } });
   }
+  /** Every version of one of this tenant's saved layouts, newest first. Built-in layouts (tenant_id IS NULL) are not editable. */
+  layoutVersions(source: string, name: string) {
+    return this.tx.inputTemplate.findMany({ where: { tenantId: this.tenantId, source, name }, orderBy: { version: 'desc' } });
+  }
   async saveMapping(source: string, name: string, fields: Record<string, string>, signature: string[]) {
     const prior = await this.tx.inputTemplate.findFirst({ where: { tenantId: this.tenantId, source, name }, orderBy: { version: 'desc' } });
     return this.tx.inputTemplate.create({ data: { tenantId: this.tenantId, source, name, version: (prior?.version ?? 0) + 1, fields, signature } });

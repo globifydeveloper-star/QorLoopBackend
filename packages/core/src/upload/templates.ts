@@ -2,6 +2,7 @@ import { MARKETPLACES } from '../constants.js';
 import { fileColumns } from '../generated-files.js';
 import { UPLOAD_SOURCES, type UploadSource } from './constants.js';
 import { fieldsFor } from './fields.js';
+import { headerKey } from './mapping.js';
 
 /**
  * Templates screen: how Qorloop reads each source file (saved layouts in input_templates) and which columns
@@ -102,3 +103,51 @@ export type TemplateSourceEntry = ReturnType<typeof sourceEntry>;
 
 export const TEMPLATE_SOURCES = UPLOAD_SOURCES;
 export const isMarketplace = (source: string) => (MARKETPLACES as readonly string[]).includes(source);
+
+export interface LayoutEditProblem { path: string; message: string }
+export type LayoutFieldChange = { field: string; old: string | null; new: string | null };
+export type LayoutEdit =
+  | { ok: true; fields: Record<string, string>; signature: string[]; changes: LayoutFieldChange[] }
+  | { ok: false; problems: LayoutEditProblem[] };
+
+/**
+ * Applies requested field changes to a layout's current mapping. Fields left out keep their header; null or '' unmaps.
+ * With the last file's headers on record, a new header must be one of them, matched by headerKey (case and spaces
+ * ignored, Snoonu branch names too); the file's own spelling is stored. Without a file on record, headers are taken by
+ * name. Required fields stay mapped and no column serves two fields. The result is the next version's fields and
+ * signature (its mapped headers, as signatureFor gives at mapping confirmation).
+ */
+export function planLayoutEdit(source: UploadSource, current: unknown, requested: Record<string, string | null>, fileHeaders: string[] | null): LayoutEdit {
+  const label = SOURCE_LABELS[source];
+  const defs = fieldsFor(source);
+  const problems: LayoutEditProblem[] = [];
+  const known = new Set(defs.map(d => d.key));
+  for (const key of Object.keys(requested)) if (!known.has(key)) problems.push({ path: `fields.${key}`, message: `${label} files have no field "${key}"` });
+
+  const before = mappingOf(source, current);
+  const next: Record<string, string | null> = { ...before };
+  for (const d of defs) {
+    if (!Object.hasOwn(requested, d.key)) continue;
+    const raw = requested[d.key];
+    const wanted = typeof raw === 'string' ? raw.trim() : '';
+    if (!wanted) { next[d.key] = null; continue; }
+    if (wanted === before[d.key] || !fileHeaders) { next[d.key] = wanted; continue; }
+    const hits = fileHeaders.filter(h => headerKey(source, h) === headerKey(source, wanted));
+    if (hits.length === 1) next[d.key] = hits[0];
+    else problems.push({ path: `fields.${d.key}`, message: hits.length ? `Column "${wanted}" appears more than once in the last ${label} file` : `Column "${wanted}" is not in the last ${label} file` });
+  }
+  for (const d of defs) if (d.required && !next[d.key]) problems.push({ path: `fields.${d.key}`, message: `${d.label} must be mapped` });
+  const owner = new Map<string, string>();
+  for (const d of defs) {
+    const h = next[d.key];
+    if (!h) continue;
+    const prior = owner.get(headerKey(source, h));
+    if (prior) problems.push({ path: `fields.${d.key}`, message: `Column "${h}" is already mapped to ${defs.find(x => x.key === prior)!.label}; a column can only be mapped to one field` });
+    else owner.set(headerKey(source, h), d.key);
+  }
+  if (problems.length) return { ok: false, problems };
+
+  const fields = Object.fromEntries(defs.flatMap(d => (next[d.key] ? [[d.key, next[d.key]!]] : [])));
+  const changes = defs.filter(d => before[d.key] !== next[d.key]).map(d => ({ field: d.key, old: before[d.key], new: next[d.key] }));
+  return { ok: true, fields, signature: Object.values(fields), changes };
+}

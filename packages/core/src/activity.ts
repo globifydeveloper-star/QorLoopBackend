@@ -1,3 +1,5 @@
+import { ERP_FIELDS, MARKETPLACE_FIELDS } from './upload/fields.js';
+
 /** Safe presentation of stored events. Never copy arbitrary details into an API response. */
 export const ACTIVITY_GROUPS = ['price', 'stock_uploads', 'catalogue', 'team_security'] as const;
 export type ActivityGroup = typeof ACTIVITY_GROUPS[number];
@@ -5,7 +7,8 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
   price: ['pricing.settings_changed', 'pricing.marketplace_rule_set', 'pricing.marketplace_rule_deleted', 'pricing.category_rule_set',
     'pricing.category_rule_deleted', 'pricing.prices_adopted', 'pricing.bulk_applied', 'product.price_rule_set', 'product.price_rule_deleted', 'product.offer_set', 'product.offer_deleted'],
   stock_uploads: ['upload.created', 'upload.rejected', 'upload.queued', 'upload.mapping_confirmed', 'upload.apply_requested', 'upload.discarded',
-    'upload.needs_mapping', 'upload.reviewed', 'upload.failed', 'upload.applied', 'upload.apply_failed', 'recon.recompute_requested', 'recon.failed', 'file.generated', 'file.generation_failed'],
+    'upload.needs_mapping', 'upload.reviewed', 'upload.failed', 'upload.applied', 'upload.apply_failed', 'recon.recompute_requested', 'recon.failed', 'file.generated', 'file.generation_failed',
+    'template.updated'],
   catalogue: ['products.activated', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
   team_security: ['settings.changed', 'store.provisioned', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
@@ -30,6 +33,7 @@ function rule(v: unknown): SafeValue {
   return ['percent', 'amount', 'fixed'].includes(String(r.mode)) && number(r.value) !== null ? { mode: String(r.mode), value: number(r.value) } : null;
 }
 const role = (v: unknown) => ['owner', 'admin', 'catalogue_manager', 'analyst'].includes(String(v)) ? String(v) : null;
+const MAPPING_FIELDS: ReadonlySet<string> = new Set([...ERP_FIELDS, ...MARKETPLACE_FIELDS].map(f => f.key));
 const fields: Record<string, string> = {
   nameAr: 'Arabic name', nameEn: 'English name', sku: 'SKU', brand: 'Brand', size: 'Size', erpCategory: 'ERP category',
   categoryId: 'Category', subcategoryId: 'Subcategory', status: 'Product status', erpPrice: 'ERP price', costPrice: 'Cost price',
@@ -84,6 +88,13 @@ export function presentActivity(action: string, details: unknown, options: { pro
     change('offerPrice', number(object(d.old).price), number(object(d.new).price));
   } else if (action === 'team.role_changed') {
     summary = 'Team member role changed'; change('role', role(d.from), role(d.to));
+  } else if (action === 'template.updated') {
+    summary = 'Upload file mapping changed';
+    // headers are column names from the store's own files; only known field keys, cleaned text, at most 20 changes
+    for (const c of Array.isArray(d.changes) ? d.changes.slice(0, 20) : []) {
+      const ch = object(c);
+      if (typeof ch.field === 'string' && MAPPING_FIELDS.has(ch.field)) change(ch.field, text(ch.old), text(ch.new));
+    }
   } else {
     const summaries: Record<string, string> = {
       'upload.created': 'Upload started', 'upload.rejected': 'Upload rejected', 'upload.queued': 'Upload queued for processing',

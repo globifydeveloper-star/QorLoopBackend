@@ -1,9 +1,11 @@
-import { Controller, Get, Inject, Req } from '@nestjs/common';
-import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Inject, Param, Put, Req } from '@nestjs/common';
+import { ApiCookieAuth, ApiParam, ApiTags } from '@nestjs/swagger';
+import type { z } from 'zod';
+import * as dto from '../../../../packages/shared/src/contracts.js';
 import type { Config } from '../../../../packages/shared/src/config.js';
-import { UPLOAD_SOURCES } from '../../../../packages/core/src/upload/constants.js';
+import { UPLOAD_SOURCES, type UploadSource } from '../../../../packages/core/src/upload/constants.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
-import { Contract } from '../http/contracts.js';
+import { Contract, ZodPipe } from '../http/contracts.js';
 import { CONFIG } from '../tokens.js';
 import { TemplatesService } from './templates.service.js';
 
@@ -52,4 +54,11 @@ export class TemplatesController {
     type: 'object', properties: { items: { type: 'array', items: templateEntrySchema } },
   })
   list(@Req() req: AppRequest) { return this.templates.list(context(req, this.config)); }
+
+  @Put(':source') @Access({ permission: 'settings.edit' })
+  @ApiParam({ name: 'source', enum: [...UPLOAD_SOURCES] })
+  @Contract('Change the column a saved layout reads for the given fields (Owner/Admin). Writes the next version: only future uploads use it; applied uploads, generated files and comparisons are unchanged. 409 when expectedVersion is not the current version', dto.updateTemplate, templateEntrySchema)
+  update(@Req() req: AppRequest, @Param('source', new ZodPipe(dto.uploadSource)) source: UploadSource, @Body(new ZodPipe(dto.updateTemplate)) input: z.infer<typeof dto.updateTemplate>) {
+    return this.templates.update(context(req, this.config), source, input);
+  }
 }
