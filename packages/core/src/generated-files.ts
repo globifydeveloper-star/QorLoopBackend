@@ -99,10 +99,21 @@ export interface FilePlan {
   rows: PlainCell[][]; sheetName: string; delimiter: string;
 }
 
+/**
+ * The columns a generated file relies on, from an upload's stored mapping: rows are matched by the marketplace
+ * product ID when it is mapped, else by the first barcode. Shared with the Templates description.
+ */
+export function fileColumns(mapping: unknown) {
+  const fields = mapping && typeof mapping === 'object' ? mapping as Record<string, unknown> : {};
+  const header = (key: string) => typeof fields[key] === 'string' && fields[key] ? fields[key] as string : null;
+  const identifierField = header('marketplaceProductId') ? 'marketplaceProductId' as const : 'barcode1' as const;
+  return { identifierField, identifier: header(identifierField), price: header('price'), availability: header('available') };
+}
+
 /** Pure, shared plan: both preview and generation use recon flags and values, never recompute prices or stock. */
 export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, storedHeaders: unknown, recon: FileReconRow[], p: GenerateParams): FilePlan {
   const fields = mapping && typeof mapping === 'object' ? mapping as Record<string, unknown> : {};
-  const idField = typeof fields.marketplaceProductId === 'string' && fields.marketplaceProductId ? 'marketplaceProductId' : 'barcode1';
+  const idField = fileColumns(mapping).identifierField;
   for (const field of [idField, 'price', 'available']) {
     if (typeof fields[field] !== 'string' || !fields[field]) throw new GenerationBlocked(`The ${field === 'available' ? 'availability' : field === 'price' ? 'price' : 'identifying'} column is not mapped.`);
   }

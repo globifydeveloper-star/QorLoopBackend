@@ -9,7 +9,7 @@ export class GeneratedFilesRepository {
     return this.tx.upload.findFirst({
       where: { tenantId: this.tenantId, source: marketplaceId, status: 'applied' },
       orderBy: [{ appliedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, storageKey: true, fileName: true, mapping: true, headers: true, sheetName: true, source: true, createdAt: true, appliedAt: true },
+      select: { id: true, storageKey: true, fileName: true, mapping: true, headers: true, sheetName: true, source: true, createdAt: true, appliedAt: true, templateId: true },
     });
   }
   /**

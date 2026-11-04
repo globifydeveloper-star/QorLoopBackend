@@ -49,6 +49,28 @@ export class UploadRepository {
     const prior = await this.tx.inputTemplate.findFirst({ where: { tenantId: this.tenantId, source, name }, orderBy: { version: 'desc' } });
     return this.tx.inputTemplate.create({ data: { tenantId: this.tenantId, source, name, version: (prior?.version ?? 0) + 1, fields, signature } });
   }
+  /**
+   * Per layout version: how many of this tenant's uploads were read with it, the newest such upload, and the headers
+   * of the newest one that recorded headers. Two set-based reads, whatever the number of layouts.
+   */
+  async layoutUsage(templateIds: string[]) {
+    if (!templateIds.length) return new Map<string, { count: number; lastUsedAt: Date | null; headers: unknown; headersAt: Date | null }>();
+    const [counts, latest] = await Promise.all([
+      this.tx.upload.groupBy({ by: ['templateId'], where: { tenantId: this.tenantId, templateId: { in: templateIds } }, _count: { _all: true }, _max: { createdAt: true } }),
+      this.tx.$queryRaw<{ templateId: string; headers: unknown; createdAt: Date }[]>`
+        SELECT DISTINCT ON (template_id) template_id AS "templateId", headers, created_at AS "createdAt"
+        FROM uploads
+        WHERE tenant_id = ${this.tenantId}::uuid AND template_id = ANY(${templateIds}::uuid[]) AND headers IS NOT NULL
+        ORDER BY template_id, created_at DESC, id DESC`,
+    ]);
+    const out = new Map<string, { count: number; lastUsedAt: Date | null; headers: unknown; headersAt: Date | null }>();
+    for (const c of counts) out.set(c.templateId!, { count: c._count._all, lastUsedAt: c._max.createdAt, headers: null, headersAt: null });
+    for (const l of latest) {
+      const u = out.get(l.templateId) ?? { count: 0, lastUsedAt: null, headers: null, headersAt: null };
+      out.set(l.templateId, { ...u, headers: l.headers, headersAt: l.createdAt });
+    }
+    return out;
+  }
 
   /** Replaces the staging rows and errors of one upload in bulk (50k rows). */
   async replaceReview(
