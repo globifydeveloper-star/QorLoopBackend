@@ -55,7 +55,7 @@ export function notSetUpReason(source: UploadSource): string {
   const label = SOURCE_LABELS[source];
   return UNKNOWN_FORMAT.has(source)
     ? `No saved layout yet. Qorloop does not know the ${label} file format; upload a ${label} file and save its column mapping to set it up.`
-    : `No saved layout yet. Upload a ${label} file and choose to save its column mapping.`;
+    : `No saved layout yet. Upload ${source === 'erp' ? 'an' : 'a'} ${label} file and choose to save its column mapping.`;
 }
 
 export interface AppliedUpload { fileName: string; appliedAt: Date | null; mapping: unknown; headers: unknown; templateId: string | null }
@@ -87,8 +87,10 @@ export function outgoingView(source: UploadSource, applied: AppliedUpload | null
 export type OutgoingView = ReturnType<typeof outgoingView>;
 
 export function sourceEntry(source: UploadSource, layouts: LayoutView[], outgoing: OutgoingView | null) {
+  // ISO timestamps compare as text; a layout never used sorts after every used one
+  const desc = (x: string, y: string) => (x < y ? 1 : x > y ? -1 : 0);
   const ordered = [...layouts].sort((a, b) =>
-    (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? '') || b.savedAt.localeCompare(a.savedAt) || a.name.localeCompare(b.name));
+    desc(a.lastUsedAt ?? '', b.lastUsedAt ?? '') || desc(a.savedAt, b.savedAt) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return {
     source, label: SOURCE_LABELS[source],
     status: ordered.length ? 'set_up' as const : 'not_set_up' as const,
