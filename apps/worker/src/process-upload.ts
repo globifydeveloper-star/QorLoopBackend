@@ -110,11 +110,16 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
 
     // 6. Review: compare with the tenant's catalogue. Nothing is written to the catalogue until the user applies.
     await step('review', 75);
-    const [products, listings] = await database.run(tenantId, async d => [
+    const [products, listings, edits] = await database.run(tenantId, async d => [
       await d.uploads.productSnapshot(),
       upload.source === 'erp' ? [] : await d.uploads.listingSnapshot(upload.source),
+      // ERP: owner-edited catalogue stock, so the review can predict the stock conflicts the apply will raise (ADR 017)
+      upload.source === 'erp' ? await d.stock.allEdits() : new Map(),
     ] as const);
-    const catalog = products.map(p => ({ id: p.id, normalizedBarcode: p.normalizedBarcode, sku: p.sku, nameEn: p.nameEn, erpPrice: p.erpPrice.toNumber(), erpStock: p.erpStock, inLatestErpFile: p.inLatestErpFile }));
+    const catalog = products.map(p => ({
+      id: p.id, normalizedBarcode: p.normalizedBarcode, sku: p.sku, nameEn: p.nameEn, erpPrice: p.erpPrice.toNumber(), costPrice: p.costPrice?.toNumber() ?? null,
+      erpStock: p.erpStock, inLatestErpFile: p.inLatestErpFile, stockEdit: edits.get(p.id) ?? null,
+    }));
     const contains = upload.contains === 'partial' ? 'partial' : 'full';
     const review: Review = upload.source === 'erp'
       ? buildErpReview(mapped.erpRows as ErpRow[], rowsRead, errRows.map(e => ({ row: e.row, column: e.column ?? '', value: e.value ?? '', reason: e.reason })), catalog, contains, fields)
@@ -128,7 +133,7 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
     await database.run(tenantId, async d => {
       await d.uploads.replaceReview(uploadId, review.rows.map(r => ({
         rowNumber: r.rowNumber, matchProductId: r.productId, changeType: r.changeType,
-        parsed: { data: r.parsed, change: { price: r.price, stock: r.stock, availability: r.availability } } as never,
+        parsed: { data: r.parsed, change: { price: r.price, stock: r.stock, availability: r.availability, ...(r.stockConflict ? { stockConflict: true } : {}) } } as never,
       })), storedErrors);
       const ok = await d.uploads.transition(uploadId, ['processing'], {
         status: 'needs_review', step: 'review', progress: 100, headers: sheet.headers, sheetName: sheet.sheetName,

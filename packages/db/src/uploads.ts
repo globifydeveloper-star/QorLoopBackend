@@ -117,7 +117,7 @@ export class UploadRepository {
   productSnapshot() {
     return this.tx.product.findMany({
       where: { tenantId: this.tenantId },
-      select: { id: true, normalizedBarcode: true, sku: true, nameEn: true, erpPrice: true, erpStock: true, inLatestErpFile: true },
+      select: { id: true, normalizedBarcode: true, sku: true, nameEn: true, erpPrice: true, costPrice: true, erpStock: true, inLatestErpFile: true },
     });
   }
   listingSnapshot(marketplaceId: string) {
@@ -163,11 +163,13 @@ export class UploadRepository {
    * One INSERT ... SELECT FROM unnest(...) per 5,000 products: one bind parameter per column, not per value.
    * Timestamps are cut to milliseconds (here and below) so the updatedAt a client reads back as a JS Date matches the row.
    */
+  /** Returns the created products' ids by barcode (the per-upload change list records each new product). */
   async createProducts(rows: NewProduct[]) {
+    const created = new Map<string, string>();
     for (let i = 0; i < rows.length; i += 5000) {
       const c = rows.slice(i, i + 5000);
       const text = (n: number | null) => (n === null ? null : String(n));
-      await this.tx.$executeRaw`
+      const ids = await this.tx.$queryRaw<{ id: string; barcode: string }[]>`
         INSERT INTO products (id, tenant_id, barcode, normalized_barcode, sku, name_en, name_ar, brand, erp_category,
                               erp_price, cost_price, erp_stock, erp_active, in_latest_erp_file, status, created_at, updated_at)
         SELECT gen_random_uuid(), ${this.tenantId}::uuid, v.barcode, v.barcode, v.sku, v.name_en, v.name_ar, v.brand, v.erp_category,
@@ -177,8 +179,11 @@ export class UploadRepository {
           ${c.map(r => r.brand)}::text[], ${c.map(r => r.erpCategory)}::text[], ${c.map(r => text(r.erpPrice))}::text[],
           ${c.map(r => text(r.costPrice))}::text[], ${c.map(r => String(r.erpStock))}::text[], ${c.map(r => String(r.erpActive))}::text[],
           ${c.map(r => r.status)}::text[]
-        ) AS v(barcode, sku, name_en, name_ar, brand, erp_category, erp_price, cost_price, erp_stock, erp_active, status)`;
+        ) AS v(barcode, sku, name_en, name_ar, brand, erp_category, erp_price, cost_price, erp_stock, erp_active, status)
+        RETURNING id, normalized_barcode AS barcode`;
+      for (const r of ids) created.set(r.barcode, r.id);
     }
+    return created;
   }
   /** One UPDATE ... FROM unnest(...) per 5,000 products; sets every ERP-owned field to an absolute value. */
   async updateProducts(rows: ProductWrite[]) {
@@ -199,13 +204,12 @@ export class UploadRepository {
         WHERE p.tenant_id = ${this.tenantId}::uuid AND p.id = v.id`;
     }
   }
-  /** Full ERP list: products not in the file are flagged (never deactivated). Returns the flagged ids. */
-  async flagMissingProducts(barcodes: string[]) {
-    const rows = await this.tx.$queryRaw<{ id: string }[]>`
+  /** Full ERP list: products not in the file are flagged (never deactivated). Returns the flagged products. */
+  flagMissingProducts(barcodes: string[]) {
+    return this.tx.$queryRaw<{ id: string; barcode: string }[]>`
       UPDATE products SET in_latest_erp_file = false, updated_at = date_trunc('milliseconds', now())
       WHERE tenant_id = ${this.tenantId}::uuid AND in_latest_erp_file AND NOT (normalized_barcode = ANY(${barcodes}::text[]))
-      RETURNING id`;
-    return rows.map(r => r.id);
+      RETURNING id, normalized_barcode AS barcode`;
   }
   /** Insert-or-update by (tenant, marketplace, marketplace product ID), 5,000 rows per statement. */
   async upsertListings(marketplaceId: string, uploadId: string, rows: ListingWrite[]) {

@@ -3,6 +3,7 @@ import { MARKETPLACES, ROUNDING_OPTIONS } from '../../core/src/constants.js';
 import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js';
 import { ADOPT_MODES } from '../../core/src/price-adoption.js';
 import { ACTIVITY_GROUPS } from '../../core/src/activity.js';
+import { ERP_CHANGE_KINDS } from '../../core/src/upload/apply.js';
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
@@ -239,3 +240,17 @@ export const generateMarketplaceFile = z.object({
   scope: z.enum(['mismatches', 'all']).default('mismatches'),
   reference: reconReference.optional(),
 }).strict();
+
+// ───────── ERP change review & catalogue stock (ADR 017) ─────────
+const page = z.coerce.number().int().min(1).default(1);
+const pageSize = z.coerce.number().int().min(1).max(200).default(50);
+/** A query-string boolean: only the words true and false. */
+const queryBoolean = z.enum(['true', 'false']).transform(v => v === 'true');
+export const uploadChangesQuery = z.object({
+  /** new, price, cost (roles that may change prices only), stock, name, active, missing, returned, other, or all */
+  kind: z.enum([...ERP_CHANGE_KINDS, 'all']).default('all'),
+  /** true: only stock changes that raised a conflict with an owner-edited catalogue stock */
+  conflict: queryBoolean.optional(),
+  page, pageSize,
+}).strict();
+export const stockConflictsQuery = z.object({ page, pageSize }).strict();

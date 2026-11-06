@@ -36,7 +36,7 @@ type UploadRow = {
 };
 
 /** Never expose storage keys, checksums or internal revision numbers. */
-function view(u: UploadRow) {
+export function view(u: UploadRow) {
   return {
     id: u.id, source: u.source, fileName: u.fileName, size: u.size, contains: u.contains, status: u.status,
     // the review summary (costIgnored, negativeStockClamped and the rest); a rejected upload may have none

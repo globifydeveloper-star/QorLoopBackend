@@ -532,8 +532,8 @@ describe('confirm and apply', () => {
     // nothing changed on the existing product, so no field events; one summary event per apply
     expect(await events(s, 'product.field_changed')).toHaveLength(0);
     expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
-      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: first },
-      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: later },
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, changes: 1, stockConflicts: 0, stockEditsCleared: 0, uploadId: first },
+      { created: 1, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, changes: 1, stockConflicts: 0, stockEditsCleared: 0, uploadId: later },
     ]);
   });
 
@@ -570,7 +570,7 @@ describe('confirm and apply', () => {
       { entity: milk.id, actor, field: 'inLatestErpFile', old: false, new: true, uploadId: id },
     ]));
     expect(changes).toHaveLength(8);
-    expect((await events(s, 'upload.applied'))[0]!.details).toEqual({ created: 0, updated: 2, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, uploadId: id });
+    expect((await events(s, 'upload.applied'))[0]!.details).toEqual({ created: 0, updated: 2, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0, changes: 8, stockConflicts: 0, stockEditsCleared: 0, uploadId: id });
   });
 
   it('a full ERP list flags products missing from the file without deactivating them; a partial list does not', async () => {

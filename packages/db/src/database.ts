@@ -10,8 +10,9 @@ import { GeneratedFilesRepository } from './generated-files.js';
 import { SettingsRepository } from './settings.js';
 import { ActivityRepository } from './activity.js';
 import { OnboardingRepository } from './onboarding.js';
+import { CatalogueStockRepository } from './catalogue-stock.js';
 
-export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository };
+export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository, CatalogueStockRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
 export type { PricingSelection, ProductFilter, ProductTab } from './products.js';
 
@@ -144,6 +145,7 @@ export class TenantData {
   readonly settings: SettingsRepository;
   readonly activity: ActivityRepository;
   readonly onboarding: OnboardingRepository;
+  readonly stock: CatalogueStockRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
@@ -154,6 +156,7 @@ export class TenantData {
     this.settings = new SettingsRepository(tenantId, tx);
     this.activity = new ActivityRepository(tenantId, tx);
     this.onboarding = new OnboardingRepository(tenantId, tx);
+    this.stock = new CatalogueStockRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }

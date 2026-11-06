@@ -2,7 +2,10 @@ import type { AnalyzedTable, Database } from '../../../packages/db/src/database.
 import type { ApplyUploadJob } from '../../../packages/shared/src/queue.js';
 import type { ReconQueue } from '../../../packages/shared/src/recon.js';
 import type { ErpRow, MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
-import { planErpApply, planListingApply, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
+import { erpChangeKind, planErpApply, planListingApply, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
+import { planErpStockConflicts } from '../../../packages/core/src/catalogue-stock.js';
+import type { ErpChangeWrite } from '../../../packages/db/src/catalogue-stock.js';
+import type { StoredReviewSummary } from '../../../packages/core/src/upload/review.js';
 
 export interface ApplyDeps {
   database: Database;
@@ -15,6 +18,8 @@ export type ApplyOutcome = 'applied' | 'failed' | 'skipped';
 
 export interface ApplyCounts {
   created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number; skipped: number;
+  /** ERP only (ADR 017): change rows written, stock conflicts raised, owner edits removed because the ERP caught up */
+  changes?: number; stockConflicts?: number; stockEditsCleared?: number;
   /** marketplace only: written listings matched to a product at apply time, and those left without one */
   matchedAtApply?: number; unmatchedAtApply?: number;
 }
@@ -28,7 +33,7 @@ export const APPLY_TIMEOUT_MS = 60_000;
 
 type Staged = { data: unknown };
 
-export type ApplyPhase = 'start' | 'create products' | 'update products' | 'flag missing' | 'listings' | 'audit' | 'finish';
+export type ApplyPhase = 'start' | 'create products' | 'update products' | 'flag missing' | 'stock conflicts' | 'change list' | 'listings' | 'audit' | 'finish';
 
 /** What failed, without row data: safe for logs and the audit trail. */
 export interface ApplyFailure<P extends string = ApplyPhase> { phase: P; errorType: string; sqlState: string | null; prismaCode: string | null; message: string; ms: number }
@@ -96,6 +101,7 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
       const actorId = await d.uploads.applyRequestedBy(uploadId);
       const full = u.contains !== 'partial';
       const c: ApplyCounts = { created: 0, updated: 0, flagged: 0, listingsUpserted: 0, listingsRemoved: 0, skipped: 0 };
+      let applied: StoredReviewSummary['applied'] | null = null;
 
       if (u.source === 'erp') {
         const products = (await d.uploads.applySnapshot()).map(p => ({ ...p, erpPrice: p.erpPrice.toNumber(), costPrice: p.costPrice?.toNumber() ?? null }));
@@ -104,18 +110,53 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
         const mapped = Object.entries((u.mapping as Record<string, string> | null) ?? {}).filter(([, header]) => header).map(([key]) => key);
         const plan = planErpApply(staged.map(r => (r.parsed as Staged).data as ErpRow), products, mapped, firstImport ? 'active' : 'new');
         enter('create products');
-        await d.uploads.createProducts(plan.create);
+        const createdIds = await d.uploads.createProducts(plan.create);
         enter('update products');
         await d.uploads.updateProducts(plan.update);
         enter('flag missing');
         const flagged = full ? await d.uploads.flagMissingProducts(plan.barcodes) : [];
+
+        // ADR 017: an ERP stock change on a product with an owner-edited catalogue stock raises (or closes) a conflict.
+        // Only ERP stock changes do (D2); the owner's value stays in effect while it is open (D1, catalogueStock()).
+        enter('stock conflicts');
+        const stockChanges = plan.changes.filter(ch => ch.field === 'erpStock').map(ch => ({ productId: ch.productId, old: ch.old as number, new: ch.new as number }));
+        const stock = planErpStockConflicts(stockChanges, await d.stock.edits(stockChanges.map(s => s.productId)));
+        await d.stock.markErpConflicts(uploadId, stock.conflicts.map(s => s.productId), stock.reverted.map(s => s.productId));
+        await d.stock.deleteEdits(stock.cleared.map(s => s.productId));
+        const conflicted = new Set(stock.conflicts.map(s => s.productId));
+
+        // ADR 017: the per-upload change list, from the same plan that wrote the products (apply-time truth).
+        enter('change list');
+        const changeRows: ErpChangeWrite[] = [
+          ...plan.create.flatMap(p => {
+            const id = createdIds.get(p.normalizedBarcode);
+            return id && p.rowNumber !== undefined ? [{ productId: id, rowNumber: p.rowNumber, barcode: p.normalizedBarcode, kind: 'new' as const, field: null, old: undefined, new: undefined, stockConflict: false }] : [];
+          }),
+          ...plan.changes.map(ch => ({
+            productId: ch.productId, rowNumber: ch.rowNumber, barcode: ch.barcode, kind: erpChangeKind(ch.field, ch.new), field: ch.field,
+            old: ch.old, new: ch.new, stockConflict: ch.field === 'erpStock' && conflicted.has(ch.productId),
+          })),
+          ...flagged.map(f => ({ productId: f.id, rowNumber: null, barcode: f.barcode, kind: 'missing' as const, field: 'inLatestErpFile', old: true, new: false, stockConflict: false })),
+        ];
+        await d.stock.writeErpChanges(uploadId, changeRows);
+
         enter('audit');
+        const stockEvent = (action: string, s: (typeof stock.conflicts)[number], extra: Record<string, string | boolean>) => ({
+          action, entityId: s.productId, details: { uploadId, ownerStock: s.ownerStock, erpStockAtEdit: s.erpStockAtEdit, oldErpStock: s.oldErpStock, erpStock: s.erpStock, ...extra },
+        });
         await d.uploads.auditEvents(actorId, [
           ...plan.changes.map(ch => ({ action: 'product.field_changed', entityId: ch.productId, details: { field: ch.field, old: ch.old, new: ch.new, uploadId } })),
-          ...flagged.map(id => ({ action: 'product.field_changed', entityId: id, details: { field: 'inLatestErpFile', old: true, new: false, uploadId } })),
+          ...flagged.map(f => ({ action: 'product.field_changed', entityId: f.id, details: { field: 'inLatestErpFile', old: true, new: false, uploadId } })),
+          ...stock.conflicts.map(s => stockEvent('product.stock_conflict', s, { refreshed: s.wasConflict })),
+          ...stock.cleared.map(s => stockEvent('product.stock_reset', s, { reason: 'erp_matches' })),
+          ...stock.reverted.map(s => stockEvent('product.stock_conflict_resolved', s, { choice: 'erp_reverted' })),
         ]);
         skipped = plan.skipped;
-        Object.assign(c, { created: plan.create.length, updated: plan.update.length, flagged: flagged.length });
+        Object.assign(c, {
+          created: plan.create.length, updated: plan.update.length, flagged: flagged.length,
+          changes: changeRows.length, stockConflicts: stock.conflicts.length, stockEditsCleared: stock.cleared.length,
+        });
+        applied = { changesRecorded: true, changes: changeRows.length, stockConflicts: stock.conflicts.length, stockEditsCleared: stock.cleared.length };
       } else {
         enter('listings');
         // matched again against the catalogue as it is now: the review may predate the ERP apply that created the products
@@ -131,7 +172,8 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
       c.skipped = skipped.length;
 
       enter('finish');
-      const ok = await d.uploads.transition(uploadId, ['applying'], { status: 'applied', appliedAt: new Date(), step: null, progress: 100, errorMessage: null });
+      const summary = applied ? { summary: { ...((u.summary as StoredReviewSummary | null) ?? {}), applied } as never } : {};
+      const ok = await d.uploads.transition(uploadId, ['applying'], { status: 'applied', appliedAt: new Date(), step: null, progress: 100, errorMessage: null, ...summary });
       if (!ok) throw new Error('Upload left the applying state during apply');
       const skippedRows = skipped.slice(0, MAX_SKIPPED_LISTED).map(s => ({ row: s.rowNumber, reason: s.reason }));
       await d.event('upload.applied', actorId, uploadId, undefined, { ...c, uploadId, ...(skipped.length ? { skippedRows } : {}) });
