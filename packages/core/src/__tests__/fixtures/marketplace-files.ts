@@ -26,7 +26,7 @@ export const snoonuRowsWithDuplicate = [snoonuRows[0], snoonuRows[1], snoonuDupl
 export function fixtureRecon(snoonu = false): FileReconRow[] {
   return Array.from({ length: 6 }, (_, i) => ({
     productId: `p${i}`, name: String(talabatRows[i]?.[1] ?? 'Not in source'), marketplaceProductId: snoonu ? barcodes[i] ?? '999' : `T${i}`,
-    erpPrice: [2, 3, 4, 5, 9, 9][i], marketplacePrice: [2.5, 3.3, 4, 5, 9.5, 9][i], erpAvailable: i === 1 || i === 2,
+    erpPrice: [2, 3, 4, 5, 9, 9][i], marketplacePrice: [2.5, 3.3, 4, 5, 9.5, 9][i], available: i === 1 || i === 2,
     actualPrice: i === 5 ? null : [1.75, 3, 4, 5, 8][i], stockIssue: [0, 1, 3].includes(i) ? 'available_but_out_of_stock' : null,
     priceMismatchVsErp: i === 0 || i === 4, priceMismatchVsMarketplace: i === 0 || i === 1 || i === 4,
     status: i === 3 ? 'missing_from_erp' : i === 5 ? 'not_listed' : i === 2 ? 'in_sync' : 'mismatch',

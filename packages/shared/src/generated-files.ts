@@ -74,10 +74,11 @@ export class InlineGeneratedFilesQueue implements GeneratedFilesQueue {
 export async function loadGenerationInputs(data: TenantData, marketplaceId: string, reference?: GenerateParams['reference']) {
   const upload = await data.generatedFiles.latestApplied(marketplaceId);
   if (!upload) throw new GenerationBlocked('There is no applied upload for this marketplace. Upload and apply a marketplace file first.');
-  const rows = await data.generatedFiles.reconRows(marketplaceId);
-  if (!rows.length) throw new GenerationBlocked('This marketplace has not been reconciled yet.');
   const settings = await data.pricing.settings();
   const referenceUsed = reference ?? (settings?.compareReferenceDefault === 'erp' ? 'erp' : 'marketplace');
+  // availability and stock issue follow the reference: catalogue stock (marketplace) or ERP stock (erp), ADR 017
+  const rows = await data.generatedFiles.reconRows(marketplaceId, referenceUsed);
+  if (!rows.length) throw new GenerationBlocked('This marketplace has not been reconciled yet.');
   return { upload, rows, referenceUsed };
 }
 export type GenerationInputs = Awaited<ReturnType<typeof loadGenerationInputs>>;

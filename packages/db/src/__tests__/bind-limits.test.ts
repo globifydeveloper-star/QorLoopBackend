@@ -84,6 +84,7 @@ describe('bulk statements stay under the Postgres bind-parameter limit', () => {
       productId: randomUUID(), marketplaceId: marketplaces[i % 4]!, status: 'mismatch', statusVsErp: 'in_sync', erpAvailable: true,
       actualAvailable: false, actualPrice: 2, erpPrice: 1.5, marketplacePrice: 2, marketplacePriceSource: 'default',
       stockIssue: 'unavailable_but_in_stock', priceMismatchVsErp: true, priceMismatchVsMarketplace: false,
+      catalogueAvailable: true, stockIssueVsErp: 'unavailable_but_in_stock',
     }));
     await repo.insertRows(rows);
     await repo.updateRows(rows);

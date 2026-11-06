@@ -12,8 +12,12 @@ export interface GenerateParams { marketplaceId: MarketplaceId; kind: GeneratedK
 export type PlainCell = string | number | boolean | null;
 export interface FileReconRow {
   productId: string; name: string; marketplaceProductId: string | null;
-  erpPrice: number | null; marketplacePrice: number | null; erpAvailable: boolean | null;
-  actualPrice: number | null; stockIssue: string | null;
+  erpPrice: number | null; marketplacePrice: number | null;
+  /** What the marketplace should show for the file's reference (ADR 017): catalogue stock (marketplace) or ERP stock (erp). */
+  available: boolean | null;
+  actualPrice: number | null;
+  /** The stock issue for the same reference. */
+  stockIssue: string | null;
   priceMismatchVsErp: boolean; priceMismatchVsMarketplace: boolean; status: string;
 }
 export class GenerationBlocked extends Error {
@@ -191,7 +195,7 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
       }
     }
     if (p.kind !== 'price') {
-      values[availableColumn] = plain(writeAvailable(original[availableColumn], row.erpAvailable));
+      values[availableColumn] = plain(writeAvailable(original[availableColumn], row.available));
       if (values[availableColumn] !== plain(original[availableColumn])) availabilityChanged.add(row);
     }
     plan.rows.push(values);

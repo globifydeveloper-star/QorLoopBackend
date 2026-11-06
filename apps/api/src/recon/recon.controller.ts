@@ -16,6 +16,7 @@ const reference = { type: 'string', enum: [...RECON_REFERENCES] };
 const summary = {
   type: 'object', properties: {
     reference, computedAt: { type: ['string', 'null'], format: 'date-time', description: 'When the summaries were last recomputed' },
+    stockConflicts: { type: 'integer', description: 'Open stock conflicts (the dashboard badge "N stock conflicts")' },
     marketplaces: {
       type: 'array', items: {
         type: 'object', properties: {
@@ -45,6 +46,10 @@ const rows = {
           expectedPrice: { ...money, description: 'erpPrice or marketplacePrice, by reference' }, erpPrice: money, marketplacePrice: money,
           marketplacePriceSource: { type: ['string', 'null'], enum: [...PRICE_RULE_ORDER, null] }, actualPrice: { ...money, description: 'null: not listed' },
           erpAvailable: { type: ['boolean', 'null'] }, actualAvailable: { type: ['boolean', 'null'] }, lastUpdated: { type: 'string', format: 'date-time' },
+          catalogueStock: { ...count, description: 'The stock the catalogue uses (owner value while an edit exists, else the ERP stock)' },
+          catalogueStockSource: { type: 'string', enum: ['erp', 'owner'] }, stockConflict: { type: 'boolean' },
+          catalogueAvailable: { type: ['boolean', 'null'], description: 'Sellable by the catalogue stock' },
+          stockIssueVsCatalogue: { type: ['string', 'null'], enum: [...STOCK_ISSUES, null] }, stockIssueVsErp: { type: ['string', 'null'], enum: [...STOCK_ISSUES, null] },
         },
       },
     },

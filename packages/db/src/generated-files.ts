@@ -1,5 +1,6 @@
 import { Prisma } from './generated/client.js';
 import type { FileReconRow } from '../../core/src/generated-files.js';
+import type { ReconReference } from '../../core/src/recon/status.js';
 
 /** Every read and write is scoped here, including listing joins and downloads. */
 export class GeneratedFilesRepository {
@@ -16,11 +17,18 @@ export class GeneratedFilesRepository {
    * Two set-based reads joined here, like ReconRepository.listings. A per-row LATERAL listing lookup is planned as a
    * listings scan per recon row when statistics are missing (just after a bulk load): 230 s at 25,000 rows.
    */
-  async reconRows(marketplaceId: string): Promise<FileReconRow[]> {
+  /**
+   * Availability and stock issue are those of `reference` (ADR 017): the catalogue reference (marketplace) writes what
+   * the catalogue stock says, the ERP reference what the ERP stock says.
+   */
+  async reconRows(marketplaceId: string, reference: ReconReference): Promise<FileReconRow[]> {
+    const erp = reference === 'erp';
+    const available = erp ? Prisma.sql`r.erp_available` : Prisma.sql`r.catalogue_available`;
+    const stockIssue = erp ? Prisma.sql`r.stock_issue_vs_erp` : Prisma.sql`r.stock_issue`;
     const rows = await this.tx.$queryRaw<Omit<FileReconRow, 'marketplaceProductId'>[]>`
       SELECT r.product_id AS "productId", p.name_en AS name,
-             r.erp_price::float8 AS "erpPrice", r.marketplace_price::float8 AS "marketplacePrice", r.erp_available AS "erpAvailable",
-             r.actual_price::float8 AS "actualPrice", r.stock_issue AS "stockIssue", r.status,
+             r.erp_price::float8 AS "erpPrice", r.marketplace_price::float8 AS "marketplacePrice", ${available} AS "available",
+             r.actual_price::float8 AS "actualPrice", ${stockIssue} AS "stockIssue", r.status,
              r.price_mismatch_vs_erp AS "priceMismatchVsErp", r.price_mismatch_vs_marketplace AS "priceMismatchVsMarketplace"
       FROM recon_rows r
       JOIN products p ON p.tenant_id = r.tenant_id AND p.id = r.product_id

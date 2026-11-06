@@ -126,8 +126,8 @@ describe('forReference, counts and urgency', () => {
   });
   it('forReference picks the status and flag of the reference', () => {
     const r = reconcile(input(), settings);
-    expect(forReference(r, 'marketplace')).toEqual({ status: 'in_sync', priceMismatch: false });
-    expect(forReference(r, 'erp')).toEqual({ status: 'mismatch', priceMismatch: true });
+    expect(forReference(r, 'marketplace')).toEqual({ status: 'in_sync', priceMismatch: false, stockIssue: null, available: true });
+    expect(forReference(r, 'erp')).toEqual({ status: 'mismatch', priceMismatch: true, stockIssue: null, available: true });
   });
   it('available_but_out_of_stock is the most urgent, then unavailable_but_in_stock, then price', () => {
     expect([
@@ -218,8 +218,37 @@ describe('diffReconRows', () => {
 describe('reconSignature', () => {
   it('is the exact string the database builds for a stored row (ReconRepository.storedSignatures)', () => {
     const r = { ...reconcile(input({ listing: { price: 1.1, available: false } }), settings), productId: 'p', marketplaceId: 'talabat' as const };
-    expect(reconSignature(r)).toBe('mismatch|mismatch|unavailable_but_in_stock|1|1|1|0|default|11000|10000|1100');
+    expect(reconSignature(r)).toBe('mismatch|mismatch|unavailable_but_in_stock|1|1|1|0|default|11000|10000|1100|unavailable_but_in_stock|1');
     const unlisted = { ...reconcile(input({ listing: null }), settings), productId: 'p', marketplaceId: 'talabat' as const };
-    expect(reconSignature(unlisted)).toBe('not_listed|not_listed||0|0|1||default|11000|10000|');
+    expect(reconSignature(unlisted)).toBe('not_listed|not_listed||0|0|1||default|11000|10000|||1');
+  });
+});
+
+describe('catalogue stock against the ERP stock (ADR 017)', () => {
+  it('the catalogue reference uses the catalogue stock, the ERP reference the ERP stock', () => {
+    // owner says 0 while the ERP says 5; listed available
+    const r = reconcile(input({ product: product({ catalogueStock: 0 }), listing: { price: 11, available: true } }), settings);
+    expect(r).toMatchObject({ catalogueAvailable: false, erpAvailable: true, stockIssue: 'available_but_out_of_stock', stockIssueVsErp: null, status: 'mismatch' });
+    // statusVsErp: ERP price 10 vs listing 11 is a price mismatch, but no stock issue
+    expect(r.statusVsErp).toBe('mismatch');
+    expect(forReference(r, 'erp')).toMatchObject({ stockIssue: null, available: true });
+    // and the other way round: owner 4 while the ERP is out of stock, listed unavailable
+    const s = reconcile(input({ product: product({ erpStock: 0, catalogueStock: 4 }), listing: { price: 11, available: false } }), settings);
+    expect(s).toMatchObject({ catalogueAvailable: true, erpAvailable: false, stockIssue: 'unavailable_but_in_stock', stockIssueVsErp: null });
+  });
+  it('no catalogue stock means the ERP stock; the threshold applies to both (D3)', () => {
+    expect(reconcile(input(), settings)).toMatchObject({ catalogueAvailable: true, erpAvailable: true });
+    const t = reconcile(input({ product: product({ erpStock: 9, catalogueStock: 3 }) }), { ...settings, stockThreshold: 3 });
+    expect(t).toMatchObject({ catalogueAvailable: false, erpAvailable: true, stockIssue: 'available_but_out_of_stock' });
+  });
+  it('an edit never makes an inactive, ERP-inactive or missing product available (D4)', () => {
+    for (const p of [{ status: 'inactive' }, { erpActive: false }, { inLatestErpFile: false }]) {
+      expect(reconcile(input({ product: product({ erpStock: 0, catalogueStock: 50, ...p }) }), settings).catalogueAvailable).toBe(false);
+    }
+  });
+  it('each reference counts its own stock issues', () => {
+    const r = { ...reconcile(input({ product: product({ catalogueStock: 0 }) }), settings), productId: 'p', marketplaceId: 'talabat' as const };
+    expect(countRows([r], 'marketplace').stock).toBe(1);
+    expect(countRows([r], 'erp').stock).toBe(0);
   });
 });

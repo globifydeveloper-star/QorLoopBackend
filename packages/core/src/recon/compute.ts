@@ -76,7 +76,8 @@ const bit = (v: boolean | null) => (v === null ? '' : v ? '1' : '0');
  */
 export function reconSignature(r: ReconRowResult): string {
   return `${r.status}|${r.statusVsErp}|${r.stockIssue ?? ''}|${bit(r.priceMismatchVsErp)}|${bit(r.priceMismatchVsMarketplace)}|${bit(r.erpAvailable)}`
-    + `|${bit(r.actualAvailable)}|${r.marketplacePriceSource}|${fils(r.marketplacePrice)}|${fils(r.erpPrice)}|${fils(r.actualPrice)}`;
+    + `|${bit(r.actualAvailable)}|${r.marketplacePriceSource}|${fils(r.marketplacePrice)}|${fils(r.erpPrice)}|${fils(r.actualPrice)}`
+    + `|${r.stockIssueVsErp ?? ''}|${bit(r.catalogueAvailable)}`;
 }
 
 /**

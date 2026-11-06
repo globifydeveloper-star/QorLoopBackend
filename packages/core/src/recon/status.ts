@@ -19,7 +19,7 @@ export type StockIssue = (typeof STOCK_ISSUES)[number];
 export interface ReconSettings {
   /** QAR; a difference of exactly the tolerance is still in sync. */
   priceTolerance: number;
-  /** ERP stock must be above this to count as available. */
+  /** The ERP stock and the catalogue stock must be above this to count as available (D3: one threshold for both). */
   stockThreshold: number;
 }
 
@@ -28,6 +28,8 @@ export interface ReconProduct {
   erpActive: boolean;
   inLatestErpFile: boolean;
   erpStock: number;
+  /** The catalogue stock (catalogue-stock.ts catalogueStock: an owner edit, else the ERP stock); absent = the ERP stock. */
+  catalogueStock?: number;
   erpPrice: number;
 }
 
@@ -52,19 +54,39 @@ export interface ReconResult {
   /** Status against the ERP reference. */
   statusVsErp: ReconStatus;
   erpAvailable: boolean;
+  /** Sellable by the catalogue stock: the catalogue (expected) reference. */
+  catalogueAvailable: boolean;
   actualAvailable: boolean | null;
   actualPrice: number | null;
   erpPrice: number;
   marketplacePrice: number;
   marketplacePriceSource: PriceSource;
+  /** Against the catalogue (expected) reference: catalogueAvailable vs the listing. */
   stockIssue: StockIssue | null;
+  /** Against the ERP reference: erpAvailable vs the listing. */
+  stockIssueVsErp: StockIssue | null;
   priceMismatchVsErp: boolean;
   priceMismatchVsMarketplace: boolean;
 }
 
+/** Rule 5.3 for a given stock. A stock above the threshold never makes an inactive, ERP-inactive or missing product sellable (D4). */
+function sellable(product: Pick<ReconProduct, 'status' | 'erpActive' | 'inLatestErpFile'>, stock: number, stockThreshold: number): boolean {
+  return product.status === 'active' && product.erpActive && product.inLatestErpFile && stock > stockThreshold;
+}
+
 /** Rule 5.3: the ERP says the product can be sold. */
 export function erpAvailable(product: Pick<ReconProduct, 'status' | 'erpActive' | 'inLatestErpFile' | 'erpStock'>, stockThreshold: number): boolean {
-  return product.status === 'active' && product.erpActive && product.inLatestErpFile && product.erpStock > stockThreshold;
+  return sellable(product, product.erpStock, stockThreshold);
+}
+
+/** Rule 5.3 with the catalogue stock (ADR 017): what the catalogue says the marketplace should show. */
+export function catalogueAvailable(product: Pick<ReconProduct, 'status' | 'erpActive' | 'inLatestErpFile' | 'erpStock' | 'catalogueStock'>, stockThreshold: number): boolean {
+  return sellable(product, product.catalogueStock ?? product.erpStock, stockThreshold);
+}
+
+/** The listing's availability against what a reference says it should be. */
+function stockIssueOf(available: boolean, listed: boolean): StockIssue | null {
+  return available && !listed ? 'unavailable_but_in_stock' : !available && listed ? 'available_but_out_of_stock' : null;
 }
 
 /** |actual - expected| > tolerance, in integer fils so 0.1 + 0.2 never counts as a mismatch. */
@@ -76,9 +98,11 @@ export function priceMismatch(actual: number, expected: number, tolerance: numbe
 export function reconcile(input: ReconInput, settings: ReconSettings): ReconResult {
   const { product, listing, hasData, marketplacePrice } = input;
   const available = erpAvailable(product, settings.stockThreshold);
+  const availableInCatalogue = catalogueAvailable(product, settings.stockThreshold);
   let status: ReconStatus;
   let statusVsErp: ReconStatus;
   let stockIssue: StockIssue | null = null;
+  let stockIssueVsErp: StockIssue | null = null;
   let priceMismatchVsErp = false;
   let priceMismatchVsMarketplace = false;
 
@@ -94,30 +118,33 @@ export function reconcile(input: ReconInput, settings: ReconSettings): ReconResu
   } else if (!product.inLatestErpFile) {
     // 4. gone from the ERP file but still listed
     status = statusVsErp = 'missing_from_erp';
-    if (listing.available) stockIssue = 'available_but_out_of_stock';
+    if (listing.available) stockIssue = stockIssueVsErp = 'available_but_out_of_stock';
   } else {
-    // 5. compare price (per reference) and availability
-    stockIssue = available && !listing.available ? 'unavailable_but_in_stock'
-      : !available && listing.available ? 'available_but_out_of_stock'
-        : null;
+    // 5. compare price and availability, each against its own reference: the catalogue (expected price, catalogue
+    //    stock) and the ERP (ERP price, ERP stock)
+    stockIssue = stockIssueOf(availableInCatalogue, listing.available);
+    stockIssueVsErp = stockIssueOf(available, listing.available);
     priceMismatchVsErp = priceMismatch(listing.price, product.erpPrice, settings.priceTolerance);
     priceMismatchVsMarketplace = priceMismatch(listing.price, marketplacePrice.price, settings.priceTolerance);
     status = stockIssue || priceMismatchVsMarketplace ? 'mismatch' : 'in_sync';
-    statusVsErp = stockIssue || priceMismatchVsErp ? 'mismatch' : 'in_sync';
+    statusVsErp = stockIssueVsErp || priceMismatchVsErp ? 'mismatch' : 'in_sync';
   }
   return {
-    status, statusVsErp, erpAvailable: available,
+    status, statusVsErp, erpAvailable: available, catalogueAvailable: availableInCatalogue,
     actualAvailable: listing ? listing.available : null, actualPrice: listing ? listing.price : null,
     erpPrice: product.erpPrice, marketplacePrice: marketplacePrice.price, marketplacePriceSource: marketplacePrice.source,
-    stockIssue, priceMismatchVsErp, priceMismatchVsMarketplace,
+    stockIssue, stockIssueVsErp, priceMismatchVsErp, priceMismatchVsMarketplace,
   };
 }
 
-/** The status and price flag that belong to one reference. */
-export function forReference(r: Pick<ReconResult, 'status' | 'statusVsErp' | 'priceMismatchVsErp' | 'priceMismatchVsMarketplace'>, reference: ReconReference) {
+/** The status, stock issue, availability and price flag that belong to one reference. */
+export function forReference(
+  r: Pick<ReconResult, 'status' | 'statusVsErp' | 'priceMismatchVsErp' | 'priceMismatchVsMarketplace' | 'stockIssue' | 'stockIssueVsErp' | 'erpAvailable' | 'catalogueAvailable'>,
+  reference: ReconReference,
+) {
   return reference === 'erp'
-    ? { status: r.statusVsErp, priceMismatch: r.priceMismatchVsErp }
-    : { status: r.status, priceMismatch: r.priceMismatchVsMarketplace };
+    ? { status: r.statusVsErp, priceMismatch: r.priceMismatchVsErp, stockIssue: r.stockIssueVsErp, available: r.erpAvailable }
+    : { status: r.status, priceMismatch: r.priceMismatchVsMarketplace, stockIssue: r.stockIssue, available: r.catalogueAvailable };
 }
 
 /** The latest applied upload is older than staleHours. No upload is "no data", not stale. */
@@ -148,8 +175,8 @@ export interface ReconCounts {
 export function countRows(rows: ReconResult[], reference: ReconReference): ReconCounts {
   const c: ReconCounts = { stock: 0, price: 0, total: 0, listed: 0, notListed: 0, noData: 0, missingFromErp: 0, newCount: 0 };
   for (const r of rows) {
-    const { status, priceMismatch: pm } = forReference(r, reference);
-    if (r.stockIssue) c.stock++;
+    const { status, priceMismatch: pm, stockIssue } = forReference(r, reference);
+    if (stockIssue) c.stock++;
     if (pm) c.price++;
     if (r.actualPrice !== null) c.listed++;
     if (status === 'not_listed') c.notListed++;

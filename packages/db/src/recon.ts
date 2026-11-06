@@ -1,6 +1,7 @@
 import { Prisma } from './generated/client.js';
 import { MARKETPLACES, type MarketplaceId } from '../../core/src/constants.js';
 import type { OfferInput, PriceRule } from '../../core/src/pricing.js';
+import { catalogueStock, type StockEditState } from '../../core/src/catalogue-stock.js';
 import {
   isStale, type ReconCatalogueProduct, type ReconListing, type ReconMarketplace, type ReconReference, type ReconRowResult, type ReconStatus,
 } from '../../core/src/recon/index.js';
@@ -10,7 +11,7 @@ type Tx = Prisma.TransactionClient;
 /** Rows per INSERT ... SELECT FROM unnest(...): one bind parameter per column (RECON_ROW_COLUMNS), not per value. */
 export const RECON_WRITE_BATCH = 10_000;
 /** Bind parameters of one recon row write: the tenant plus one array per column (see upsertRows). */
-export const RECON_ROW_COLUMNS = 14;
+export const RECON_ROW_COLUMNS = 16;
 
 export interface ReconMarketplaceState extends ReconMarketplace { lastUploadAt: Date | null; stale: boolean }
 export type ReconRowType = 'stock' | 'price' | 'all';
@@ -52,7 +53,7 @@ export class ReconRepository {
 
   /** Every product with its pricing inputs: three statements whatever the catalogue size. */
   async products(): Promise<ReconCatalogueProduct[]> {
-    const [products, rules, offers] = await Promise.all([
+    const [products, rules, offers, edits] = await Promise.all([
       this.tx.$queryRaw<{ id: string; status: string; erp_active: boolean; in_latest_erp_file: boolean; erp_stock: number; erp_price: number; category_id: string | null; subcategory_id: string | null }[]>`
         SELECT id, status, erp_active, in_latest_erp_file, erp_stock, erp_price::float8 AS erp_price, category_id, subcategory_id
         FROM products WHERE tenant_id = ${this.tenantId}::uuid`,
@@ -61,7 +62,11 @@ export class ReconRepository {
       this.tx.$queryRaw<{ product_id: string; price: number; valid_from: Date | null; valid_until: Date | null }[]>`
         SELECT product_id, price::float8 AS price, valid_from, valid_until FROM product_offers
         WHERE tenant_id = ${this.tenantId}::uuid ORDER BY created_at`,
+      // owner-edited catalogue stock (ADR 017); few rows
+      this.tx.$queryRaw<{ product_id: string; stock: number; erp_stock_at_edit: number; state: string }[]>`
+        SELECT product_id, stock, erp_stock_at_edit, state FROM catalogue_stock_edits WHERE tenant_id = ${this.tenantId}::uuid`,
     ]);
+    const editBy = new Map(edits.map(e => [e.product_id, { stock: e.stock, erpStockAtEdit: e.erp_stock_at_edit, state: e.state as StockEditState }]));
     const ruleBy = new Map(rules.map(r => [r.product_id, { mode: r.mode, value: r.value } as PriceRule]));
     const offersBy = new Map<string, OfferInput[]>();
     for (const o of offers) {
@@ -71,6 +76,7 @@ export class ReconRepository {
     }
     return products.map(p => ({
       id: p.id, status: p.status, erpActive: p.erp_active, inLatestErpFile: p.in_latest_erp_file, erpStock: p.erp_stock, erpPrice: p.erp_price,
+      catalogueStock: catalogueStock(p.erp_stock, editBy.get(p.id)).stock,
       pricing: { erpPrice: p.erp_price, categoryId: p.category_id, subcategoryId: p.subcategory_id, productRule: ruleBy.get(p.id) ?? null, offers: offersBy.get(p.id) ?? [] },
     }));
   }
@@ -109,7 +115,7 @@ export class ReconRepository {
                status, status_vs_erp, coalesce(stock_issue, ''), price_mismatch_vs_erp::int::text, price_mismatch_vs_marketplace::int::text,
                coalesce(erp_available::int::text, ''), coalesce(actual_available::int::text, ''), coalesce(marketplace_price_source, ''),
                coalesce(round(marketplace_price * 1000)::bigint::text, ''), coalesce(round(erp_price * 1000)::bigint::text, ''),
-               coalesce(round(actual_price * 1000)::bigint::text, '')), E'\n') AS packed
+               coalesce(round(actual_price * 1000)::bigint::text, ''), coalesce(stock_issue_vs_erp, ''), coalesce(catalogue_available::int::text, '')), E'\n') AS packed
       FROM recon_rows WHERE tenant_id = ${this.tenantId}::uuid`;
     const map = new Map<string, string>();
     for (const line of row?.packed ? row.packed.split('\n') : []) {
@@ -119,15 +125,15 @@ export class ReconRepository {
     return map;
   }
 
-  /** The 13 columns of a row write, one text[] each (one bind parameter per column whatever the batch size). */
+  /** The 15 columns of a row write, one text[] each (one bind parameter per column whatever the batch size). */
   private columns(c: ReconRowResult[]) {
     return Prisma.sql`unnest(
       ${c.map(r => r.productId)}::uuid[], ${c.map(r => r.marketplaceId)}::text[], ${c.map(r => String(r.marketplacePrice))}::text[],
       ${c.map(r => r.marketplacePriceSource)}::text[], ${c.map(r => String(r.erpPrice))}::text[], ${c.map(r => text(r.actualPrice))}::text[],
       ${c.map(r => String(r.erpAvailable))}::text[], ${c.map(r => text(r.actualAvailable))}::text[], ${c.map(r => String(r.priceMismatchVsErp))}::text[],
       ${c.map(r => String(r.priceMismatchVsMarketplace))}::text[], ${c.map(r => r.stockIssue)}::text[], ${c.map(r => r.status)}::text[],
-      ${c.map(r => r.statusVsErp)}::text[]
-    ) AS v(product_id, marketplace_id, mp, mp_source, erp, actual, erp_av, actual_av, pm_erp, pm_mp, stock_issue, status, status_erp)`;
+      ${c.map(r => r.statusVsErp)}::text[], ${c.map(r => String(r.catalogueAvailable))}::text[], ${c.map(r => r.stockIssueVsErp)}::text[]
+    ) AS v(product_id, marketplace_id, mp, mp_source, erp, actual, erp_av, actual_av, pm_erp, pm_mp, stock_issue, status, status_erp, cat_av, stock_issue_erp)`;
   }
 
   /** New rows. ON CONFLICT keeps a retried or overlapping write correct (the advisory lock already serializes runs). */
@@ -136,16 +142,19 @@ export class ReconRepository {
     for (let i = 0; i < rows.length; i += RECON_WRITE_BATCH) {
       written += await this.tx.$executeRaw`
         INSERT INTO recon_rows (id, tenant_id, product_id, marketplace_id, marketplace_price, marketplace_price_source, erp_price, actual_price,
-                                erp_available, actual_available, price_mismatch_vs_erp, price_mismatch_vs_marketplace, stock_issue, status, status_vs_erp, last_updated)
+                                erp_available, actual_available, price_mismatch_vs_erp, price_mismatch_vs_marketplace, stock_issue, status, status_vs_erp,
+                                catalogue_available, stock_issue_vs_erp, last_updated)
         SELECT gen_random_uuid(), ${this.tenantId}::uuid, v.product_id, v.marketplace_id, v.mp::numeric, v.mp_source, v.erp::numeric, v.actual::numeric,
-               v.erp_av::boolean, v.actual_av::boolean, v.pm_erp::boolean, v.pm_mp::boolean, v.stock_issue, v.status, v.status_erp, now()
+               v.erp_av::boolean, v.actual_av::boolean, v.pm_erp::boolean, v.pm_mp::boolean, v.stock_issue, v.status, v.status_erp,
+               v.cat_av::boolean, v.stock_issue_erp, now()
         FROM ${this.columns(rows.slice(i, i + RECON_WRITE_BATCH))}
         ON CONFLICT (tenant_id, product_id, marketplace_id) DO UPDATE SET
           marketplace_price = EXCLUDED.marketplace_price, marketplace_price_source = EXCLUDED.marketplace_price_source,
           erp_price = EXCLUDED.erp_price, actual_price = EXCLUDED.actual_price, erp_available = EXCLUDED.erp_available,
           actual_available = EXCLUDED.actual_available, price_mismatch_vs_erp = EXCLUDED.price_mismatch_vs_erp,
           price_mismatch_vs_marketplace = EXCLUDED.price_mismatch_vs_marketplace, stock_issue = EXCLUDED.stock_issue,
-          status = EXCLUDED.status, status_vs_erp = EXCLUDED.status_vs_erp, last_updated = now()`;
+          status = EXCLUDED.status, status_vs_erp = EXCLUDED.status_vs_erp, catalogue_available = EXCLUDED.catalogue_available,
+          stock_issue_vs_erp = EXCLUDED.stock_issue_vs_erp, last_updated = now()`;
     }
     return written;
   }
@@ -158,7 +167,8 @@ export class ReconRepository {
         UPDATE recon_rows AS r SET
           marketplace_price = v.mp::numeric, marketplace_price_source = v.mp_source, erp_price = v.erp::numeric, actual_price = v.actual::numeric,
           erp_available = v.erp_av::boolean, actual_available = v.actual_av::boolean, price_mismatch_vs_erp = v.pm_erp::boolean,
-          price_mismatch_vs_marketplace = v.pm_mp::boolean, stock_issue = v.stock_issue, status = v.status, status_vs_erp = v.status_erp, last_updated = now()
+          price_mismatch_vs_marketplace = v.pm_mp::boolean, stock_issue = v.stock_issue, status = v.status, status_vs_erp = v.status_erp,
+          catalogue_available = v.cat_av::boolean, stock_issue_vs_erp = v.stock_issue_erp, last_updated = now()
         FROM ${this.columns(rows.slice(i, i + RECON_WRITE_BATCH))}
         WHERE r.tenant_id = ${this.tenantId}::uuid AND r.product_id = v.product_id AND r.marketplace_id = v.marketplace_id`;
     }
@@ -190,7 +200,8 @@ export class ReconRepository {
       WITH c AS (
         SELECT marketplace_id,
                count(*) FILTER (WHERE actual_price IS NOT NULL)::int AS listed,
-               count(*) FILTER (WHERE stock_issue IS NOT NULL)::int AS stock,
+               count(*) FILTER (WHERE stock_issue IS NOT NULL)::int AS stock_mp,
+               count(*) FILTER (WHERE stock_issue_vs_erp IS NOT NULL)::int AS stock_erp,
                count(*) FILTER (WHERE price_mismatch_vs_marketplace)::int AS price_mp,
                count(*) FILTER (WHERE price_mismatch_vs_erp)::int AS price_erp,
                count(*) FILTER (WHERE status = 'not_listed')::int AS not_listed_mp, count(*) FILTER (WHERE status_vs_erp = 'not_listed')::int AS not_listed_erp,
@@ -205,7 +216,8 @@ export class ReconRepository {
                AS v(marketplace_id, has_data, last_upload_at, stale)
       ), s AS (
         SELECT m.marketplace_id, ref.reference, m.has_data, m.last_upload_at, m.stale,
-               coalesce(c.listed, 0) AS listed, coalesce(c.stock, 0) AS stock,
+               coalesce(c.listed, 0) AS listed,
+               coalesce(CASE WHEN ref.reference = 'erp' THEN c.stock_erp ELSE c.stock_mp END, 0) AS stock,
                coalesce(CASE WHEN ref.reference = 'erp' THEN c.price_erp ELSE c.price_mp END, 0) AS price,
                coalesce(CASE WHEN ref.reference = 'erp' THEN c.not_listed_erp ELSE c.not_listed_mp END, 0) AS not_listed,
                coalesce(CASE WHEN ref.reference = 'erp' THEN c.no_data_erp ELSE c.no_data_mp END, 0) AS no_data,
@@ -255,10 +267,12 @@ export class ReconRepository {
     const erp = q.reference === 'erp';
     const priceFlag = erp ? Prisma.sql`r.price_mismatch_vs_erp` : Prisma.sql`r.price_mismatch_vs_marketplace`;
     const status = erp ? Prisma.sql`r.status_vs_erp` : Prisma.sql`r.status`;
-    const rank = Prisma.sql`(CASE WHEN r.stock_issue = 'available_but_out_of_stock' THEN 0 WHEN r.stock_issue = 'unavailable_but_in_stock' THEN 1 WHEN ${priceFlag} THEN 2 ELSE 3 END)`;
+    // each reference has its own stock issue (ADR 017): catalogue stock vs ERP stock
+    const stock = erp ? Prisma.sql`r.stock_issue_vs_erp` : Prisma.sql`r.stock_issue`;
+    const rank = Prisma.sql`(CASE WHEN ${stock} = 'available_but_out_of_stock' THEN 0 WHEN ${stock} = 'unavailable_but_in_stock' THEN 1 WHEN ${priceFlag} THEN 2 ELSE 3 END)`;
     const filters = [
       Prisma.sql`r.tenant_id = ${this.tenantId}::uuid`, Prisma.sql`r.marketplace_id = ${q.marketplaceId}`,
-      ...(q.type === 'stock' ? [Prisma.sql`r.stock_issue IS NOT NULL`] : q.type === 'price' ? [priceFlag] : []),
+      ...(q.type === 'stock' ? [Prisma.sql`${stock} IS NOT NULL`] : q.type === 'price' ? [priceFlag] : []),
       ...(q.status ? [Prisma.sql`${status} = ${q.status}`] : []),
       ...(q.after ? [Prisma.sql`(${rank}, r.product_id) > (${q.after.rank}::int, ${q.after.productId}::uuid)`] : []),
     ];
@@ -267,12 +281,17 @@ export class ReconRepository {
       status: string; stock_issue: string | null; price_mismatch: boolean; price_mismatch_vs_erp: boolean; price_mismatch_vs_marketplace: boolean;
       erp_price: number | null; marketplace_price: number | null; marketplace_price_source: string | null; actual_price: number | null;
       erp_available: boolean | null; actual_available: boolean | null; last_updated: Date;
+      catalogue_available: boolean | null; stock_issue_vs_marketplace: string | null; stock_issue_vs_erp: string | null;
+      edit_stock: number | null; edit_base: number | null; edit_state: string | null;
     }[]>`
       SELECT ${rank} AS rank, r.product_id, p.barcode, p.sku, p.name_en, p.name_ar, p.status AS product_status, p.erp_stock,
-             ${status} AS status, r.stock_issue, ${priceFlag} AS price_mismatch, r.price_mismatch_vs_erp, r.price_mismatch_vs_marketplace,
+             ${status} AS status, ${stock} AS stock_issue, ${priceFlag} AS price_mismatch, r.price_mismatch_vs_erp, r.price_mismatch_vs_marketplace,
              r.erp_price::float8 AS erp_price, r.marketplace_price::float8 AS marketplace_price, r.marketplace_price_source,
-             r.actual_price::float8 AS actual_price, r.erp_available, r.actual_available, r.last_updated
+             r.actual_price::float8 AS actual_price, r.erp_available, r.actual_available, r.last_updated,
+             r.catalogue_available, r.stock_issue AS stock_issue_vs_marketplace, r.stock_issue_vs_erp,
+             e.stock AS edit_stock, e.erp_stock_at_edit AS edit_base, e.state AS edit_state
       FROM recon_rows r JOIN products p ON p.tenant_id = r.tenant_id AND p.id = r.product_id
+      LEFT JOIN catalogue_stock_edits e ON e.tenant_id = r.tenant_id AND e.product_id = r.product_id
       WHERE ${Prisma.join(filters, ' AND ')}
       ORDER BY ${rank}, r.product_id
       LIMIT ${q.limit}`;

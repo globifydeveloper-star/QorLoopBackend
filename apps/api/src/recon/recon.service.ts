@@ -6,6 +6,7 @@ import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import type { ReconReference } from '../../../../packages/core/src/recon/status.js';
 import { RECON_QUEUE } from '../tokens.js';
+import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
 
 /** Opaque keyset cursor: base64url JSON of the last row's [urgency rank, product id]. */
 export function encodeReconCursor(r: { rank: number; productId: string }) {
@@ -19,6 +20,20 @@ export function decodeReconCursor(cursor: string) {
     }
   } catch { /* falls through to the 400 */ }
   throw new BadRequestException('Invalid cursor');
+}
+
+/** The catalogue stock next to the ERP stock, each with its availability and stock issue. */
+function stockColumns(r: {
+  erp_stock: number; catalogue_available: boolean | null; stock_issue_vs_marketplace: string | null; stock_issue_vs_erp: string | null;
+  edit_stock: number | null; edit_base: number | null; edit_state: string | null;
+}) {
+  const e = r.edit_stock === null || r.edit_base === null || r.edit_state === null ? null
+    : { stock: r.edit_stock, erpStockAtEdit: r.edit_base, state: r.edit_state as StockEditState };
+  const c = catalogueStock(r.erp_stock, e);
+  return {
+    catalogueStock: c.stock, catalogueStockSource: c.source, stockConflict: e?.state === 'conflict',
+    catalogueAvailable: r.catalogue_available, stockIssueVsCatalogue: r.stock_issue_vs_marketplace, stockIssueVsErp: r.stock_issue_vs_erp,
+  };
 }
 
 /** The request's reference, else the tenant's comparison default from the pricing settings. */
@@ -36,9 +51,10 @@ export class ReconService {
   summary(ctx: RequestContext, query: z.infer<typeof contracts.reconSummaryQuery>) {
     return this.auth.authenticated(ctx, { permission: 'recon.view' }, async data => {
       const reference = await referenceFor(data, query.reference);
-      const rows = await data.recon.summaries(reference);
+      const [rows, stockConflicts] = await Promise.all([data.recon.summaries(reference), data.stock.conflictCount()]);
       const computedAt = rows.reduce<Date | null>((at, r) => (r.computedAt && (!at || r.computedAt > at) ? r.computedAt : at), null);
-      return { reference, computedAt, marketplaces: rows.map(({ computedAt: _c, ...r }) => r) };
+      // stockConflicts: the dashboard badge "N stock conflicts" (ADR 017)
+      return { reference, computedAt, stockConflicts, marketplaces: rows.map(({ computedAt: _c, ...r }) => r) };
     });
   }
 
@@ -58,6 +74,8 @@ export class ReconService {
           expectedPrice: reference === 'erp' ? r.erp_price : r.marketplace_price,
           erpPrice: r.erp_price, marketplacePrice: r.marketplace_price, marketplacePriceSource: r.marketplace_price_source, actualPrice: r.actual_price,
           erpAvailable: r.erp_available, actualAvailable: r.actual_available, lastUpdated: r.last_updated,
+          // ADR 017: both references side by side; stockIssue above is the requested reference's
+          ...stockColumns(r),
         })),
         nextCursor: rows.length > query.limit && last ? encodeReconCursor({ rank: last.rank, productId: last.product_id }) : null,
       };
