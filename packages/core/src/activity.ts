@@ -8,7 +8,10 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
     'pricing.category_rule_deleted', 'pricing.prices_adopted', 'pricing.bulk_applied', 'product.price_rule_set', 'product.price_rule_deleted', 'product.offer_set', 'product.offer_deleted'],
   stock_uploads: ['upload.created', 'upload.rejected', 'upload.queued', 'upload.mapping_confirmed', 'upload.apply_requested', 'upload.discarded',
     'upload.needs_mapping', 'upload.reviewed', 'upload.failed', 'upload.applied', 'upload.apply_failed', 'recon.recompute_requested', 'recon.failed', 'file.generated', 'file.generation_failed',
-    'template.updated'],
+    'template.updated',
+    // catalogue stock (ADR 017)
+    'product.stock_set', 'product.stock_reset', 'product.stock_conflict', 'product.stock_conflict_resolved',
+    'catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved'],
   catalogue: ['products.activated', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
   team_security: ['settings.changed', 'store.provisioned', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
@@ -70,6 +73,35 @@ export function presentActivity(action: string, details: unknown, options: { pro
         summary = 'Product price changed by a bulk operation';
         change('rule', row[1] === null ? null : rule({ mode: row[1], value: row[2] }), row[3] === null ? null : rule({ mode: row[3], value: row[4] }));
         change('price', number(row[5]), number(row[6]));
+      }
+    }
+  } else if (action === 'product.stock_set' || action === 'product.stock_reset') {
+    summary = action === 'product.stock_set' ? 'Catalogue stock set'
+      : d.reason === 'erp_matches' ? 'Catalogue stock follows the ERP again (the ERP reached the edited value)' : 'Catalogue stock back to the ERP stock';
+    change('catalogueStock', number(object(d.old).stock) ?? number(d.ownerStock), number(object(d.new).stock) ?? number(d.erpStock));
+  } else if (action === 'product.stock_conflict') {
+    summary = 'Stock conflict: the ERP stock changed after the catalogue stock was edited';
+    change('erpStock', number(d.oldErpStock), number(d.erpStock));
+    change('catalogueStock', number(d.ownerStock), number(d.ownerStock));
+  } else if (action === 'product.stock_conflict_resolved') {
+    summary = d.choice === 'keep' ? 'Stock conflict resolved: kept the catalogue stock'
+      : d.choice === 'erp_reverted' ? 'Stock conflict closed: the ERP stock went back' : 'Stock conflict resolved: used the ERP stock';
+    change('catalogueStock', number(d.ownerStock), d.choice === 'erp' ? number(d.erpStock) : number(d.ownerStock));
+  } else if (action === 'catalogue.stock_bulk_set' || action === 'catalogue.stock_conflicts_resolved') {
+    const bulkSet = action === 'catalogue.stock_bulk_set';
+    const count = number(object(d.result).willChange) ?? number(object(d.result).willResolve);
+    summary = bulkSet
+      ? (count === null ? 'Bulk catalogue stock change applied' : `Bulk catalogue stock change applied to ${count} products`)
+      : (count === null ? 'Stock conflicts resolved' : `${count} stock conflicts resolved`);
+    const columns = bulkSet ? 'productId,op,erpStock,oldStock,oldSource,newStock' : 'productId,choice,ownerStock,erpStock,erpStockAtEdit';
+    if (options.productId && Array.isArray(d.changes) && Array.isArray(d.changeColumns) && d.changeColumns.join(',') === columns) {
+      const row = d.changes.find((c: unknown) => Array.isArray(c) && c[0] === options.productId) as unknown[] | undefined;
+      if (row && bulkSet && row.length === 6) {
+        summary = 'Catalogue stock changed by a bulk operation';
+        change('catalogueStock', number(row[3]), number(row[5]));
+      } else if (row && !bulkSet && row.length === 5) {
+        summary = row[1] === 'keep' ? 'Stock conflict resolved in bulk: kept the catalogue stock' : 'Stock conflict resolved in bulk: used the ERP stock';
+        change('catalogueStock', number(row[2]), row[1] === 'erp' ? number(row[3]) : number(row[2]));
       }
     }
   } else if (action === 'settings.changed') {

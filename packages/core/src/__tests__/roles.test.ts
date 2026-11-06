@@ -41,3 +41,12 @@ describe('Role-Based Access Control (RBAC) Matrix', () => {
   });
 });
 
+
+describe('catalogue.stock_edit (ADR 017)', () => {
+  it('Owner, Admin and Catalogue Manager may edit the catalogue stock; Analyst may not', () => {
+    expect(hasPermission('owner', 'catalogue.stock_edit')).toBe(true);
+    expect(hasPermission('admin', 'catalogue.stock_edit')).toBe(true);
+    expect(hasPermission('catalogue_manager', 'catalogue.stock_edit')).toBe(true);
+    expect(hasPermission('analyst', 'catalogue.stock_edit')).toBe(false);
+  });
+});

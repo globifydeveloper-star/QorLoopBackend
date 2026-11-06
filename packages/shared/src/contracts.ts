@@ -4,6 +4,7 @@ import { RECON_REFERENCES, RECON_STATUSES } from '../../core/src/recon/status.js
 import { ADOPT_MODES } from '../../core/src/price-adoption.js';
 import { ACTIVITY_GROUPS } from '../../core/src/activity.js';
 import { ERP_CHANGE_KINDS } from '../../core/src/upload/apply.js';
+import { CONFLICT_CHOICES, STOCK_MAX, STOCK_REASON_MAX } from '../../core/src/catalogue-stock.js';
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
@@ -254,3 +255,44 @@ export const uploadChangesQuery = z.object({
   page, pageSize,
 }).strict();
 export const stockConflictsQuery = z.object({ page, pageSize }).strict();
+export const stockValue = z.number().int().min(0).max(STOCK_MAX);
+const stockReason = z.string().trim().max(STOCK_REASON_MAX).optional().transform(v => v || null);
+/** Optimistic concurrency by value: the ERP stock and the catalogue stock as last shown; 409 when either moved. */
+const stockExpected = z.object({ erpStock: stockValue, catalogueStock: stockValue }).strict();
+export const setProductStock = z.object({ stock: stockValue, reason: stockReason, expected: stockExpected }).strict();
+export const resetProductStock = z.object({ expectedErpStock: z.coerce.number().int().min(0).max(STOCK_MAX), expectedCatalogueStock: z.coerce.number().int().min(0).max(STOCK_MAX) }).strict();
+export const resolveProductStock = z.object({
+  choice: z.enum(CONFLICT_CHOICES),
+  /** The conflict as last shown: 409 when the ERP or the owner value moved since. */
+  expected: z.object({ erpStock: stockValue, ownerStock: stockValue }).strict(),
+}).strict();
+const stockSelection = z.union([
+  z.object({ productIds: z.array(z.uuid()).min(1).max(BULK_PRODUCT_IDS_MAX) }).strict(),
+  /** Every product (any status) matching all given conditions ({} = every product); at most STOCK_BULK_LIMIT. */
+  z.object({
+    filter: z.object({
+      q: z.string().trim().min(1).max(200).optional(),
+      categoryId: z.uuid().optional(),
+      subcategoryId: z.uuid().optional(),
+    }).strict(),
+  }).strict(),
+]);
+const stockBulkShape = {
+  selection: stockSelection,
+  /** set: the owner's catalogue stock (the ERP's own value clears an edit); erp: back to the ERP stock */
+  action: z.discriminatedUnion('mode', [z.object({ mode: z.literal('set'), stock: stockValue }).strict(), z.object({ mode: z.literal('erp') }).strict()]),
+  reason: stockReason,
+};
+const idempotency = {
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+};
+export const stockBulkPreview = z.object(stockBulkShape).strict();
+export const stockBulkApply = z.object({ ...stockBulkShape, ...idempotency }).strict();
+const conflictShape = {
+  /** explicit products, or every open conflict (at most STOCK_BULK_LIMIT) */
+  selection: z.union([z.object({ productIds: z.array(z.uuid()).min(1).max(BULK_PRODUCT_IDS_MAX) }).strict(), z.object({ all: z.literal(true) }).strict()]),
+  choice: z.enum(CONFLICT_CHOICES),
+};
+export const conflictsResolvePreview = z.object(conflictShape).strict();
+export const conflictsResolveApply = z.object({ ...conflictShape, ...idempotency }).strict();

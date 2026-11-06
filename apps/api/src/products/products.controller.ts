@@ -16,6 +16,8 @@ const product = {
     categoryId: { type: ['string', 'null'], format: 'uuid' }, subcategoryId: { type: ['string', 'null'], format: 'uuid' },
     erpPrice: { type: 'number' }, costPrice: { type: ['number', 'null'], description: 'Only for roles that may change prices' },
     erpStock: { type: 'integer' }, status: { type: 'string', enum: ['new', 'active', 'inactive'] }, inLatestErpFile: { type: 'boolean' },
+    catalogueStock: { type: 'integer', description: 'The stock the catalogue uses: the owner value while an edit exists, else the ERP stock' },
+    catalogueStockSource: { type: 'string', enum: ['erp', 'owner'] }, stockConflict: { type: 'boolean', description: 'An ERP stock change met the owner value; resolve it' },
     updatedAt: { type: 'string', format: 'date-time' },
   },
 };

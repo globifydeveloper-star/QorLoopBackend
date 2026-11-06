@@ -8,6 +8,7 @@ import { hasPermission } from '../../../../packages/core/src/roles.js';
 import { DEFAULT_READINESS_RULES, isReady, missingDetails, READINESS_REASONS } from '../../../../packages/core/src/products/readiness.js';
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { RECON_QUEUE } from '../tokens.js';
+import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
 import { loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
 
 const MAX_SKIPPED_LISTED = 200;
@@ -19,13 +20,19 @@ type Change = { field: 'nameAr' | 'categoryId' | 'subcategoryId' | 'status'; old
 export const canSeeCost = (role: Role) => hasPermission(role, 'pricing.edit');
 
 /** Never exposes the image storage key; cost only for roles that may see it. */
-function item(p: ProductRow, showCost: boolean) {
+function baseItem(p: ProductRow, showCost: boolean) {
   return {
     id: p.id, barcode: p.barcode, sku: p.sku, nameEn: p.nameEn, nameAr: p.nameAr, brand: p.brand, erpCategory: p.erpCategory,
     categoryId: p.categoryId, subcategoryId: p.subcategoryId, erpPrice: p.erpPrice.toNumber(),
     ...(showCost ? { costPrice: p.costPrice?.toNumber() ?? null } : {}),
     erpStock: p.erpStock, status: p.status, inLatestErpFile: p.inLatestErpFile, updatedAt: p.updatedAt,
   };
+}
+
+/** The catalogue stock beside the ERP stock (ADR 017): the owner value while an edit exists (also during a conflict, D1). */
+function stockFields(erpStock: number, e: { stock: number; erpStockAtEdit: number; state: StockEditState } | null) {
+  const c = catalogueStock(erpStock, e);
+  return { catalogueStock: c.stock, catalogueStockSource: c.source, stockConflict: e?.state === 'conflict' };
 }
 
 /** Opaque keyset cursor: base64url JSON of the last row's [name_en, id]. */
@@ -61,14 +68,17 @@ export class ProductsService {
       const counts = await data.products.counts(filter);
       const page = rows.slice(0, query.limit);
       const showCost = canSeeCost(p.member.role);
+      // catalogue stock next to the ERP stock (ADR 017): one read for the page's edits
+      const edits = await data.stock.edits(page.map(r => r.id));
+      const item = (r: ProductRow) => ({ ...baseItem(r, showCost), ...stockFields(r.erpStock, edits.get(r.id) ?? null) });
       if (!hasPermission(p.member.role, 'pricing.view')) {
-        return { items: page.map(r => item(r, showCost)), nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null, counts };
+        return { items: page.map(item), nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null, counts };
       }
       // Settings and rules once, product rules and offers for the whole page: a fixed number of queries per request.
       const [pricing, inputs] = await Promise.all([loadPricing(data), productInputs(data, page)]);
       const now = new Date();
       return {
-        items: page.map(r => ({ ...item(r, showCost), marketplacePrice: marketplacePrice(pricing, inputs.get(r.id)!.input, now) })),
+        items: page.map(r => ({ ...item(r), marketplacePrice: marketplacePrice(pricing, inputs.get(r.id)!.input, now) })),
         nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null,
         counts,
       };
@@ -90,7 +100,7 @@ export class ProductsService {
     ]);
     const name = (c: { id: string; nameEn: string; nameAr: string | null } | null) => (c ? { id: c.id, nameEn: c.nameEn, nameAr: c.nameAr } : null);
     return {
-      ...item(product, showCost), size: product.size, erpActive: product.erpActive, createdAt: product.createdAt,
+      ...baseItem(product, showCost), ...stockFields(product.erpStock, await data.stock.edit(id)), size: product.size, erpActive: product.erpActive, createdAt: product.createdAt,
       category: name(category), subcategory: name(subcategory),
       // informational only: activation does not require them (DEFAULT_READINESS_RULES)
       ...missingDetails(product),

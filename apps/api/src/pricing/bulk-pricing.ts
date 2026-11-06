@@ -72,7 +72,7 @@ export type PlannedBulk = Awaited<ReturnType<typeof planBulk>>;
 export const previewToken = (plan: BulkPricePlan) => createHash('sha256').update(bulkPlanSignature(plan.changes)).digest('hex');
 
 /** JSON with sorted keys, so the same request always hashes the same. */
-function canonical(v: unknown): string {
+export function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
   if (v && typeof v === 'object') {
     return `{${Object.keys(v).sort().filter(k => (v as Record<string, unknown>)[k] !== undefined)

@@ -38,6 +38,12 @@ const pricingSelect = {
   id: true, nameEn: true, barcode: true, status: true, erpPrice: true, categoryId: true, subcategoryId: true,
 } satisfies Prisma.ProductSelect;
 
+/** What a stock edit or conflict resolution needs of each product (ADR 017). */
+const stockSelect = {
+  id: true, nameEn: true, barcode: true, status: true, erpStock: true,
+  stockEdit: { select: { stock: true, erpStockAtEdit: true, state: true } },
+} satisfies Prisma.ProductSelect;
+
 /** `ILIKE` reads % _ and \ as wildcards and escape; a search for "50%" means the text. */
 const likeText = (s: string) => s.replace(/[\\%_]/g, m => '\\' + m);
 
@@ -88,6 +94,15 @@ export class ProductRepository {
   }
   pricingSelectionCount(s: PricingSelection) {
     return this.tx.product.count({ where: this.pricingWhere(s) });
+  }
+  /** A bulk stock selection (any status) in list order, at most `take` rows (ask for one more than the limit). */
+  stockSelection(f: ProductFilter, take: number) {
+    return this.tx.product.findMany({ where: this.where(f), orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], take, select: stockSelect });
+  }
+  stockSelectionCount(f: ProductFilter) { return this.tx.product.count({ where: this.where(f) }); }
+  /** The given products of this store for a stock edit or conflict resolution (another store's ids are absent), in list order. */
+  stockProducts(ids: string[]) {
+    return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], select: stockSelect });
   }
   /** The given products of this store (any status; another store's ids are simply absent), in list order. */
   pricingProducts(ids: string[]) {

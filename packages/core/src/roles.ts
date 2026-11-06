@@ -37,11 +37,13 @@ export type Permission =
   | 'team.manage_roles'
   | 'team.remove'
   | 'marketplaces.edit'
-  | 'activity.view';
+  | 'activity.view'
+  /** Edit the catalogue stock and resolve stock conflicts (ADR 017). */
+  | 'catalogue.stock_edit';
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   owner: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage',
+    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',
@@ -51,7 +53,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'marketplaces.edit', 'activity.view'
   ],
   admin: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage',
+    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',
@@ -61,7 +63,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'marketplaces.edit', 'activity.view'
   ],
   catalogue_manager: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage',
+    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',
