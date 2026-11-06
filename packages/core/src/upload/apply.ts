@@ -20,10 +20,27 @@ export interface ApplyProduct {
 /** Every field an ERP upload may write on an existing product. Absolute values, so a retry writes the same. */
 export type ProductWrite = Omit<ApplyProduct, 'normalizedBarcode'>;
 
-export type NewProduct = Omit<ProductWrite, 'id' | 'inLatestErpFile'> & { normalizedBarcode: string; status: 'active' | 'new' };
+/** rowNumber: the file row that creates it (erp_upload_changes); not a product column. */
+export type NewProduct = Omit<ProductWrite, 'id' | 'inLatestErpFile'> & { normalizedBarcode: string; status: 'active' | 'new'; rowNumber?: number };
 
 export type FieldValue = string | number | boolean | null;
-export interface FieldChange { productId: string; field: string; old: FieldValue; new: FieldValue }
+/** rowNumber and barcode identify the file row for the per-upload change list (erp_upload_changes). */
+export interface FieldChange { productId: string; field: string; old: FieldValue; new: FieldValue; rowNumber: number; barcode: string }
+
+/** The change-list filter an ERP change belongs to (erp_upload_change_kind_valid). */
+export const ERP_CHANGE_KINDS = ['new', 'price', 'cost', 'stock', 'name', 'active', 'missing', 'returned', 'other'] as const;
+export type ErpChangeKind = (typeof ERP_CHANGE_KINDS)[number];
+export function erpChangeKind(field: string, next: FieldValue): Exclude<ErpChangeKind, 'new'> {
+  switch (field) {
+    case 'erpPrice': return 'price';
+    case 'costPrice': return 'cost';
+    case 'erpStock': return 'stock';
+    case 'nameEn': return 'name';
+    case 'erpActive': return 'active';
+    case 'inLatestErpFile': return next === false ? 'missing' : 'returned';
+    default: return 'other'; // sku, brand, erpCategory, nameAr (filled when empty)
+  }
+}
 
 export interface ErpApplyPlan {
   create: NewProduct[];
@@ -117,7 +134,7 @@ export function planErpApply(rows: ErpRow[], products: ApplyProduct[], mappedKey
       const created: NewProduct = {
         normalizedBarcode: r.barcode, sku: r.sku ?? null, nameEn: r.nameEn, nameAr: r.nameAr ?? null, brand: r.brand ?? null,
         erpCategory: r.category ?? null, erpPrice: money3(r.price)!, costPrice: money3(r.cost ?? null), erpStock: r.stock, erpActive: r.active,
-        status: newStatus,
+        status: newStatus, rowNumber: r.rowNumber,
       };
       const problem = productProblem(created);
       if (problem) plan.skipped.push({ rowNumber: r.rowNumber, reason: problem });
@@ -129,7 +146,7 @@ export function planErpApply(rows: ErpRow[], products: ApplyProduct[], mappedKey
     const change = (field: keyof ProductWrite, value: FieldValue) => {
       const old = MONEY.has(field) ? money3(p[field] as number | null) : (p[field] as FieldValue);
       if (old === value) return;
-      changes.push({ productId: p.id, field, old, new: value });
+      changes.push({ productId: p.id, field, old, new: value, rowNumber: r.rowNumber, barcode: p.normalizedBarcode });
       (next as Record<string, FieldValue>)[field] = value;
     };
     for (const [key, field] of fields) if (!(key === 'cost' && costIgnored)) change(field, fileValue(r, key));

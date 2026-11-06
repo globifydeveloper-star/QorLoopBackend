@@ -52,6 +52,8 @@ model Tenant {
   generatedFiles        GeneratedFile[]
   notifications         Notification[]
   inputTemplates        InputTemplate[]
+  erpUploadChanges      ErpUploadChange[]
+  catalogueStockEdits   CatalogueStockEdit[]
 
   @@map("tenants")
 }
@@ -77,6 +79,7 @@ model User {
   uploads             Upload[]
   generatedFiles      GeneratedFile[]
   notifications       Notification[]
+  catalogueStockEdits CatalogueStockEdit[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -316,6 +319,8 @@ model Product {
   priceRule         ProductPriceRule?
   offers            ProductOffer[]
   reconRows         ReconRow[]
+  erpUploadChanges  ErpUploadChange[]
+  stockEdit         CatalogueStockEdit?
 
   @@unique([tenantId, normalizedBarcode])
   @@unique([tenantId, id])
@@ -474,6 +479,7 @@ model Upload {
   updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz
   rows              UploadRow[]
   errors            UploadError[]
+  erpChanges        ErpUploadChange[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, storageKey])
@@ -530,7 +536,12 @@ model ReconRow {
   actualAvailable            Boolean? @map("actual_available")
   priceMismatchVsErp         Boolean  @default(false) @map("price_mismatch_vs_erp")
   priceMismatchVsMarketplace Boolean  @default(false) @map("price_mismatch_vs_marketplace")
+  /// Stock issue against the catalogue (expected) reference, from catalogueAvailable.
   stockIssue                 String?  @map("stock_issue")
+  /// Stock issue against the ERP reference, from erpAvailable.
+  stockIssueVsErp            String?  @map("stock_issue_vs_erp")
+  /// Sellable by the catalogue stock (owner-edited, else ERP).
+  catalogueAvailable         Boolean? @map("catalogue_available")
   /// Status against the MARKETPLACE reference (expected price = the resolved Marketplace price).
   status                     String
   /// Status against the ERP reference (expected price = the ERP price).
@@ -615,4 +626,54 @@ model Notification {
 
   @@index([tenantId, userId, readAt])
   @@map("notifications")
+}
+
+// ───────────────────────── ERP change review & catalogue stock (ADR 017) ─────────────────────────
+
+/// What one applied ERP upload changed: one row per product x field (a new product, or a product missing from a full
+/// list, is one row). Written by the apply from the same plan that writes the products.
+model ErpUploadChange {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  uploadId      String   @map("upload_id") @db.Uuid
+  upload        Upload   @relation(fields: [tenantId, uploadId], references: [tenantId, id], onDelete: Cascade)
+  productId     String   @map("product_id") @db.Uuid
+  product       Product  @relation(fields: [tenantId, productId], references: [tenantId, id])
+  rowNumber     Int?     @map("row_number") // null only for kind = missing
+  barcode       String
+  kind          String // new | price | cost | stock | name | active | missing | returned | other
+  field         String? // null only for kind = new
+  oldValue      Json?    @map("old_value")
+  newValue      Json?    @map("new_value")
+  stockConflict Boolean  @default(false) @map("stock_conflict")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([tenantId, uploadId, kind, rowNumber, id], map: "erp_upload_changes_tenant_upload_kind_idx")
+  @@map("erp_upload_changes")
+}
+
+/// An owner-edited catalogue stock. No row = the catalogue stock is the ERP stock.
+/// Partial index catalogue_stock_edits_conflicts_idx (state = 'conflict'): 202611060001_erp_changes_catalogue_stock.
+model CatalogueStockEdit {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+  productId        String    @map("product_id") @db.Uuid
+  product          Product   @relation(fields: [tenantId, productId], references: [tenantId, id])
+  stock            Int
+  /// ERP stock when the value was set or last kept; a later, different ERP stock is a conflict.
+  erpStockAtEdit   Int       @map("erp_stock_at_edit")
+  state            String    @default("active") // active | conflict
+  conflictUploadId String?   @map("conflict_upload_id") @db.Uuid
+  conflictAt       DateTime? @map("conflict_at") @db.Timestamptz(3)
+  reason           String?
+  setById          String    @map("set_by_id") @db.Uuid
+  setBy            User      @relation(fields: [tenantId, setById], references: [tenantId, id])
+  setAt            DateTime  @map("set_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([tenantId, productId])
+  @@map("catalogue_stock_edits")
 }

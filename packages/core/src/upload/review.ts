@@ -1,5 +1,6 @@
 import { normalizeBarcode } from '../barcode.js';
-import { round2 } from '../money.js';
+import { toFils } from '../money.js';
+import { stockAfterErpChange, type StockEdit } from '../catalogue-stock.js';
 import type { ErpRow, MarketplaceRow, RowError } from './validate.js';
 
 export interface CatalogProduct {
@@ -8,8 +9,12 @@ export interface CatalogProduct {
   sku?: string | null;
   nameEn: string;
   erpPrice: number;
+  /** ERP review only: counted as a cost change when the cost column is mapped */
+  costPrice?: number | null;
   erpStock: number;
   inLatestErpFile: boolean;
+  /** ERP review only: the owner's catalogue stock edit, to predict stock conflicts (ADR 017) */
+  stockEdit?: StockEdit | null;
 }
 
 export interface CatalogListing {
@@ -30,6 +35,8 @@ export interface ReviewRow {
   price?: { old: number | null; new: number };
   stock?: { old: number | null; new: number };
   availability?: { old: boolean | null; new: boolean };
+  /** ERP: the stock change will meet an owner-edited catalogue stock and raise a conflict */
+  stockConflict?: boolean;
 }
 
 export interface ReviewSummary {
@@ -37,8 +44,15 @@ export interface ReviewSummary {
   matched: number;
   newProducts: number;
   rowsWithErrors: number;
+  /** ERP price compared at 3 decimals, as the apply does */
   priceChanges: number;
   stockChanges: number;
+  /** ERP: English name changes */
+  nameChanges: number;
+  /** ERP: cost changes (only when the cost column is mapped) */
+  costChanges: number;
+  /** ERP: stock changes that will raise a conflict with an owner-edited catalogue stock (predicted at review time) */
+  stockConflicts: number;
   missingFromFile: number;
   unmatched: number;
   /** ERP rows kept without their cost because it was negative or not a number */
@@ -48,9 +62,14 @@ export interface ReviewSummary {
 }
 
 /** The summary stored on an upload at review time and returned by the API (older uploads may lack the optional counts). */
-export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored' | 'negativeStockClamped'> & {
+export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored' | 'negativeStockClamped' | 'nameChanges' | 'costChanges' | 'stockConflicts'> & {
   costIgnored?: number;
   negativeStockClamped?: number;
+  nameChanges?: number;
+  costChanges?: number;
+  stockConflicts?: number;
+  /** Written by the apply (ADR 017): what it really changed; changesRecorded = the per-row change list exists. */
+  applied?: { changesRecorded: boolean; changes: number; stockConflicts: number; stockEditsCleared: number };
   contains: 'full' | 'partial';
   firstImport: boolean;
   missingSample: { productId: string; barcode: string }[];
@@ -63,7 +82,8 @@ export interface Review {
   summary: ReviewSummary;
 }
 
-const sameMoney = (a: number | null, b: number) => a !== null && round2(a) === round2(b);
+/** At 3 decimals (fils), like the apply and the recon: 1.234 -> 1.235 is a change. */
+const sameMoney = (a: number | null, b: number) => a !== null && toFils(a) === toFils(b);
 
 /**
  * The file's own header for a review error, like row-validation errors report it: the header of the
@@ -90,6 +110,8 @@ export function buildErpReview(
   const out: ReviewRow[] = [];
   const seenProducts = new Set<string>();
   let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0, negativeStockClamped = 0;
+  let nameChanges = 0, costChanges = 0, stockConflicts = 0;
+  const costMapped = Boolean(fields.cost);
 
   const kept = new Map<string, ErpRow>();
   for (const r of rows) {
@@ -117,6 +139,15 @@ export function buildErpReview(
     const stockChanged = p.erpStock !== r.stock;
     if (priceChanged) priceChanges++;
     if (stockChanged) stockChanges++;
+    if (p.nameEn !== r.nameEn) nameChanges++;
+    // as planErpApply: an ignored (negative / not a number) cost leaves the cost alone; a mapped empty cell clears it
+    const costSkipped = r.costIgnored === true || (r.cost !== undefined && !(r.cost >= 0));
+    if (costMapped && !costSkipped && p.costPrice !== undefined) {
+      const next = r.cost ?? null, old = p.costPrice;
+      if (old === null ? next !== null : next === null || toFils(old) !== toFils(next)) costChanges++;
+    }
+    const stockConflict = stockChanged && !!p.stockEdit && stockAfterErpChange(p.stockEdit, r.stock) === 'conflict';
+    if (stockConflict) stockConflicts++;
     out.push({
       rowNumber: r.rowNumber,
       changeType: priceChanged && stockChanged ? 'price_stock' : priceChanged ? 'price' : stockChanged ? 'stock' : 'none',
@@ -124,6 +155,7 @@ export function buildErpReview(
       parsed: r,
       price: priceChanged ? { old: p.erpPrice, new: r.price } : undefined,
       stock: stockChanged ? { old: p.erpStock, new: r.stock } : undefined,
+      ...(stockConflict ? { stockConflict: true } : {}),
     });
   }
 
@@ -138,7 +170,7 @@ export function buildErpReview(
     errors,
     summary: {
       rowsRead, matched, newProducts, rowsWithErrors: errors.length,
-      priceChanges, stockChanges, missingFromFile: missing.length, unmatched: 0, costIgnored, negativeStockClamped,
+      priceChanges, stockChanges, nameChanges, costChanges, stockConflicts, missingFromFile: missing.length, unmatched: 0, costIgnored, negativeStockClamped,
     },
   };
 }
@@ -248,7 +280,8 @@ export function buildMarketplaceReview(
     errors,
     summary: {
       rowsRead, matched, newProducts: 0, rowsWithErrors: errors.length,
-      priceChanges, stockChanges: availChanges, missingFromFile: missing.length, unmatched, costIgnored: 0, negativeStockClamped: 0,
+      priceChanges, stockChanges: availChanges, nameChanges: 0, costChanges: 0, stockConflicts: 0,
+      missingFromFile: missing.length, unmatched, costIgnored: 0, negativeStockClamped: 0,
     },
   };
 }

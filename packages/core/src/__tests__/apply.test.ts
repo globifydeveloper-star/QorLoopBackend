@@ -12,7 +12,7 @@ const required = ['barcode', 'nameEn', 'price', 'stock'];
 describe('planErpApply', () => {
   it('creates unknown barcodes with the given status and leaves unchanged products alone', () => {
     const plan = planErpApply([row(), row({ barcode: '222', nameEn: 'Milk', nameAr: 'حليب' })], [product()], required, 'new');
-    expect(plan.create).toEqual([{ normalizedBarcode: '222', sku: null, nameEn: 'Milk', nameAr: 'حليب', brand: null, erpCategory: null, erpPrice: 1.5, costPrice: null, erpStock: 5, erpActive: true, status: 'new' }]);
+    expect(plan.create).toEqual([{ normalizedBarcode: '222', sku: null, nameEn: 'Milk', nameAr: 'حليب', brand: null, erpCategory: null, erpPrice: 1.5, costPrice: null, erpStock: 5, erpActive: true, status: 'new', rowNumber: 2 }]);
     expect(plan.update).toEqual([]);
     expect(plan.changes).toEqual([]);
     expect(plan.barcodes).toEqual(['111', '222']);
@@ -20,7 +20,7 @@ describe('planErpApply', () => {
 
   it('only writes mapped columns: an unmapped column keeps its value, a mapped empty cell clears it', () => {
     const plan = planErpApply([row({ brand: undefined, cost: undefined })], [product()], [...required, 'brand'], 'new');
-    expect(plan.changes).toEqual([{ productId: 'p1', field: 'brand', old: 'B', new: null }]);
+    expect(plan.changes).toEqual([{ productId: 'p1', field: 'brand', old: 'B', new: null, rowNumber: 2, barcode: '111' }]);
     expect(plan.update).toEqual([expect.objectContaining({ id: 'p1', brand: null, costPrice: 1, sku: 'S1' })]);
   });
 
@@ -31,8 +31,8 @@ describe('planErpApply', () => {
       [...required, 'nameAr'], 'new',
     );
     expect(plan.changes).toEqual([
-      { productId: 'p1', field: 'nameAr', old: null, new: 'لبن' },
-      { productId: 'p1', field: 'inLatestErpFile', old: false, new: true },
+      { productId: 'p1', field: 'nameAr', old: null, new: 'لبن', rowNumber: 2, barcode: '111' },
+      { productId: 'p1', field: 'inLatestErpFile', old: false, new: true, rowNumber: 2, barcode: '111' },
     ]);
     expect(plan.update.map(u => u.id)).toEqual(['p1']);
   });

@@ -83,6 +83,33 @@ describe('buildErpReview', () => {
   });
 });
 
+describe('buildErpReview counts what the apply will change (ADR 017)', () => {
+  const one: CatalogProduct[] = [{ id: 'p1', normalizedBarcode: '111', nameEn: 'One', erpPrice: 1.234, costPrice: 1, erpStock: 10, inLatestErpFile: true }];
+  it('compares prices at 3 decimals, like the apply: 1.234 -> 1.235 is a price change', () => {
+    const r = buildErpReview([{ ...erp(2, '111', 1.235, 10), nameEn: 'One' }], 1, [], one, 'partial');
+    expect(r.summary.priceChanges).toBe(1);
+    expect(r.rows[0]!.changeType).toBe('price');
+    expect(buildErpReview([{ ...erp(2, '111', 1.2340001, 10), nameEn: 'One' }], 1, [], one, 'partial').summary.priceChanges).toBe(0);
+  });
+  it('counts English name changes and, only when the cost column is mapped, cost changes', () => {
+    const rows = [{ ...erp(2, '111', 1.234, 10), nameEn: 'One new', cost: 2 }];
+    expect(buildErpReview(rows, 1, [], one, 'partial').summary).toMatchObject({ nameChanges: 1, costChanges: 0 });
+    expect(buildErpReview(rows, 1, [], one, 'partial', { cost: 'Cost' }).summary.costChanges).toBe(1);
+    // a mapped empty cell clears the cost (a change); an ignored cost leaves it alone (not a change)
+    expect(buildErpReview([{ ...erp(2, '111', 1.234, 10), nameEn: 'One' }], 1, [], one, 'partial', { cost: 'Cost' }).summary.costChanges).toBe(1);
+    expect(buildErpReview([{ ...erp(2, '111', 1.234, 10), nameEn: 'One', costIgnored: true }], 1, [], one, 'partial', { cost: 'Cost' }).summary.costChanges).toBe(0);
+  });
+  it('predicts stock conflicts with owner-edited catalogue stock', () => {
+    const edited: CatalogProduct[] = [{ ...one[0]!, stockEdit: { stock: 3, erpStockAtEdit: 10, state: 'active' } }];
+    const conflict = buildErpReview([{ ...erp(2, '111', 1.234, 12), nameEn: 'One' }], 1, [], edited, 'partial');
+    expect(conflict.summary).toMatchObject({ stockChanges: 1, stockConflicts: 1 });
+    expect(conflict.rows[0]!.stockConflict).toBe(true);
+    // the ERP reaching the owner's value, or an unchanged stock, is no conflict
+    expect(buildErpReview([{ ...erp(2, '111', 1.234, 3), nameEn: 'One' }], 1, [], edited, 'partial').summary.stockConflicts).toBe(0);
+    expect(buildErpReview([{ ...erp(2, '111', 1.234, 10), nameEn: 'One' }], 1, [], edited, 'partial').summary.stockConflicts).toBe(0);
+  });
+});
+
 describe('buildMarketplaceReview', () => {
   const mp = (rowNumber: number, id: string, barcodes: string[], price: number, available: boolean): MarketplaceRow => ({ rowNumber, marketplaceProductId: id, barcodes, name: '', price, available });
   const listings = [{ productId: 'p1', marketplaceProductId: 'M1', price: 10, available: true }, { productId: 'p2', marketplaceProductId: 'M2', price: 20, available: true }];
