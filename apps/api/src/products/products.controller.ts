@@ -7,7 +7,26 @@ import { CONFIG } from '../tokens.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract, ZodPipe } from '../http/contracts.js';
 import { ProductsService } from './products.service.js';
+import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
+import { RECON_REFERENCES, STOCK_ISSUES } from '../../../../packages/core/src/recon/status.js';
+import { MARKETPLACE_COMPARISONS, MARKETPLACE_STATUS_FILTERS, PRICE_ISSUES } from '../../../../packages/core/src/products/marketplace-view.js';
 
+/** Only with ?marketplaceId. An object so later fields (for example an export value) can be added beside these. */
+const marketplace = {
+  type: 'object',
+  description: 'Only with marketplaceId: the product on that marketplace (winning listing, its upload, the stored recon row)',
+  properties: {
+    marketplaceId: { type: 'string', enum: [...MARKETPLACES] },
+    reference: { type: 'string', enum: [...RECON_REFERENCES], description: 'The comparison the status and issues use (the tenant default)' },
+    available: { type: ['boolean', 'null'], description: 'Availability in the marketplace file; null when not in the file' },
+    price: { type: ['string', 'null'], description: 'Price in the marketplace file, QAR with 3 decimals (e.g. "12.500"); null when not in the file' },
+    inFile: { type: 'boolean' },
+    comparison: { type: 'string', enum: [...MARKETPLACE_COMPARISONS], description: 'not_applicable: no upload yet, a new product, or not recomputed yet' },
+    stockIssue: { type: ['string', 'null'], enum: [...STOCK_ISSUES, null] },
+    priceIssue: { type: ['string', 'null'], enum: [...PRICE_ISSUES, null] },
+    sourceUploadedAt: { type: ['string', 'null'], format: 'date-time', description: 'Upload time of the marketplace file the values came from' },
+  },
+};
 const product = {
   type: 'object',
   properties: {
@@ -19,6 +38,7 @@ const product = {
     catalogueStock: { type: 'integer', description: 'The stock the catalogue uses: the owner value while an edit exists, else the ERP stock' },
     catalogueStockSource: { type: 'string', enum: ['erp', 'owner'] }, stockConflict: { type: 'boolean', description: 'An ERP stock change met the owner value; resolve it' },
     updatedAt: { type: 'string', format: 'date-time' },
+    marketplace,
   },
 };
 const tabCounts = { type: 'object', properties: Object.fromEntries(dto.productTab.options.map(t => [t, { type: 'integer' }])) };
@@ -35,6 +55,8 @@ export class ProductsController {
   @ApiQuery({ name: 'categoryId', required: false }) @ApiQuery({ name: 'subcategoryId', required: false })
   @ApiQuery({ name: 'limit', required: false, description: '1-200, default 50' })
   @ApiQuery({ name: 'cursor', required: false, description: 'nextCursor from the previous page' })
+  @ApiQuery({ name: 'marketplaceId', required: false, enum: [...MARKETPLACES], description: 'Adds a marketplace object to each product; the marketplace must be enabled for the store (else 400)' })
+  @ApiQuery({ name: 'marketplaceStatus', required: false, enum: [...MARKETPLACE_STATUS_FILTERS], description: 'Only with marketplaceId; also applies to the tab counts' })
   @Contract('Products ordered by English name, keyset paged, with a count per tab for the same search and category', undefined, {
     type: 'object', properties: { items: { type: 'array', items: product }, nextCursor: { type: ['string', 'null'] }, counts: tabCounts },
   })

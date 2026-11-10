@@ -1,7 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
-import type { ProductFilter, Role, TenantData } from '../../../../packages/db/src/database.js';
+import type { ProductFilter, ProductMarketplaceRow, Role, TenantData } from '../../../../packages/db/src/database.js';
+import { MARKETPLACES, type MarketplaceId } from '../../../../packages/core/src/constants.js';
+import { MARKETPLACE_LABELS } from '../../../../packages/core/src/price-change.js';
+import { enabledMarketplaces } from '../../../../packages/core/src/recon/compute.js';
+import type { ReconReference, ReconStatus, StockIssue } from '../../../../packages/core/src/recon/status.js';
+import { marketplaceView } from '../../../../packages/core/src/products/marketplace-view.js';
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import { normalizeBarcode } from '../../../../packages/core/src/barcode.js';
 import { hasPermission } from '../../../../packages/core/src/roles.js';
@@ -56,21 +61,63 @@ export function searchFilter(query: Pick<z.infer<typeof contracts.productListQue
   return { q, barcodePrefix: barcode || undefined, categoryId: query.categoryId, subcategoryId: query.subcategoryId };
 }
 
+type MarketplaceContext = { marketplaceId: MarketplaceId; reference: ReconReference; hasData: boolean };
+
+/**
+ * The marketplace of a list request: it must be one the store reconciles (core enabledMarketplaces, as the recon and
+ * bulk pricing use), else 400. The comparison uses the tenant's default reference, as the recon reports do.
+ */
+async function marketplaceContext(data: TenantData, marketplaceId: MarketplaceId): Promise<MarketplaceContext> {
+  const [switches, applied, settings] = await Promise.all([data.recon.marketplaceSwitches(), data.recon.lastApplied(), data.pricing.settings()]);
+  const enabled = enabledMarketplaces(MARKETPLACES, switches, new Set(applied.keys())).find(m => m.marketplaceId === marketplaceId);
+  if (!enabled) {
+    throw new BadRequestException({ message: 'Validation failed', details: [{ path: 'marketplaceId', message: `${MARKETPLACE_LABELS[marketplaceId]} is not enabled for this store` }] });
+  }
+  return { marketplaceId, reference: settings?.compareReferenceDefault === 'erp' ? 'erp' : 'marketplace', hasData: enabled.hasData };
+}
+
+/** The `marketplace` object of a list item (core marketplaceView), with the requested reference's recon columns. */
+export function marketplaceItem(m: MarketplaceContext, row: ProductMarketplaceRow | null) {
+  const r = row?.recon ?? null;
+  const erp = m.reference === 'erp';
+  const view = marketplaceView({
+    marketplaceId: m.marketplaceId, reference: m.reference, hasData: m.hasData, listing: row?.listing ?? null,
+    recon: r && {
+      status: (erp ? r.statusVsErp : r.status) as ReconStatus,
+      stockIssue: (erp ? r.stockIssueVsErp : r.stockIssue) as StockIssue | null,
+      priceMismatch: erp ? r.priceMismatchVsErp : r.priceMismatchVsMarketplace,
+      actualPrice: r.actualPrice, expectedPrice: erp ? r.erpPrice : r.marketplacePrice,
+    },
+  });
+  return { ...view, sourceUploadedAt: view.sourceUploadedAt?.toISOString() ?? null };
+}
+
 @Injectable()
 export class ProductsService {
   constructor(@Inject(AuthService) private readonly auth: AuthService, @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
 
   list(ctx: RequestContext, query: z.infer<typeof contracts.productListQuery>) {
     const after = query.cursor ? decodeCursor(query.cursor) : null;
-    const filter = searchFilter(query);
+    const search = searchFilter(query);
     return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => {
+      const market = query.marketplaceId ? await marketplaceContext(data, query.marketplaceId) : null;
+      const filter: ProductFilter = market && query.marketplaceStatus
+        ? { ...search, marketplace: { marketplaceId: market.marketplaceId, status: query.marketplaceStatus, reference: market.reference, hasData: market.hasData } }
+        : search;
       const rows = await data.products.list(filter, query.tab, after, query.limit + 1);
       const counts = await data.products.counts(filter);
       const page = rows.slice(0, query.limit);
       const showCost = canSeeCost(p.member.role);
       // catalogue stock next to the ERP stock (ADR 017): one read for the page's edits
-      const edits = await data.stock.edits(page.map(r => r.id));
-      const item = (r: ProductRow) => ({ ...baseItem(r, showCost), ...stockFields(r.erpStock, edits.get(r.id) ?? null) });
+      const [edits, values] = await Promise.all([
+        data.stock.edits(page.map(r => r.id)),
+        // the page's listing, upload and recon row on the marketplace: one statement, never one per row
+        market ? data.products.marketplaceValues(market.marketplaceId, page.map(r => r.id)) : Promise.resolve(null),
+      ]);
+      const item = (r: ProductRow) => ({
+        ...baseItem(r, showCost), ...stockFields(r.erpStock, edits.get(r.id) ?? null),
+        ...(market && values ? { marketplace: marketplaceItem(market, values.get(r.id) ?? null) } : {}),
+      });
       if (!hasPermission(p.member.role, 'pricing.view')) {
         return { items: page.map(item), nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null, counts };
       }

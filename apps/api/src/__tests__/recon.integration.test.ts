@@ -162,6 +162,21 @@ describe('recon after ERP, Talabat and Snoonu uploads', () => {
     expect((await allRows(a, manager, 'marketplaceId=talabat&status=not_listed', 50)).map(r => r.barcode)).toEqual([D]);
   });
 
+  it('the catalogue list with marketplaceId shows the same listing and recon values as the pipeline wrote', async () => {
+    const r = await h.request('GET', '/api/products?marketplaceId=talabat', a, manager);
+    expect(r.statusCode).toBe(200);
+    const items = r.json().data.items as { barcode: string; marketplace: Record<string, unknown> }[];
+    const talabatUpload = await h.fixture.prisma.upload.findFirstOrThrow({ where: { tenantId: a.id, source: 'talabat', status: 'applied' }, orderBy: { createdAt: 'desc' } });
+    const m = Object.fromEntries(items.map(i => [i.barcode, i.marketplace]));
+    expect(m[A]).toEqual({ marketplaceId: 'talabat', reference: 'marketplace', available: true, price: '11.000', inFile: true, comparison: 'in_sync',
+      stockIssue: null, priceIssue: null, sourceUploadedAt: talabatUpload.createdAt.toISOString() });
+    expect(m[B]).toMatchObject({ available: true, price: '4.000', comparison: 'mismatch', stockIssue: 'available_but_out_of_stock', priceIssue: 'marketplace_price_lower' });
+    expect(m[C]).toMatchObject({ available: false, price: '1.100', comparison: 'mismatch', stockIssue: 'unavailable_but_in_stock', priceIssue: null });
+    expect(m[D]).toMatchObject({ inFile: false, available: null, price: null, comparison: 'not_in_file' });
+    const mismatch = await h.request('GET', '/api/products?marketplaceId=talabat&marketplaceStatus=mismatch', a, manager);
+    expect((mismatch.json().data.items as { barcode: string }[]).map(i => i.barcode).sort()).toEqual([B, C].sort());
+  });
+
   it('uses the store\'s comparison reference when none is asked for', async () => {
     expect((await summary(a, manager)).reference).toBe('marketplace');
     expect((await h.request('PUT', '/api/pricing/settings', a, manager, { compareReferenceDefault: 'erp' })).statusCode).toBe(200);
