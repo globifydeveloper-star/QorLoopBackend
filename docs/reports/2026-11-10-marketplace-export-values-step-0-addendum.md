@@ -39,8 +39,17 @@ Proposed ADR 018 wording for the amendment (written in Step 4):
 > stock drives every enabled marketplace" is amended: one catalogue stock still drives every enabled marketplace's
 > *catalogue* availability, and stock cannot differ per marketplace. On top of it, a per-marketplace **export value**
 > (availability yes/no and/or price) may be set for one product on one marketplace. It changes only what is written
-> into that marketplace's generated file, never the catalogue stock, pricing rules, offers or listings, and clears
-> when a later upload from that marketplace matches it or when the manager chooses "use catalogue value".
+> into that marketplace's generated file, never the catalogue stock, pricing rules, offers or listings. Each field is
+> either **fix once** (`persistent = false`, the default: it clears when a later upload from that marketplace matches
+> it) or **pinned** (`persistent = true`: it never clears automatically, and while the marketplace matches the pinned
+> value no mismatch is raised). Either kind clears when the manager chooses "use catalogue value".
+>
+> Example (availability, yes/no): the catalogue says Available; the owner wants the product Unavailable on Talabat only.
+> *Fix once:* the export writes Unavailable; the next Talabat file shows Unavailable, so the override clears; the
+> catalogue (Available) is compared again, a "Lost sales" mismatch appears and the next export writes Available.
+> *Pinned:* the export keeps writing Unavailable; while Talabat shows Unavailable the row is "Pinned" with no
+> mismatch; if Talabat shows Available again, the mismatch is raised against the pinned value. Other marketplaces
+> keep following the catalogue.
 
 ## 3. "Adjusted, waiting for export" and the recon status model
 
@@ -51,14 +60,35 @@ recon `status`. It is a separate per-row `exportState`:
 | exportState | Label (UI) | Meaning |
 | --- | --- | --- |
 | `catalogue` | null | no override row; the file writes the catalogue value |
-| `waiting_for_export` | **"Adjusted, waiting for export"** | at least one field is pending and exportable |
-| `blocked` | "Adjusted, cannot be exported" + `blockedReason` | pending, but a gate prevents writing it (9 Nov report §3.8) |
+| `waiting_for_export` | **"Adjusted, waiting for export"** (or "Pinned, waiting for export" when every waiting field is pinned) | a pending field the marketplace does not yet show |
+| `pinned` | **"Pinned"** | every pending field is pinned and the marketplace shows exactly the pinned value |
+| `blocked` | "Adjusted, cannot be exported: <plain reason>" | pending, but a gate prevents writing it (approved D) |
 | `cleared` | null | override row kept as a record; all fields cleared; the file writes the catalogue value |
 
-This replaces the label "fixed in Qorloop, waiting for export" in the 9 Nov report with the owner's wording. A row
-stays `mismatch` (the marketplace still differs) and also shows `waiting_for_export`, until a matching marketplace
-upload clears the override. Generating or downloading a file does **not** change the state: Qorloop cannot know that
-the file was uploaded to the marketplace.
+Per field, the API also returns `fieldState: 'waiting_for_export' | 'pinned' | 'blocked' | null`. The row state is
+the most urgent of its fields: `blocked`, then `waiting_for_export`, then `pinned`, then `cleared` or `catalogue`.
+Plain blocked reasons: `inactive` "Product is inactive", `erp_inactive` "Inactive in the ERP", `missing_from_erp` "Not
+in the latest ERP file", `not_listed` "Not listed on this marketplace", `marketplace_disabled` "Marketplace is
+switched off", `ambiguous_listings` "Listed twice on this marketplace with different values".
+
+This replaces the label "fixed in Qorloop, waiting for export" in the 9 Nov report with the owner's wording. Generating
+or downloading a file does **not** change the state: Qorloop cannot know that the file was uploaded to the marketplace.
+
+**Comparison (approved E, plus pins):**
+
+- Fix-once field: the comparison is still catalogue (or ERP) versus marketplace. The row stays `mismatch` and counts
+  as a mismatch until the matching upload clears it; it also counts in `waitingForExport`.
+- Pinned field (pending, `persistent = true`, not blocked): the comparison target for that field becomes the pinned
+  value, for both references (the pin is the owner's decision for that marketplace, and approved C writes it in every
+  file). Price uses the existing price tolerance, availability compares exactly. A match means no stock or price issue
+  and no mismatch count; it counts in `pinned`. A difference raises the issue against the pinned value and counts as a
+  mismatch and in `waitingForExport`. Row fields `stockComparedWith` and `priceComparedWith`:
+  `'catalogue' | 'erp' | 'pinned'` say which target was used.
+- A blocked pin is compared with the catalogue again (the gate wins), and the reason is shown.
+- This means the recon worker reads pinned overrides, so they become part of the recon signature. No `recon_rows`
+  column is added: `*ComparedWith` comes from the live override join. A pin change queues the one coalesced recompute,
+  and until it has run the stored flags can lag by one recompute, as catalogue stock edits already do.
+- Summary per marketplace adds `waitingForExport` and `pinned` (counted from current overrides).
 
 ## 4. Price typed here versus the pricing rules (decided by the owner)
 
@@ -97,8 +127,9 @@ marketplaceSource: {
 
 | Event | Effect on a pending override |
 | --- | --- |
-| Later marketplace upload, same marketplace, accepted row matches exactly (price in fils; availability) and the upload was created after the value was set | that field clears (per field), audited, in the apply transaction |
-| Same upload, value differs / row absent / skipped / partial without the row / ambiguous duplicate listings | stays pending |
+| Later marketplace upload, same marketplace, accepted row matches exactly (price in fils; availability) and the upload was created after the value was set | fix-once field clears (per field), audited, in the apply transaction; **pinned field never clears** (it shows "Pinned") |
+| Same upload, value differs / row absent / skipped / partial without the row / ambiguous duplicate listings | stays pending (a pinned field raises the mismatch against the pinned value) |
+| Pin turned off (`persistent` true to false) with the same value | counts as a new set (`set_at` = now), so only an upload created afterwards can clear it; never clears on the spot |
 | ERP upload; catalogue stock edit; stock conflict; conflict resolution | no change; catalogue values update; the export value still wins |
 | Price rule, offer start/expiry, per-marketplace rule, tenant default | no change; `rulePrice` and `differsFromRulePrice` update |
 | Stock threshold change | no change; catalogue availability updates |
@@ -111,9 +142,57 @@ marketplaceSource: {
 `marketplace.values_edit` for Owner, Admin and Catalogue Manager in `packages/core/src/roles.ts`; no role is added.
 Reads use `recon.view` (the Analyst can read).
 
+## 7a. API, audit and test changes for `persistent`
+
+These change section 5 of the 9 Nov report:
+
+```ts
+// PUT /api/marketplace-values/:marketplaceId/products/:productId
+body = {
+  values: {                                     // at least one field
+    availability?: { value: boolean, persistent?: boolean },   // persistent defaults to false
+    price?:        { value: number,  persistent?: boolean }
+  },
+  reason?: string, expected: Version
+}
+// Same value + same persistent + same reason = no-op. Changing persistent alone is a real change (version + 1).
+
+// Bulk: SetAction = { type: 'set', values: <same shape as PUT values> }
+//       ResetAction = { type: 'use_catalogue', fields: Field[] }   (removes pinned and fix-once fields alike)
+// Bulk filter gains exportState 'pinned' and persistent?: boolean.
+
+type FieldMeta = { state: 'pending'|'cleared', persistent: boolean,
+                   fieldState: 'waiting_for_export'|'pinned'|'blocked'|null,
+                   setById: string, setAt: string, reason: string|null, clearedAt: string|null };
+MarketplaceValueItem.exportState: 'catalogue'|'waiting_for_export'|'pinned'|'blocked'|'cleared'
+MarketplaceValueItem.exportStateLabel: string|null
+MarketplaceValueItem.blockedReason / blockedReasonLabel: plain text from §3
+MarketplaceValueItem.price adds: rulePrice: number, differsFromRulePrice: boolean
+Recon row adds: marketplaceValues, marketplaceSource (§5), stockComparedWith, priceComparedWith
+Summary per marketplace adds: waitingForExport: number, pinned: number
+GET /api/marketplace-values adds the filter persistent=true|false
+```
+
+Audit: `product.marketplace_values_set`, `product.marketplace_values_cleared` and `marketplace.values_bulk_applied`
+record `persistent` before and after for each changed field (pin and unpin are visible in product history);
+`marketplace.values_upload_cleared` only ever lists fix-once fields.
+
+Tests added to the 9 Nov list:
+
+- a pinned field never clears on a matching upload, and a fix-once field does;
+- no mismatch while the marketplace matches a pin, and a mismatch against the pinned value when it differs;
+- pinned price within tolerance;
+- a blocked pin falls back to the catalogue comparison;
+- unpinning resets `set_at`, so an earlier upload cannot clear the field;
+- a bulk set with `persistent`, and `use_catalogue` on pinned fields;
+- summary `pinned` and `waitingForExport` counts;
+- one marketplace pinned while the others follow the catalogue;
+- the `persistent` check constraint.
+
 ## 8. Final migration SQL for approval
 
-Changes from the 9 Nov SQL: the name uses today's date; the hard-coded marketplace list check is removed (the
+Changes from the 9 Nov SQL: per-field `persistent` flags (NOT NULL, default false; must be false while a field has
+never been set; kept with the field's other provenance after it clears); the name uses today's date; the hard-coded marketplace list check is removed (the
 foreign key to `marketplaces` already guards it, and a list would need a migration for each new marketplace). All
 timestamps are `TIMESTAMPTZ(3)`. The row-level security block is a copy of `202611060001_erp_changes_catalogue_stock`
 lines 105 to 111: policy defined, not enabled, same name and setting.
@@ -122,8 +201,9 @@ lines 105 to 111: policy defined, not enabled, same name and setting.
 
 ```sql
 -- ───────────── Per-marketplace export values (ADR 018); no row = the file writes the catalogue value ─────────────
--- Two independent fields (availability, price), each with its own state and provenance. version is the optimistic
--- concurrency check; all timestamps are stored with millisecond precision.
+-- Two independent fields (availability, price), each with its own state and provenance. *_persistent: false = fix once
+-- (cleared by a later matching marketplace upload), true = pinned (cleared only by the manager). version is the
+-- optimistic concurrency check; all timestamps are stored with millisecond precision.
 -- CreateTable
 CREATE TABLE "marketplace_value_overrides" (
     "id" UUID NOT NULL,
@@ -136,12 +216,14 @@ CREATE TABLE "marketplace_value_overrides" (
     "availability_set_at" TIMESTAMPTZ(3),
     "availability_reason" TEXT,
     "availability_cleared_at" TIMESTAMPTZ(3),
+    "availability_persistent" BOOLEAN NOT NULL DEFAULT false,
     "price_value" DECIMAL(12,3),
     "price_state" TEXT,
     "price_set_by_id" UUID,
     "price_set_at" TIMESTAMPTZ(3),
     "price_reason" TEXT,
     "price_cleared_at" TIMESTAMPTZ(3),
+    "price_persistent" BOOLEAN NOT NULL DEFAULT false,
     "version" INTEGER NOT NULL DEFAULT 1,
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(3) NOT NULL,
@@ -154,7 +236,7 @@ CREATE UNIQUE INDEX "marketplace_value_overrides_tenant_id_product_id_marketplac
   ON "marketplace_value_overrides"("tenant_id", "product_id", "marketplace_id");
 CREATE INDEX "marketplace_value_overrides_tenant_id_marketplace_id_product_id_idx"
   ON "marketplace_value_overrides"("tenant_id", "marketplace_id", "product_id");
--- Pending instructions per marketplace (exports, summary counts, auto-clear). Partial: maintained in SQL only.
+-- Pending instructions per marketplace (exports, recon pins, summary counts, auto-clear). Partial: maintained in SQL only.
 CREATE INDEX "marketplace_value_overrides_pending_idx"
   ON "marketplace_value_overrides"("tenant_id", "marketplace_id", "product_id")
   WHERE "availability_state" = 'pending' OR "price_state" = 'pending';
@@ -166,7 +248,8 @@ ALTER TABLE "marketplace_value_overrides" ADD CONSTRAINT "marketplace_override_a
   CHECK (
     ("availability_state" IS NULL AND "availability_value" IS NULL
       AND "availability_set_by_id" IS NULL AND "availability_set_at" IS NULL
-      AND "availability_reason" IS NULL AND "availability_cleared_at" IS NULL)
+      AND "availability_reason" IS NULL AND "availability_cleared_at" IS NULL
+      AND "availability_persistent" = false)
     OR
     ("availability_state" IN ('pending', 'cleared')
       AND "availability_value" IS NOT NULL AND "availability_set_by_id" IS NOT NULL
@@ -181,7 +264,8 @@ ALTER TABLE "marketplace_value_overrides" ADD CONSTRAINT "marketplace_override_p
   CHECK (
     ("price_state" IS NULL AND "price_value" IS NULL
       AND "price_set_by_id" IS NULL AND "price_set_at" IS NULL
-      AND "price_reason" IS NULL AND "price_cleared_at" IS NULL)
+      AND "price_reason" IS NULL AND "price_cleared_at" IS NULL
+      AND "price_persistent" = false)
     OR
     ("price_state" IN ('pending', 'cleared')
       AND "price_value" IS NOT NULL AND "price_value" > 0 AND "price_value" <= 100000
@@ -225,18 +309,23 @@ Tenant scoping: RLS is defined but not enabled (as in every table), so every rep
 
 ## 9. Decisions needed before Step 1
 
-Already decided by the owner: marketplace-only edit; auto-clear on a matching later upload or manual removal; typed
-price goes into the export with a "differs from the rule price" note; Owner/Admin/Catalogue Manager.
+Decided by the owner (10 Nov):
 
-- **A. Approve the SQL in §8** (or amend it).
-- **B. Permission name** `marketplace.values_edit`.
-- **C. ERP-reference files** (9 Nov §3.10, D2): recommended, every generated file writes the export value whatever
-  the comparison reference; alternative, keep legacy ERP files and block them while an override is pending.
-- **D. Gates** (9 Nov D3): an availability `true` can bypass stock and threshold, but not inactive, ERP-inactive or
-  missing-from-ERP (row becomes `blocked`). The price override also outranks an active offer.
-- **E. Summary counts:** recommended, a row with a pending override still counts as a mismatch (the marketplace still
-  differs) and a separate `waitingForExport` count is added per marketplace.
-- **F. After auto-clear the catalogue value resumes** (catalogue 10, override 12, marketplace file 12, then the next
-  export proposes 10 again unless the catalogue changed). Confirm, or ask for a permanent per-marketplace price instead.
+- marketplace-only edit; typed price goes into the export with a "differs from the rule price" note;
+- **B** `marketplace.values_edit` for Owner, Admin and Catalogue Manager, no new roles;
+- **C** every generated file, including ERP-reference files, writes the export value; the existing warning that an
+  ERP-reference price file must never be uploaded to a real marketplace stays;
+- **D** an availability "yes" can override stock and threshold, never inactive, ERP-inactive or missing-from-ERP;
+  those rows are `blocked` with a plain reason;
+- **E** the mismatch count stays; `waitingForExport` is added per marketplace;
+- **F** amended: per-field `persistent` flag (fix once by default, clears on a match; pinned never auto-clears, shows
+  "Pinned", no mismatch while the marketplace matches). The example now uses availability (§2).
 
-**STOP: waiting for owner approval. No schema change or migration has been made.**
+Still open:
+
+- **A. Approve the SQL in §8** (with the `persistent` flags).
+- Two points in this design, both with a recommendation, which I will follow unless told otherwise:
+  - a pin also changes the comparison for the ERP reference;
+  - turning a pin off counts as a new set.
+
+**STOP: waiting for owner approval of the migration. No schema change or migration has been made.**
