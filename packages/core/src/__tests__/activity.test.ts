@@ -45,4 +45,9 @@ describe('safe activity summaries', () => {
     expect(presentActivity('team.role_changed', { from: 'analyst', to: 'admin' }).beforeAfter)
       .toEqual([{ field: 'role', before: 'analyst', after: 'admin' }]);
   });
+  it('shows the store data reset (ADR 018) under team and security, without its details', () => {
+    const shown = presentActivity('store.data_reset', { deleted: { products: 12 }, kept: { auditEvents: 3 }, storageObjects: 'not deleted' });
+    expect(shown).toEqual({ type: 'store.data_reset', group: 'team_security', summary: 'Store data reset (operations script)', beforeAfter: [] });
+    expect(activityGroup('store.data_reset', {})).toBe('team_security');
+  });
 });
