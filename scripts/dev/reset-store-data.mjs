@@ -169,6 +169,12 @@ async function main() {
     for (const [t, c] of Object.entries(result.deleted)) if (c) out(`  ${t.padEnd(26)}${n(c).padStart(12)}`);
     out(`Kept: ${n(result.kept.auditEvents)} security/team/settings audit events, ${n(result.kept.storeWideMarketplaceRules)} store-wide marketplace rules, and every row of the kept tables.`);
     out(`Audit event written: ${plan.RESET_ACTION} (${result.eventId}).`);
+    try {
+      const ms = await plan.analyzeEmptiedTables(q);
+      out(`ANALYZE: statistics refreshed on the ${plan.DELETE_TABLES.length} emptied tables (${n(ms)} ms).`);
+    } catch (e) {
+      out(`ANALYZE failed (${describeError(e)}). The reset is committed; autovacuum refreshes the statistics later.`);
+    }
 
     if (redis && !checks.redis.skipped) {
       try {

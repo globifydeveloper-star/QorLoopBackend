@@ -246,6 +246,18 @@ export async function resetTenantInTransaction(q, { tenantId, eventId }) {
   return { tenant, before, deleted, kept, eventId };
 }
 
+/**
+ * After COMMIT, outside the transaction: refreshes planner statistics of every table the reset emptied, so the next
+ * queries (and the first upload) are planned from the real, much smaller row counts instead of waiting for autovacuum.
+ * SKIP_LOCKED returns at once for a table that autovacuum is already analysing. Statistics are per table, not per store.
+ */
+export const ANALYZE_SQL = `ANALYZE (SKIP_LOCKED) ${[...new Set(DELETE_TABLES)].map(ident).join(', ')}`;
+export async function analyzeEmptiedTables(q) {
+  const t0 = Date.now();
+  await q(ANALYZE_SQL, []);
+  return Date.now() - t0;
+}
+
 /** BEGIN [READ ONLY] ... COMMIT through one connection; ROLLBACK on any error. A read-only run always rolls back. */
 export async function inTransaction(q, fn, { readOnly = false } = {}) {
   await q(readOnly ? 'BEGIN READ ONLY' : 'BEGIN', []);
@@ -350,6 +362,73 @@ export function refusals({ classification, backup, api, sessions, redis }) {
     if (busy.length) out.push(`Worker: BullMQ workers are connected (${busy.map(([q, n]) => `${q} ${n}`).join(', ')}). Stop the worker first.`);
     const active = Object.entries(redis.jobs).filter(([, s]) => s.active > 0);
     if (active.length) out.push(`Worker: jobs for this store are running (${active.map(([q, s]) => `${q} ${s.active}`).join(', ')}).`);
+  }
+  return out;
+}
+
+// ───────── Object storage (scripts/dev/reset-store-storage.mjs) ─────────
+// Keys are built only by storageKeys in packages/shared/src/storage.ts:
+//   tenants/<tenantId>/uploads/<uploadId>/original<ext>   and   tenants/<tenantId>/generated/<fileId><ext>
+// Only these two prefixes are deleted; anything else under tenants/<tenantId>/ is listed as untouched.
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const S3_DELETE_BATCH = 1000;
+
+export function storagePrefixes(tenantId) {
+  if (!UUID.test(tenantId)) refuse('The store id is not a UUID; refusing to build a storage prefix.');
+  const root = `tenants/${tenantId}/`;
+  return { root, delete: [`${root}uploads/`, `${root}generated/`] };
+}
+
+/** Every object under `prefix`, following continuation tokens. `listPage(prefix, token)` -> { objects: [{ key, size }], next }. */
+export async function listAllObjects(listPage, prefix) {
+  const objects = [];
+  let token;
+  do {
+    const page = await listPage(prefix, token);
+    objects.push(...page.objects);
+    token = page.next;
+  } while (token);
+  return objects;
+}
+
+/** Splits the objects under the store's root into the ones the storage step deletes and the ones it never touches. */
+export function storagePlan(tenantId, objects) {
+  const p = storagePrefixes(tenantId);
+  const mine = objects.filter(o => o.key.startsWith(p.root));
+  const del = mine.filter(o => p.delete.some(d => o.key.startsWith(d))).sort((a, b) => a.key.localeCompare(b.key));
+  const deleting = new Set(del);
+  const untouched = mine.filter(o => !deleting.has(o));
+  return { prefixes: p, delete: del, untouched, bytes: del.reduce((a, o) => a + (o.size ?? 0), 0), foreign: objects.length - mine.length };
+}
+
+export const batches = (items, size = S3_DELETE_BATCH) => Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+
+/** The store's rows that still point at files. The storage step runs only after the database reset. */
+export async function storageRowCounts(q, tenantId) {
+  const [r] = await q(`SELECT (SELECT count(*)::int FROM uploads WHERE tenant_id = $1::uuid) AS uploads,
+                              (SELECT count(*)::int FROM generated_files WHERE tenant_id = $1::uuid) AS generated`, [tenantId]);
+  return r;
+}
+
+/** --tenant <slug> alone is a dry run; a real run needs --confirm <slug> and --expect-count <n> from the dry run. */
+export function validateStorageArgs({ tenant, confirm, 'expect-count': expect }) {
+  const base = validateArgs({ tenant, confirm });
+  if (base.mode === 'dry-run') {
+    if (expect !== undefined) refuse('--expect-count is only used with --confirm.');
+    return base;
+  }
+  if (expect === undefined || !/^\d{1,9}$/.test(expect)) refuse('A real run needs --expect-count <n>: the number of objects the dry run listed.');
+  return { ...base, expectCount: Number(expect) };
+}
+
+export function storageRefusals({ rows, listed, expectCount }) {
+  const out = [];
+  if (rows.uploads || rows.generated) {
+    out.push(`Database: the store still has ${rows.uploads} upload and ${rows.generated} generated-file rows. Run reset-store-data.mjs first; deleting their files now would break them.`);
+  }
+  if (expectCount !== undefined && listed !== expectCount) {
+    out.push(`Storage: ${listed} objects are listed now, but --expect-count is ${expectCount}. Run the dry run again and review the new list.`);
   }
   return out;
 }
