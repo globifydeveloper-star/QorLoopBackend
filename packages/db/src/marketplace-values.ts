@@ -50,7 +50,7 @@ export type OverrideColumns = {
   price_reason: string | null; price_cleared_at: Date | null; price_persistent: boolean | null;
 };
 
-const OVERRIDE_COLUMNS = Prisma.sql`o.id AS o_id, o.version AS o_version,
+export const OVERRIDE_COLUMNS = Prisma.sql`o.id AS o_id, o.version AS o_version,
   o.availability_value, o.availability_state, o.availability_set_by_id, o.availability_set_at, o.availability_reason, o.availability_cleared_at, o.availability_persistent,
   o.price_value::float8 AS price_value, o.price_state, o.price_set_by_id, o.price_set_at, o.price_reason, o.price_cleared_at, o.price_persistent`;
 
@@ -71,22 +71,22 @@ export function storedOverride(r: OverrideColumns): StoredOverride | null {
 const ELIGIBLE = Prisma.sql`(p.status = 'active' AND p.erp_active AND p.in_latest_erp_file)`;
 const NOT_EXPORTABLE = Prisma.sql`(r.status = 'no_data' OR r.actual_price IS NULL OR p.status = 'new')`;
 
-/** The two field ranks (EXPORT_STATES order: 0 blocked, 1 waiting_for_export, 2 to_fix, 3 pinned, 4 in_sync, 5 not_exportable). */
+/** The two field ranks (EXPORT_STATES order: 0 to_fix, 1 waiting_for_export, 2 blocked, 3 pinned, 4 in_sync, 5 not_exportable). */
 function fieldRanks(enabledMarketplaces: string[], toleranceFils: number) {
   const enabled = Prisma.sql`(r.marketplace_id = ANY(${enabledMarketplaces}::text[]))`;
   const availability = Prisma.sql`CASE
       WHEN o.availability_state = 'pending' THEN CASE
-        WHEN r.actual_price IS NULL OR NOT ${enabled} OR (o.availability_value AND NOT ${ELIGIBLE}) THEN 0
+        WHEN r.actual_price IS NULL OR NOT ${enabled} OR (o.availability_value AND NOT ${ELIGIBLE}) THEN 2
         WHEN o.availability_persistent AND r.actual_available = o.availability_value THEN 3 ELSE 1 END
-      WHEN ${NOT_EXPORTABLE} THEN 5 WHEN r.stock_issue IS NOT NULL THEN 2 ELSE 4 END`;
+      WHEN ${NOT_EXPORTABLE} THEN 5 WHEN r.stock_issue IS NOT NULL THEN 0 ELSE 4 END`;
   const price = Prisma.sql`CASE
       WHEN o.price_state = 'pending' THEN CASE
-        WHEN r.actual_price IS NULL OR NOT ${enabled} OR NOT ${ELIGIBLE} THEN 0
+        WHEN r.actual_price IS NULL OR NOT ${enabled} OR NOT ${ELIGIBLE} THEN 2
         WHEN o.price_persistent AND abs(round(r.actual_price * 1000) - round(o.price_value * 1000)) <= ${toleranceFils}::numeric THEN 3 ELSE 1 END
-      WHEN ${NOT_EXPORTABLE} THEN 5 WHEN r.price_mismatch_vs_marketplace THEN 2 ELSE 4 END`;
+      WHEN ${NOT_EXPORTABLE} THEN 5 WHEN r.price_mismatch_vs_marketplace THEN 0 ELSE 4 END`;
   return { availability, price };
 }
-for (const [i, s] of ['blocked', 'waiting_for_export', 'to_fix', 'pinned', 'in_sync', 'not_exportable'].entries()) {
+for (const [i, s] of ['to_fix', 'waiting_for_export', 'blocked', 'pinned', 'in_sync', 'not_exportable'].entries()) {
   if (EXPORT_STATES[i] !== s) throw new Error('EXPORT_STATES order changed: update the SQL ranks in marketplace-values.ts');
 }
 
@@ -178,8 +178,8 @@ export class MarketplaceValuesRepository {
     const rows = await this.tx.$queryRaw<{ marketplace_id: string; to_fix: number; waiting: number; pinned: number; blocked: number }[]>`
       WITH s AS (${this.ranked({ enabledMarketplaces, toleranceFils, marketplaceId })})
       SELECT s.marketplace_id,
-             count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 2)::int AS to_fix, count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 1)::int AS waiting,
-             count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 3)::int AS pinned, count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 0)::int AS blocked
+             count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 0)::int AS to_fix, count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 1)::int AS waiting,
+             count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 3)::int AS pinned, count(*) FILTER (WHERE LEAST(s.a_rank, s.p_rank) = 2)::int AS blocked
       FROM s GROUP BY s.marketplace_id`;
     return new Map(rows.map(r => [r.marketplace_id, { toFix: r.to_fix, waitingForExport: r.waiting, pinned: r.pinned, blocked: r.blocked }]));
   }
@@ -212,10 +212,11 @@ export class MarketplaceValuesRepository {
    * Writes planned changes, set-based: sets become pending values (who = actorId, when = now, ms precision) and clears
    * mark pending fields cleared; the other field of a row is left exactly as it was. Every changed row: version + 1.
    */
-  async write(marketplaceId: string, actorId: string, changes: PlannedChange[]) {
+  async write(marketplaceId: string, actorId: string | null, changes: PlannedChange[]) {
     const sets = changes.filter(c => c.fields.some(f => f.op === 'set'));
     const clears = changes.filter(c => c.fields.some(f => f.op === 'clear'));
     if (sets.length) {
+      if (!actorId) throw new Error('A set needs the user who sets it');
       const col = (field: MarketplaceValueField, pick: (f: PlannedChange['fields'][number]) => string | null) =>
         sets.map(c => { const f = c.fields.find(x => x.field === field && x.op === 'set'); return f ? pick(f) : null; });
       const isSet = (field: MarketplaceValueField) => sets.map(c => String(c.fields.some(x => x.field === field && x.op === 'set')));
@@ -262,6 +263,49 @@ export class MarketplaceValuesRepository {
         FROM unnest(${clears.map(c => c.productId)}::uuid[], ${clearing('availability')}::text[], ${clearing('price')}::text[]) AS v(product_id, a_clear, p_clear)
         WHERE o.tenant_id = ${this.tenantId}::uuid AND o.marketplace_id = ${marketplaceId} AND o.product_id = v.product_id`;
     }
+  }
+
+  // ── Pins in the comparison and acknowledgement by a later upload (Step 3) ──
+
+  /**
+   * Pending pinned values per `${marketplaceId}:${productId}`: the comparison target of that field (recon). Uses the
+   * partial pending index. The recon decides whether a pin is in effect (listed, eligible), as Review does.
+   */
+  async pins(marketplaceIds: string[]): Promise<Map<string, { available?: boolean; price?: number }>> {
+    if (!marketplaceIds.length) return new Map();
+    const rows = await this.tx.$queryRaw<{ marketplace_id: string; product_id: string; available: boolean | null; price: number | null }[]>`
+      SELECT marketplace_id, product_id,
+             CASE WHEN availability_state = 'pending' AND availability_persistent THEN availability_value END AS available,
+             CASE WHEN price_state = 'pending' AND price_persistent THEN price_value::float8 END AS price
+      FROM marketplace_value_overrides
+      WHERE tenant_id = ${this.tenantId}::uuid AND marketplace_id = ANY(${marketplaceIds}::text[])
+        AND (availability_state = 'pending' OR price_state = 'pending')
+        AND ((availability_state = 'pending' AND availability_persistent) OR (price_state = 'pending' AND price_persistent))`;
+    return new Map(rows.map(r => [`${r.marketplace_id}:${r.product_id}`, {
+      ...(r.available !== null ? { available: r.available } : {}), ...(r.price !== null ? { price: r.price } : {}),
+    }]));
+  }
+
+  /** Stored values of the given products that have a pending fix-once field on this marketplace (candidates to clear). */
+  async fixOncePending(marketplaceId: string, productIds: string[]): Promise<Map<string, StoredOverride>> {
+    if (!productIds.length) return new Map();
+    const rows = await this.tx.$queryRaw<({ product_id: string } & OverrideColumns)[]>`
+      SELECT o.product_id, ${OVERRIDE_COLUMNS}
+      FROM marketplace_value_overrides o
+      WHERE o.tenant_id = ${this.tenantId}::uuid AND o.marketplace_id = ${marketplaceId} AND o.product_id = ANY(${productIds}::uuid[])
+        AND ((o.availability_state = 'pending' AND NOT o.availability_persistent) OR (o.price_state = 'pending' AND NOT o.price_persistent))`;
+    return new Map(rows.flatMap(r => { const o = storedOverride(r); return o ? [[r.product_id, o] as const] : []; }));
+  }
+
+  /** Every listing of the given products on this marketplace, as it is now (several marketplace ids can share a product). */
+  async listingValues(marketplaceId: string, productIds: string[]): Promise<Map<string, { available: boolean; price: number }[]>> {
+    const out = new Map<string, { available: boolean; price: number }[]>();
+    if (!productIds.length) return out;
+    const rows = await this.tx.$queryRaw<{ product_id: string; available: boolean; price: number }[]>`
+      SELECT product_id, available, price::float8 AS price FROM listings
+      WHERE tenant_id = ${this.tenantId}::uuid AND marketplace_id = ${marketplaceId} AND product_id = ANY(${productIds}::uuid[])`;
+    for (const r of rows) out.set(r.product_id, [...(out.get(r.product_id) ?? []), { available: r.available, price: r.price }]);
+    return out;
   }
 
   /** A bulk apply recorded under this idempotency key within the window (the event holds the request hash and result). */

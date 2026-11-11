@@ -1,6 +1,6 @@
 # Review screen and marketplace export values: API
 
-Branch `feature/marketplace-export-values`, Step 2. Migration `202611100001_marketplace_value_overrides`, owner-approved on 11 November 2026; you run it on the demo database.
+Branch `feature/marketplace-export-values`, Steps 2 and 3 ([ADR 019](decisions/019-marketplace-export-values.md)). Migration `202611100001_marketplace_value_overrides`, owner-approved on 11 November 2026; you run it on the demo database.
 
 The catalogue is the source of truth. On a marketplace's **Review** screen, the manager sees the products that differ from the catalogue. They can set that marketplace's availability and price for one product, or go back to the catalogue value, and then download the updated file.
 
@@ -19,18 +19,18 @@ Mutations need a trusted Origin and the CSRF header. The store comes from the ho
 | --- | --- | --- |
 | 1 | One list endpoint for the Review screen | **Covered:** `GET /api/marketplace-values/review` (below). It is a new endpoint, not `GET /api/recon/rows`, because the Review default ("only rows that need a change") would change what the existing reports get by default. |
 | 2 | "Use catalogue values" for all rows of the current filter, plus single set and remove | **Covered:** bulk `use_catalogue` (and `set`) on `selection.filter`, the same filter as the list; preview token and idempotency key required; at most 5,000. Single changes use `PUT` and `DELETE`. |
-| 3 | Start generation for both enabled marketplaces; files use the export values | **Not yet (Step 3).** Today the client starts one job per marketplace with the existing `POST /api/generated-files` (body `{ marketplaceId, kind: 'stock_price', scope: 'mismatches' }`), once for Talabat and once for Snoonu, then polls `GET /api/generated-files/jobs/:jobId` for each; today's files still write catalogue values. Step 3 adds `POST /api/generated-files/batch` and makes every file write the export value (override else catalogue, decision C). |
+| 3 | Start generation for both enabled marketplaces; files use the export values | **Covered (Step 3):** `POST /api/generated-files/batch` (below). Every file writes the export value in effect, else the reference value (decision C as implemented). |
 | 4 | Summary counts per marketplace: to fix, waiting for export, pinned, blocked | **Covered:** `counts` in the Review response, and `marketplaces[].export` in `GET /api/recon/summary` (the Dashboard card). |
 
 ## Row states
 
-`exportState` is the most urgent state of the row's two fields, in this order (also the list order):
+`exportState` is the most urgent state of the row's two fields, in the owner's order (also the list order):
 
 | State | Label | Meaning |
 | --- | --- | --- |
-| `blocked` | "Adjusted, cannot be exported: <reason>" | A pending export value that cannot be written. `blockedReason` is one of `not_listed`, `marketplace_disabled`, `inactive`, `erp_inactive`, `missing_from_erp`. "No" (unavailable) is only blocked when the product is not listed or the marketplace is off. |
-| `waiting_for_export` | "Adjusted, waiting for export" (or "Pinned, waiting for export") | A pending value the marketplace does not show yet. |
 | `to_fix` | "Differs from the catalogue; the next file writes the catalogue value" | No export value, and the marketplace differs from the catalogue (the stored comparison: a stock issue, or a price difference above the tolerance). |
+| `waiting_for_export` | "Adjusted, waiting for export" (or "Pinned, waiting for export") | A pending value the marketplace does not show yet. |
+| `blocked` | "Adjusted, cannot be exported: <reason>" | A pending export value that cannot be written. `blockedReason` is one of `not_listed`, `marketplace_disabled`, `inactive`, `erp_inactive`, `missing_from_erp`. "No" (unavailable) is only blocked when the product is not listed or the marketplace is off. A blocked field keeps its reason in `fields.<field>.blockedReason` even when the row is in a more urgent state. |
 | `pinned` | "Pinned" | A pinned value the marketplace shows (price within the tolerance). |
 | `in_sync` | null | Listed; nothing to change. |
 | `not_exportable` | the reason | Nothing pending, and the file cannot write this product. `notExportableReason` is one of `no_data`, `not_listed`, `new_product`. |
@@ -147,9 +147,45 @@ data = { operationId, replayed: boolean, appliedAt, marketplaceId,
 
 `marketplaces[].export = { toFix, waitingForExport, pinned, blocked }`: the Review counts for that marketplace. They are always against the catalogue and live, whatever `reference` is.
 
-## Not yet in Step 2 (Step 3)
+## Generated files (Step 3)
 
-- Generated files writing the export values, `POST /api/generated-files/batch`, and the preview's `exportToken` and freshness check.
-- Fix-once values cleared by a later matching upload (the core logic exists: `acknowledgedFields`).
-- Pinned values used by the dashboard comparison: until then, a pinned row the marketplace shows still counts as a mismatch in `stock` and `price`, while Review shows it as `pinned`.
+```ts
+POST /api/generated-files/preview   // body unchanged; exportToken in the body is ignored here
+data = { ...as before,
+         valueBasis: 'export_values',     // an export value in effect wins in every file; otherwise the reference value
+         exportToken: string,             // send with the generate request
+         exportValueProducts: number,     // written products whose price or availability is an export value
+         blockedExportProducts: number,   // products whose export value cannot be written (the reference value is written)
+         fromOlderFile: number }          // selected products whose listing came from an older marketplace file
+
+POST /api/generated-files           // 202; body as before + exportToken?: string (64 hex)
+// 409 "The catalogue or export values changed since this file was requested. Preview and generate it again."
+// when the token no longer matches. The worker checks again before it stores the file, under the tenant lock.
+
+POST /api/generated-files/batch     // 202, files.generate
+body = { marketplaceIds?: MarketplaceId[] /* default: every enabled marketplace */,
+         kind?: 'stock'|'price'|'stock_price' /* default stock_price */, scope?: 'mismatches'|'all' /* default mismatches */,
+         reference?: 'marketplace'|'erp', exportTokens?: { [marketplaceId]: string } }
+data = { jobs: { marketplaceId, jobId }[], blocked: { marketplaceId, message }[] }
+// poll each job with GET /api/generated-files/jobs/:jobId, then GET /api/generated-files/:id/download
+```
+
+In a `mismatches` file:
+
+- a field with a pending value is written even when the difference is within the tolerance;
+- a pinned value the marketplace already shows is not rewritten;
+- a blocked value falls back to the reference value.
+
+## Pins and acknowledgement (Step 3)
+
+| Topic | Behaviour |
+| --- | --- |
+| Pins in the comparison | A pinned value in effect is the comparison target of its field for both references. Setting, changing or removing a pin queues a recompute (`'marketplace.values'`). After it, the dashboard's `stock` and `price` counts no longer count a pinned value the marketplace shows. |
+| Acknowledgement | When a marketplace file applies, every pending fix-once field it confirms is cleared, with one `marketplace.values_upload_cleared` event (`upload.applied` counts `exportValuesCleared`). It needs a file created after the value was set, a matching accepted row, and every listing of the product showing the value exactly. Pins never clear this way. |
+
+## Not built
+
 - The `ambiguous_listings` block reason.
+- A list of stored export values.
+- Export fields on `GET /api/recon/rows`.
+- Any "disable marketplace" work (not needed now).

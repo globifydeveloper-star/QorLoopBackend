@@ -19,6 +19,17 @@ export interface FileReconRow {
   /** The stock issue for the same reference. */
   stockIssue: string | null;
   priceMismatchVsErp: boolean; priceMismatchVsMarketplace: boolean; status: string;
+  // ── Export values (migration 202611100001; absent = none, the file writes the reference's own value) ──
+  /** What the file writes: a pending export value in effect, else the reference's value (catalogue or ERP). */
+  exportPrice?: number | null; exportAvailable?: boolean | null;
+  /** An export value decides this field (waiting for export, or pinned and shown): the comparison flag no longer selects it. */
+  overridesPrice?: boolean; overridesAvailability?: boolean;
+  /** A pending value the marketplace does not show yet: selected even when the comparison flag is off. */
+  pendingPrice?: boolean; pendingAvailability?: boolean;
+  /** A pending value that cannot be written (blocked): the reference's value is written instead. */
+  blockedExport?: boolean;
+  /** The marketplace upload the product's listing came from (the latest file, or an older partial one). */
+  listingUploadId?: string | null;
 }
 export class GenerationBlocked extends Error {
   constructor(message: string) { super(message); this.name = 'GenerationBlocked'; }
@@ -27,8 +38,19 @@ export class GenerationBlocked extends Error {
 export function selectedForFile(row: FileReconRow, p: GenerateParams): boolean {
   if (row.actualPrice === null) return false; // not listed; G2 handles new listings
   if (p.scope === 'all') return row.status !== 'missing_from_erp';
-  const price = p.reference === 'erp' ? row.priceMismatchVsErp : row.priceMismatchVsMarketplace;
-  return p.kind === 'stock' ? !!row.stockIssue : p.kind === 'price' ? price : !!row.stockIssue || price;
+  // a pending export value is written even within the tolerance; a value the marketplace shows (pinned) is not rewritten
+  const flag = p.reference === 'erp' ? row.priceMismatchVsErp : row.priceMismatchVsMarketplace;
+  const price = !!row.pendingPrice || (!row.overridesPrice && flag);
+  const stock = !!row.pendingAvailability || (!row.overridesAvailability && !!row.stockIssue);
+  return p.kind === 'stock' ? stock : p.kind === 'price' ? price : stock || price;
+}
+
+/** The price and availability a file writes for a row: the export value when one is in effect, else the reference's. */
+export function fileValues(row: FileReconRow, p: Pick<GenerateParams, 'reference'>) {
+  return {
+    price: row.exportPrice !== undefined ? row.exportPrice : p.reference === 'erp' ? row.erpPrice : row.marketplacePrice,
+    available: row.exportAvailable !== undefined ? row.exportAvailable : row.available,
+  };
 }
 
 function plain(v: unknown): PlainCell {
@@ -95,6 +117,8 @@ function writeAvailable(original: unknown, available: boolean | null): PlainCell
 export interface FilePlan {
   /** Products written. rowsToWrite is larger when a product appears on several source rows. */
   productCount: number; rowsToWrite: number; priceChanges: number; availabilityChanges: number; notInFile: number;
+  /** Written products whose price or availability comes from an export value (migration 202611100001). */
+  exportValueProducts?: number;
   largestPriceChange: { name: string; from: number; to: number } | null;
   /** Written products whose identifier is on more than one source row, and the rows beyond the first. */
   duplicateRows: { products: number; extraRows: number } | null;
@@ -168,7 +192,7 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
     rows: sheet.raw.slice(0, headerIndex + 1).map(row => Array.from(row, plain)), sheetName: sheet.sheetName, delimiter: sheet.delimiter ?? ',',
   };
   // Change counts are per product: a product counts once even when several of its rows change.
-  const priceChanged = new Set<FileReconRow>(), availabilityChanged = new Set<FileReconRow>();
+  const priceChanged = new Set<FileReconRow>(), availabilityChanged = new Set<FileReconRow>(), exportValueRows = new Set<FileReconRow>();
   const aliases = headersForRow(sheet.raw[headerIndex].map(plain));
   const usedPreviewHeaders = new Set<string>();
   const previewHeaders = aliases.map((alias, i) => {
@@ -183,7 +207,9 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
   for (const [index, row] of [...targets].sort((a, b) => a[0] - b[0])) {
     const original = sourceRows[index];
     const values = Array.from(original, plain);
-    const expected = p.reference === 'erp' ? row.erpPrice : row.marketplacePrice;
+    const written = fileValues(row, p);
+    const expected = written.price;
+    if (row.overridesPrice || row.overridesAvailability) exportValueRows.add(row);
     if (p.kind !== 'stock') {
       values[priceColumn] = plain(writePrice(original[priceColumn], expected));
       const from = Number(String(original[priceColumn]).replaceAll(',', '').trim());
@@ -195,7 +221,7 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
       }
     }
     if (p.kind !== 'price') {
-      values[availableColumn] = plain(writeAvailable(original[availableColumn], row.available));
+      values[availableColumn] = plain(writeAvailable(original[availableColumn], written.available));
       if (values[availableColumn] !== plain(original[availableColumn])) availabilityChanged.add(row);
     }
     plan.rows.push(values);
@@ -203,6 +229,7 @@ export function planGeneratedFile(sheet: SpreadsheetValues, mapping: unknown, st
   }
   plan.priceChanges = priceChanged.size;
   plan.availabilityChanges = availabilityChanged.size;
+  plan.exportValueProducts = exportValueRows.size;
   return plan;
 }
 

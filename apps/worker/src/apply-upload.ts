@@ -1,11 +1,12 @@
-import type { AnalyzedTable, Database } from '../../../packages/db/src/database.js';
+import type { AnalyzedTable, Database, TenantData } from '../../../packages/db/src/database.js';
 import type { ApplyUploadJob } from '../../../packages/shared/src/queue.js';
 import type { ReconQueue } from '../../../packages/shared/src/recon.js';
 import type { ErpRow, MarketplaceRow } from '../../../packages/core/src/upload/validate.js';
-import { erpChangeKind, planErpApply, planListingApply, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
+import { erpChangeKind, planErpApply, planListingApply, type ListingWrite, type SkippedRow } from '../../../packages/core/src/upload/apply.js';
 import { planErpStockConflicts } from '../../../packages/core/src/catalogue-stock.js';
 import type { ErpChangeWrite } from '../../../packages/db/src/catalogue-stock.js';
 import type { StoredReviewSummary } from '../../../packages/core/src/upload/review.js';
+import { acknowledgedFields, type PlannedChange } from '../../../packages/core/src/marketplace-values.js';
 
 export interface ApplyDeps {
   database: Database;
@@ -22,6 +23,45 @@ export interface ApplyCounts {
   changes?: number; stockConflicts?: number; stockEditsCleared?: number;
   /** marketplace only: written listings matched to a product at apply time, and those left without one */
   matchedAtApply?: number; unmatchedAtApply?: number;
+  /** marketplace only: fix-once export values this file confirmed, cleared per field (migration 202611100001) */
+  exportValuesCleared?: number;
+}
+
+/**
+ * A marketplace upload confirms fix-once export values (owner decision F): in the apply transaction, after the listings
+ * were written, every pending fix-once field of a product this file matched is cleared when the file was created after
+ * the value was set and every listing of the product now shows the value exactly (core acknowledgedFields). Pinned
+ * values never clear here. One audit event lists the cleared fields; the recompute the apply queues follows anyway.
+ */
+export async function acknowledgeExportValues(d: TenantData, marketplaceId: string, uploadId: string, uploadCreatedAt: Date, listings: ListingWrite[], actorId: string | null) {
+  const incoming = new Map<string, { available: boolean; price: number }[]>();
+  for (const l of listings) if (l.productId) incoming.set(l.productId, [...(incoming.get(l.productId) ?? []), { available: l.available, price: l.price }]);
+  const pending = await d.marketplaceValues.fixOncePending(marketplaceId, [...incoming.keys()]);
+  if (!pending.size) return 0;
+  const retained = await d.marketplaceValues.listingValues(marketplaceId, [...pending.keys()]);
+  const createdAt = new Date(Math.floor(uploadCreatedAt.getTime()));
+  const changes: PlannedChange[] = [];
+  for (const [productId, override] of pending) {
+    const fields = acknowledgedFields({ override, uploadCreatedAt: createdAt, incoming: incoming.get(productId) ?? [], retained: retained.get(productId) ?? [] });
+    if (!fields.length) continue;
+    changes.push({
+      productId, overrideId: override.id, version: override.version,
+      fields: fields.map(field => {
+        const o = override[field]!;
+        const before = { value: o.value, state: o.state, persistent: o.persistent, reason: o.reason };
+        return { field, op: 'clear' as const, before, after: { ...before, state: 'cleared' as const } };
+      }),
+    });
+  }
+  if (!changes.length) return 0;
+  await d.marketplaceValues.write(marketplaceId, null, changes);
+  const cleared = changes.reduce((n, c) => n + c.fields.length, 0);
+  await d.event('marketplace.values_upload_cleared', actorId, uploadId, undefined, {
+    uploadId, marketplaceId, cleared,
+    changeColumns: ['productId', 'field', 'value', 'version'],
+    changes: changes.flatMap(c => c.fields.map(f => [c.productId, f.field, f.before!.value, c.version])),
+  });
+  return cleared;
 }
 
 /** Skipped rows listed in the 'upload.applied' audit event; the count is always complete. */
@@ -33,7 +73,7 @@ export const APPLY_TIMEOUT_MS = 60_000;
 
 type Staged = { data: unknown };
 
-export type ApplyPhase = 'start' | 'create products' | 'update products' | 'flag missing' | 'stock conflicts' | 'change list' | 'listings' | 'audit' | 'finish';
+export type ApplyPhase = 'start' | 'create products' | 'update products' | 'flag missing' | 'stock conflicts' | 'change list' | 'listings' | 'export values' | 'audit' | 'finish';
 
 /** What failed, without row data: safe for logs and the audit trail. */
 export interface ApplyFailure<P extends string = ApplyPhase> { phase: P; errorType: string; sqlState: string | null; prismaCode: string | null; message: string; ms: number }
@@ -166,8 +206,11 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
         // a skipped row's ID still counts as in the file, so a full list does not remove its existing listing
         const inFile = staged.map(r => ((r.parsed as Staged).data as MarketplaceRow).marketplaceProductId).filter(id => typeof id === 'string' && id);
         const removed = full ? await d.uploads.removeListingsNotIn(u.source, inFile) : 0;
+        // only accepted rows matched to exactly one product are evidence; a partial file confirms only its own rows
+        enter('export values');
+        const exportValuesCleared = await acknowledgeExportValues(d, u.source, uploadId, u.createdAt, plan.listings, actorId);
         skipped = plan.skipped;
-        Object.assign(c, { listingsUpserted: plan.listings.length, listingsRemoved: removed, matchedAtApply: plan.matched, unmatchedAtApply: plan.unmatched });
+        Object.assign(c, { listingsUpserted: plan.listings.length, listingsRemoved: removed, matchedAtApply: plan.matched, unmatchedAtApply: plan.unmatched, exportValuesCleared });
       }
       c.skipped = skipped.length;
 

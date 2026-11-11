@@ -55,13 +55,18 @@ describe('Review row states (catalogue is the source of truth)', () => {
     expect(reviewRow(base({ current: null, reconStatus: 'not_listed', override: yes }))).toMatchObject({ blockedReason: 'not_listed', export: { available: null, price: null } });
   });
 
-  it('not exportable rows explain why; blocked outranks waiting, waiting outranks to fix', () => {
+  it('not exportable rows explain why; the owner order: to fix, waiting for export, blocked, pinned, in sync, not exportable', () => {
     expect(reviewRow(base({ current: null, reconStatus: 'not_listed' }))).toMatchObject({ exportState: 'not_exportable', notExportableReason: 'not_listed', needsChange: false });
     expect(reviewRow(base({ current: null, reconStatus: 'no_data' }))).toMatchObject({ notExportableReason: 'no_data', exportStateLabel: 'No file from this marketplace yet' });
     expect(reviewRow(base({ product: { ...active, status: 'new' }, reconStatus: 'new' }))).toMatchObject({ notExportableReason: 'new_product' });
-    expect(reviewRow(base({ catalogueDiffers: { availability: true, price: false }, current: { available: false, price: 10 }, override: override({ price: field(11) }) })).exportState).toBe('waiting_for_export');
+    expect(reviewRow(base({ catalogueDiffers: { availability: true, price: false }, current: { available: false, price: 10 }, override: override({ price: field(11) }) })).exportState).toBe('to_fix'); // to fix outranks waiting
     expect(reviewRow(base({ product: { ...active, erpActive: false }, override: override({ availability: field(true), price: field(11) }) })).exportState).toBe('blocked');
-    expect(EXPORT_STATES[0]).toBe('blocked');
+    expect(EXPORT_STATES).toEqual(['to_fix', 'waiting_for_export', 'blocked', 'pinned', 'in_sync', 'not_exportable']);
+    // waiting outranks blocked: availability waits ("no" needs only a listing), price is blocked (ERP inactive)
+    expect(reviewRow(base({ product: { ...active, erpActive: false }, override: override({ availability: field(false), price: field(11) }) })).exportState).toBe('waiting_for_export');
+    // a blocked field shows its reason on the field even when the row is in a more urgent state
+    const mixed = reviewRow(base({ product: { ...active, erpActive: false }, catalogueDiffers: { availability: true, price: false }, current: { available: true, price: 10 }, override: override({ price: field(11) }) }));
+    expect(mixed).toMatchObject({ exportState: 'to_fix', blockedReason: null, fields: { price: { state: 'blocked', blockedReason: 'erp_inactive' } } });
   });
 
   it('a cleared value follows the catalogue again', () => {

@@ -304,3 +304,32 @@ describe('generated files API and worker', () => {
     expect(h.api.spec.paths['/api/generated-files'].post!.responses['202']).toBeDefined();
   });
 });
+
+describe('export values in files and the batch request (migration 202611100001)', () => {
+  const send = (path: string, input: Record<string, unknown>) => h.request('POST', `/api/generated-files${path}`, a, manager, input);
+  it('a pending export price is written in every file, the preview carries an exportToken, and a stale token is refused', async () => {
+    const fruit = await h.fixture.prisma.product.findFirstOrThrow({ where: { tenantId: a.id, normalizedBarcode: barcodes[1] } });
+    const set = await h.request('PUT', `/api/marketplace-values/talabat/products/${fruit.id}`, a, manager, { values: { price: { value: 3.75 } }, expected: null });
+    expect(set.statusCode).toBe(200);
+    const preview = (await send('/preview', { marketplaceId: 'talabat', kind: 'price', reference: 'marketplace' })).json().data;
+    expect(preview).toMatchObject({ valueBasis: 'export_values', exportValueProducts: 1, blockedExportProducts: 0 });
+    expect(preview.exportToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.firstRows.find((r: Record<string, unknown>) => r.sku === 'T1')).toMatchObject({ price: '3.75' });
+    // owner decision C: the ERP-reference file writes the export value too
+    const erp = (await send('/preview', { marketplaceId: 'talabat', kind: 'price', scope: 'all', reference: 'erp' })).json().data;
+    expect(erp.firstRows.find((r: Record<string, unknown>) => r.sku === 'T1')).toMatchObject({ price: '3.75' });
+    // an edit after the preview: generating with the old token is a 409, never a file of the old values
+    expect((await h.request('PUT', `/api/marketplace-values/talabat/products/${fruit.id}`, a, manager, { values: { price: { value: 3.8 } }, expected: set.json().data.item.version })).statusCode).toBe(200);
+    expect((await send('', { marketplaceId: 'talabat', kind: 'price', reference: 'marketplace', exportToken: preview.exportToken })).statusCode).toBe(409);
+  });
+
+  it('one request queues the updated files of every enabled marketplace; a marketplace that is not enabled is reported', async () => {
+    const r = await send('/batch', { kind: 'stock_price' });
+    expect(r.statusCode).toBe(202);
+    const d = r.json().data as { jobs: { marketplaceId: string; jobId: string }[]; blocked: { marketplaceId: string; message: string }[] };
+    expect([...d.jobs.map(j => j.marketplaceId), ...d.blocked.map(x => x.marketplaceId)].sort()).toEqual(['snoonu', 'talabat']);
+    for (const j of d.jobs) expect((await h.request('GET', `/api/generated-files/jobs/${j.jobId}`, a, manager)).statusCode).toBe(200);
+    expect((await send('/batch', { marketplaceIds: ['keeta'] })).json().data).toEqual({ jobs: [], blocked: [{ marketplaceId: 'keeta', message: 'Keeta is not enabled for this store' }] });
+    expect((await h.request('POST', '/api/generated-files/batch', a, analyst, {})).statusCode).toBe(403);
+  });
+});

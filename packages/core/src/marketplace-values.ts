@@ -30,14 +30,15 @@ export interface StoredOverride {
 /**
  * A field's and a row's state on the Review screen, most urgent first (the row takes its most urgent field; this order
  * is also the list order and the cursor rank):
- * - blocked: a pending export value that cannot be written (plain reason in blockedReason)
- * - waiting_for_export: a pending export value the marketplace does not show yet ("Adjusted, waiting for export")
  * - to_fix: no export value, and the marketplace differs from the catalogue; the next file writes the catalogue value
+ * - waiting_for_export: a pending export value the marketplace does not show yet ("Adjusted, waiting for export")
+ * - blocked: a pending export value that cannot be written (plain reason in the field's blockedReason)
  * - pinned: a pinned export value the marketplace shows
  * - in_sync: listed, nothing to change
  * - not_exportable: nothing pending, and the file cannot write this product (not listed, a new product, no file yet)
+ * Order decided by the owner on 11 November 2026.
  */
-export const EXPORT_STATES = ['blocked', 'waiting_for_export', 'to_fix', 'pinned', 'in_sync', 'not_exportable'] as const;
+export const EXPORT_STATES = ['to_fix', 'waiting_for_export', 'blocked', 'pinned', 'in_sync', 'not_exportable'] as const;
 export type ExportState = (typeof EXPORT_STATES)[number];
 /** The default Review list: rows the next file changes, or that need the manager's attention. */
 export const NEEDS_CHANGE_STATES: readonly ExportState[] = ['blocked', 'waiting_for_export', 'to_fix'];

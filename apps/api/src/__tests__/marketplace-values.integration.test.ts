@@ -4,6 +4,7 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { createHarness, type Harness, type Session, type Store } from './harness.js';
 import { recomputeRecon } from '../../../worker/src/recompute-recon.js';
+import { acknowledgeExportValues } from '../../../worker/src/apply-upload.js';
 import { EXPORT_STATES } from '../../../../packages/core/src/marketplace-values.js';
 
 let h: Harness;
@@ -188,5 +189,37 @@ describe('roles, tenants and the dashboard summary', () => {
     const byId = Object.fromEntries(r.json().data.marketplaces.map((m: { marketplaceId: string }) => [m.marketplaceId, m]));
     expect(byId.talabat.export).toEqual((await review('')).counts);
     expect(byId.snoonu.export).toEqual({ toFix: 1, waitingForExport: 0, pinned: 0, blocked: 0 });
+  });
+});
+
+describe('Step 3: pins in the comparison, and acknowledgement by a later upload', () => {
+  it('a pin queues a recompute, and after it the dashboard no longer counts the pinned price as a mismatch', async () => {
+    const before = (await h.request('GET', '/api/recon/summary?reference=marketplace', a, manager)).json().data.marketplaces.find((m: { marketplaceId: string }) => m.marketplaceId === 'talabat');
+    const current = await item(ids.price!);
+    const r = await put(ids.price!, { values: { price: { value: 12, persistent: true } }, expected: current.version });
+    expect(r.json().data.item).toMatchObject({ exportState: 'pinned' });
+    expect(h.recon.calls.at(-1)).toEqual({ tenantId: a.id, reason: 'marketplace.values' });
+    await recomputeRecon({ database: h.fixture.database }, { tenantId: a.id, reason: 'marketplace.values' });
+    const after = (await h.request('GET', '/api/recon/summary?reference=marketplace', a, manager)).json().data.marketplaces.find((m: { marketplaceId: string }) => m.marketplaceId === 'talabat');
+    expect(after.price).toBe(before.price - 1);
+    expect(after.export).toMatchObject({ pinned: 1 });
+  });
+
+  it('a fix-once value clears when a later file of that marketplace shows it; an earlier file and a pin never clear', async () => {
+    const current = await item(ids.stock!);
+    const set = await put(ids.stock!, { values: { availability: { value: false } }, expected: current.version });
+    expect(set.json().data.item).toMatchObject({ exportState: 'waiting_for_export' });
+    const setAt = new Date(set.json().data.item.values.availability.setAt);
+    await h.fixture.prisma.listing.updateMany({ where: { tenantId: a.id, productId: ids.stock, marketplaceId: 'talabat' }, data: { available: false } });
+    const incoming = [{ marketplaceProductId: `talabat-${ids.stock}`, productId: ids.stock!, barcodes: [], name: null, price: 10, available: false }];
+    // a file created before the value was set is no evidence
+    expect(await h.fixture.database.run(a.id, d => acknowledgeExportValues(d, 'talabat', ids.talabatUpload!, new Date(setAt.getTime() - 1000), incoming, null))).toBe(0);
+    expect(await h.fixture.database.run(a.id, d => acknowledgeExportValues(d, 'talabat', ids.talabatUpload!, new Date(setAt.getTime() + 1000), incoming, null))).toBe(1);
+    expect((await item(ids.stock!))).toMatchObject({ values: { availability: { state: 'cleared' } } });
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: a.id, action: 'marketplace.values_upload_cleared' } })).toBe(1);
+    // the pinned price of the other product matches its listing (12) but is never cleared by a file
+    const pinnedListing = [{ marketplaceProductId: `talabat-${ids.price}`, productId: ids.price!, barcodes: [], name: null, price: 12, available: true }];
+    expect(await h.fixture.database.run(a.id, d => acknowledgeExportValues(d, 'talabat', ids.talabatUpload!, new Date(Date.now() + 60_000), pinnedListing, null))).toBe(0);
+    expect((await item(ids.price!))).toMatchObject({ values: { price: { state: 'pending', persistent: true } } });
   });
 });

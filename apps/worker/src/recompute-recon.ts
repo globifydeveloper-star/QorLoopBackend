@@ -45,15 +45,17 @@ export async function recomputeRecon(deps: ReconDeps, job: ReconJob): Promise<Re
       const now = new Date();
       const [settings, switches, applied] = await Promise.all([d.recon.settings(), d.recon.marketplaceSwitches(), d.recon.lastApplied()]);
       const marketplaces = enabledMarketplaces(MARKETPLACES, switches, new Set(applied.keys()));
-      const [stored, products, listings, pricing] = await Promise.all([
+      const [stored, products, listings, pricing, pins] = await Promise.all([
         d.recon.storedSignatures(),
         marketplaces.length ? d.recon.products() : [],
         marketplaces.length ? d.recon.listings(marketplaces.map(m => m.marketplaceId)) : new Map(),
         d.pricing.snapshot(),
+        // pinned export values are the comparison target of their field (migration 202611100001)
+        marketplaces.length ? d.marketplaceValues.pins(marketplaces.map(m => m.marketplaceId)) : new Map<string, { available?: boolean; price?: number }>(),
       ]);
 
       enter('compute');
-      const rows = computeReconRows(products, marketplaces, listings, pricing, settings, now);
+      const rows = computeReconRows(products, marketplaces, listings, pricing, settings, now, pins);
       const diff = diffReconRows(stored, rows);
 
       enter('insert');

@@ -14,7 +14,9 @@ import {
   marketplaceValuesPlanSignature, planMarketplaceValues, reviewRow,
   type FieldChange, type MarketplaceValueAction, type MarketplaceValueField, type MarketplaceValuePlan, type PlannedChange, type StoredField,
 } from '../../../../packages/core/src/marketplace-values.js';
+import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
+import { RECON_QUEUE } from '../tokens.js';
 import { searchFilter } from '../products/products.service.js';
 import { enabledMarketplaceIds } from '../pricing/pricing.data.js';
 import { canonical } from '../pricing/bulk-pricing.js';
@@ -127,7 +129,12 @@ function counts(plan: MarketplaceValuePlan, selected: number) {
 
 @Injectable()
 export class MarketplaceValuesService {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(@Inject(AuthService) private readonly auth: AuthService, @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
+
+  /** A pin is the comparison target of its field (recon): a change that sets, changes or removes one queues a recompute. */
+  private async afterCommit(tenantId: string, changes: PlannedChange[]) {
+    if (changes.some(c => c.fields.some(f => f.before?.persistent || f.after.persistent))) await this.recon.enqueueRecon(tenantId, 'marketplace.values');
+  }
 
   /**
    * The Review screen of one marketplace: rows that differ from the catalogue or carry an export value, most urgent
@@ -183,9 +190,9 @@ export class MarketplaceValuesService {
     return this.single(ctx, marketplaceId, productId, { type: 'use_catalogue', fields }, null, expected);
   }
 
-  private single(ctx: RequestContext, marketplaceId: MarketplaceId, productId: string, action: MarketplaceValueAction, reason: string | null,
+  private async single(ctx: RequestContext, marketplaceId: MarketplaceId, productId: string, action: MarketplaceValueAction, reason: string | null,
     expected: { id: string; version: number } | null | undefined) {
-    return this.auth.authenticated(ctx, { permission: 'marketplace.values_edit', mutation: true }, async (data, p) => {
+    const { result, changes } = await this.auth.authenticated(ctx, { permission: 'marketplace.values_edit', mutation: true }, async (data, p) => {
       const c = await reviewContext(data, marketplaceId);
       if (action.type === 'set' && !c.marketplaceEnabled) throw invalid('marketplaceId', `${MARKETPLACE_LABELS[marketplaceId]} is not enabled for this store`);
       const [t] = await data.marketplaceValues.targets([productId], marketplaceId);
@@ -208,8 +215,10 @@ export class MarketplaceValuesService {
         });
         operationId = event.id;
       }
-      return { changed: !!change, operationId, item: await this.row(data, c, marketplaceId, productId) };
+      return { result: { changed: !!change, operationId, item: await this.row(data, c, marketplaceId, productId) }, changes: change ? [change] : [] };
     });
+    await this.afterCommit(ctx.tenantId, changes);
+    return result;
   }
 
   // ── Bulk ──
@@ -259,12 +268,12 @@ export class MarketplaceValuesService {
   async bulkApply(ctx: RequestContext, body: z.infer<typeof contracts.marketplaceValuesBulkApply>) {
     const { idempotencyKey, previewToken: expectedToken, ...input } = body;
     const hash = requestHash(input);
-    return this.auth.authenticated(ctx, { permission: 'marketplace.values_edit', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
+    const { result: applied, changes } = await this.auth.authenticated(ctx, { permission: 'marketplace.values_edit', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
       const prior = await data.marketplaceValues.operation(idempotencyKey, new Date(Date.now() - BULK_IDEMPOTENCY_WINDOW_MS));
       if (prior) {
         const d = prior.details as { requestHash?: string; result?: Record<string, unknown> } | null;
         if (d?.requestHash !== hash) throw new ConflictException('This idempotency key was already used for a different change');
-        return { operationId: prior.id, replayed: true, appliedAt: prior.createdAt, ...d.result };
+        return { result: { operationId: prior.id, replayed: true, appliedAt: prior.createdAt, ...d.result }, changes: [] as PlannedChange[] };
       }
       const { plan, selected, previewToken } = await this.planBulk(data, input);
       if (expectedToken !== previewToken) throw new ConflictException('The selected products or their export values changed since the preview; preview again before applying');
@@ -280,7 +289,10 @@ export class MarketplaceValuesService {
         selection: input.selection as Prisma.InputJsonObject, action: input.action as Prisma.InputJsonObject, reason: input.reason,
         result: result as unknown as Prisma.InputJsonObject, changeColumns: [...VALUE_CHANGE_COLUMNS], changes: plan.changes.flatMap(changeEntries),
       });
-      return { operationId: event.id, replayed: false, appliedAt: event.createdAt, ...result };
+      return { result: { operationId: event.id, replayed: false, appliedAt: event.createdAt, ...result }, changes: plan.changes };
     });
+    // one coalesced recompute when a pin was set, changed or removed; none for a replay
+    await this.afterCommit(ctx.tenantId, changes);
+    return applied;
   }
 }

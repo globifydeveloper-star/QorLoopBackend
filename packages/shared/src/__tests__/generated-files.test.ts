@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
-import { generationJobId, generatedFileId, InlineGeneratedFilesQueue, type GenerateFileJob } from '../generated-files.js';
+import { exportToken, generationJobId, generatedFileId, InlineGeneratedFilesQueue, type GenerateFileJob, type GenerationInputs } from '../generated-files.js';
+import type { FileReconRow } from '../../../core/src/generated-files.js';
 
 const job: GenerateFileJob = { tenantId: 'tenant-a', actorId: 'actor', requestId: 'request', marketplaceId: 'talabat', kind: 'price', scope: 'mismatches', reference: 'marketplace', requestedAt: '2026-11-02T12:00:01Z' };
 describe('generation idempotency and queue', () => {
@@ -16,5 +17,23 @@ describe('generation idempotency and queue', () => {
     queue.handler = async () => ({ fileId: generatedFileId(id) });
     await queue.run(id);
     expect(await queue.status(id, 'tenant-a')).toEqual({ state: 'done', fileId: generatedFileId(id) });
+  });
+});
+
+describe('export tokens (migration 202611100001)', () => {
+  const row: FileReconRow = { productId: 'p1', name: 'Milk', marketplaceProductId: 'T1', erpPrice: 2, marketplacePrice: 2.5, available: true, actualPrice: 2,
+    stockIssue: null, priceMismatchVsErp: false, priceMismatchVsMarketplace: true, status: 'mismatch' };
+  const inputs = (rows: FileReconRow[]) => ({ upload: { id: 'u1' }, referenceUsed: 'marketplace', rows }) as unknown as GenerationInputs;
+  it('an export token makes a new job within the same minute, and the same token the same job', () => {
+    const token = 'a'.repeat(64);
+    expect(generationJobId({ ...job, exportToken: token })).not.toBe(generationJobId(job));
+    expect(generationJobId({ ...job, exportToken: token })).toBe(generationJobId({ ...job, exportToken: token, requestedAt: '2026-11-02T12:00:30Z' }));
+  });
+  it('follows exactly what the file would write', () => {
+    const t = exportToken(inputs([row]), job);
+    expect(exportToken(inputs([{ ...row }]), job)).toBe(t);
+    expect(exportToken(inputs([{ ...row, exportPrice: 2.75, overridesPrice: true, pendingPrice: true }]), job)).not.toBe(t);
+    expect(exportToken(inputs([{ ...row, marketplacePrice: 2.6 }]), job)).not.toBe(t);
+    expect(exportToken(inputs([row]), { ...job, kind: 'stock' })).not.toBe(t);
   });
 });

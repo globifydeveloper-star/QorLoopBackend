@@ -236,11 +236,23 @@ export const reconRowsQuery = z.object({
 }).strict();
 
 // Preview and generation intentionally take the same strict input.
+const exportTokenValue = z.string().regex(/^[a-f0-9]{64}$/);
 export const generateMarketplaceFile = z.object({
   marketplaceId: z.enum(MARKETPLACES),
   kind: z.enum(['stock', 'price', 'stock_price']),
   scope: z.enum(['mismatches', 'all']).default('mismatches'),
   reference: reconReference.optional(),
+  /** exportToken from the preview: 409 when what the file would write changed since (preview ignores it). */
+  exportToken: exportTokenValue.optional(),
+}).strict();
+/** One request for the updated files of several marketplaces (default: every enabled one, e.g. Talabat and Snoonu). */
+export const generateMarketplaceFiles = z.object({
+  marketplaceIds: z.array(z.enum(MARKETPLACES)).min(1).max(MARKETPLACES.length).refine(m => new Set(m).size === m.length, 'List each marketplace once').optional(),
+  kind: z.enum(['stock', 'price', 'stock_price']).default('stock_price'),
+  scope: z.enum(['mismatches', 'all']).default('mismatches'),
+  reference: reconReference.optional(),
+  /** exportToken per marketplace from its preview; a marketplace whose values moved is reported, not generated. */
+  exportTokens: z.partialRecord(z.enum(MARKETPLACES), exportTokenValue).optional(),
 }).strict();
 
 // ───────── ERP change review & catalogue stock (ADR 017) ─────────
