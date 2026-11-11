@@ -1,7 +1,27 @@
 # Reset store data: Step 0 inspection and proposal
 
-Date: 11 November 2026. Branch: `feature/reset-store-data`, stacked on `feature/catalogue-marketplace-columns` (aea6655), like the previous two tasks.
+Date: 11 November 2026. Branch: `feature/reset-store-data`, based on `main` (36b3280). It does not depend on `feature/catalogue-marketplace-columns`.
 No code, no schema change, no migration. Nothing was run against any database, Redis or object store.
+
+**Owner decisions (11 November 2026): approved as proposed.**
+
+| # | Decision |
+| --- | --- |
+| A1 | (b): delete business audit events, keep the security, team and settings events, write one `store.data_reset` event |
+| A2 | delete categories, category mappings and category price rules |
+| A3 | keep store-wide marketplace price rules, delete per-product ones |
+| A4 | keep `tenant_marketplaces` |
+| A5 | delete `generated_files` rows |
+| D6 | 25% with an MFA-enrolled Owner |
+| D7 | refuse while other database sessions are open, and list them |
+| D8 | refuse if Redis is unreachable unless `--skip-redis` |
+| D9 | `-Label` on `db-backup.ps1` |
+| D10 | no CI commit on this branch; the owner merges `ci/run-on-branches` into `main` |
+
+Two additions:
+
+- **Completeness test.** A test fails if any table with a `tenant_id` is not in exactly one of KEEP, DELETE or ASK.
+- **`marketplace_value_overrides`.** This table comes from `feature/marketplace-export-values`, planned migration `202611100001_marketplace_value_overrides`; the branch so far holds only the proposed SQL. It **goes on the DELETE list when that branch is merged**. Its proposed foreign keys to products and users are RESTRICT, so it must be deleted before `products`. The completeness test fails until it is classified.
 
 Sources: [schema.prisma](../../packages/db/prisma/schema.prisma) and all 8 migrations in [migrations/](../../packages/db/prisma/migrations), plus the code that reads and writes each table.
 
