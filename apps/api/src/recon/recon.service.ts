@@ -7,6 +7,8 @@ import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import type { ReconReference } from '../../../../packages/core/src/recon/status.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
+import { toFils } from '../../../../packages/core/src/money.js';
+import { enabledMarketplaceIds } from '../pricing/pricing.data.js';
 
 /** Opaque keyset cursor: base64url JSON of the last row's [urgency rank, product id]. */
 export function encodeReconCursor(r: { rank: number; productId: string }) {
@@ -51,10 +53,17 @@ export class ReconService {
   summary(ctx: RequestContext, query: z.infer<typeof contracts.reconSummaryQuery>) {
     return this.auth.authenticated(ctx, { permission: 'recon.view' }, async data => {
       const reference = await referenceFor(data, query.reference);
-      const [rows, stockConflicts] = await Promise.all([data.recon.summaries(reference), data.stock.conflictCount()]);
+      const [rows, stockConflicts, enabled, settings] = await Promise.all([
+        data.recon.summaries(reference), data.stock.conflictCount(), enabledMarketplaceIds(data), data.recon.settings(),
+      ]);
+      // the Review card counts (export values): always against the catalogue, live, whatever the reference
+      const exportCounts = await data.marketplaceValues.counts(enabled, toFils(settings.priceTolerance));
       const computedAt = rows.reduce<Date | null>((at, r) => (r.computedAt && (!at || r.computedAt > at) ? r.computedAt : at), null);
       // stockConflicts: the dashboard badge "N stock conflicts" (ADR 017)
-      return { reference, computedAt, stockConflicts, marketplaces: rows.map(({ computedAt: _c, ...r }) => r) };
+      return {
+        reference, computedAt, stockConflicts,
+        marketplaces: rows.map(({ computedAt: _c, ...r }) => ({ ...r, export: exportCounts.get(r.marketplaceId) ?? { toFix: 0, waitingForExport: 0, pinned: 0, blocked: 0 } })),
+      };
     });
   }
 

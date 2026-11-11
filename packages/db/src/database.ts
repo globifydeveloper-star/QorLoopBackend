@@ -11,6 +11,7 @@ import { SettingsRepository } from './settings.js';
 import { ActivityRepository } from './activity.js';
 import { OnboardingRepository } from './onboarding.js';
 import { CatalogueStockRepository } from './catalogue-stock.js';
+import { MarketplaceValuesRepository } from './marketplace-values.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository, CatalogueStockRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
@@ -146,6 +147,7 @@ export class TenantData {
   readonly activity: ActivityRepository;
   readonly onboarding: OnboardingRepository;
   readonly stock: CatalogueStockRepository;
+  readonly marketplaceValues: MarketplaceValuesRepository;
   constructor(readonly tenantId: string, private readonly tx: Transaction) {
     this.uploads = new UploadRepository(tenantId, tx);
     this.products = new ProductRepository(tenantId, tx);
@@ -157,6 +159,7 @@ export class TenantData {
     this.activity = new ActivityRepository(tenantId, tx);
     this.onboarding = new OnboardingRepository(tenantId, tx);
     this.stock = new CatalogueStockRepository(tenantId, tx);
+    this.marketplaceValues = new MarketplaceValuesRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }
