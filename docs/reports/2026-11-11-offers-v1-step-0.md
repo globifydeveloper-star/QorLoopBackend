@@ -489,3 +489,31 @@ Stock stays ERP/catalogue versus marketplace. **Not decided here: owner and clie
 - The storage lifecycle and retention rule.
 - How Talabat and Snoonu treat a lowered regular price (section C).
 - No tests were run. This step has no code.
+
+---
+
+## Addendum: owner decisions (11 November 2026)
+
+- **Migration:** approved in principle, pending review of the final SQL below. `source` and `set_by_id` are kept. No migration is run on the demo database, and nothing is run against the owner's database.
+- **(2) Price source:** no new setting. The UI shows two choices:
+  - "ERP price plus my markup rules": the existing expected-price (`'marketplace'`) reference;
+  - "Marketplace prices as baseline": the adoption flow.
+
+  The raw-ERP reference (`'erp'`) stays under Advanced.
+- **(3)** The offer preview (single, bulk and upload) warns when a pending or pinned export price outranks the offer. Nothing is cleared automatically.
+- **(4) Upload rules:**
+  - the end date is required;
+  - a promo price at or above the normal price is rejected (`price_not_below_normal`, with the normal price in the reason);
+  - offers apply to active products only;
+  - a blank offer row means no change.
+
+  These rules apply in the application, not in the database: `valid_until` stays nullable for existing offers and for the single-offer API.
+- **(5)** With per-marketplace rules on, the export has one expected-price column per enabled marketplace. "Before price" is the price without the offer.
+- **(6)** Products missing from a full ERP file are not part of this branch. They are recorded as a separate task (open gap G36).
+- **Order of work** once the SQL is approved:
+  1. Step 3, catalogue export;
+  2. Step 1, O1 sweep and O2;
+  3. Step 2, the offer model;
+  4. Steps 4 and 5, after the 20 November test.
+
+The final SQL is section D, with one addition: `offer_imports` also checks `"expires_at" > "created_at"`.
