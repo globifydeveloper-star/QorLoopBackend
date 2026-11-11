@@ -13,7 +13,7 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
     'product.stock_set', 'product.stock_reset', 'product.stock_conflict', 'product.stock_conflict_resolved',
     'catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved'],
   catalogue: ['products.activated', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
-  team_security: ['settings.changed', 'store.provisioned', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
+  team_security: ['settings.changed', 'store.provisioned', 'store.data_reset', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
     'auth.password_reset', 'auth.mfa_setup_started', 'auth.mfa_failed', 'auth.mfa_enrolled', 'auth.mfa_verified', 'auth.recovery_failed', 'auth.recovery_used'],
 };
@@ -135,7 +135,7 @@ export function presentActivity(action: string, details: unknown, options: { pro
       'upload.failed': 'Upload processing failed', 'upload.applied': 'Upload applied to the store', 'upload.apply_failed': 'Upload apply failed',
       'pricing.prices_adopted': 'Marketplace prices adopted', 'products.activated': 'Products activated',
       'category.created': 'Category created', 'category.updated': 'Category changed', 'category.deleted': 'Category deleted',
-      'category.assigned_from_erp': 'Category assigned from ERP categories', 'store.provisioned': 'Store provisioned',
+      'category.assigned_from_erp': 'Category assigned from ERP categories', 'store.provisioned': 'Store provisioned', 'store.data_reset': 'Store data reset (operations script)',
       'invitation.created': 'Team invitation created', 'invitation.accepted': 'Team invitation accepted', 'invitation.resent': 'Team invitation resent',
       'invitation.revoked': 'Team invitation revoked', 'team.member_deactivated': 'Team member removed',
       'auth.login_failed': 'Sign-in failed', 'auth.password_verified': 'Sign-in password verified', 'auth.logout': 'Signed out',
