@@ -519,7 +519,7 @@ describe('OpenAPI', () => {
     expect(paths['/api/categories/erp-suggestions']?.get).toBeDefined();
     expect(paths['/api/categories/{id}/assign-from-erp']?.post?.requestBody).toBeDefined();
     const params = (paths['/api/products']!.get!.parameters ?? []) as { name: string }[];
-    expect(params.map(p => p.name).sort()).toEqual(['categoryId', 'cursor', 'limit', 'q', 'subcategoryId', 'tab']);
+    expect(params.map(p => p.name).sort()).toEqual(['categoryId', 'cursor', 'limit', 'marketplaceId', 'marketplaceStatus', 'q', 'subcategoryId', 'tab']);
     expect(paths['/api/products/{id}']!.patch!.parameters).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'X-CSRF-Token' })]));
   });
 });
