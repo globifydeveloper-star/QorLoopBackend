@@ -307,7 +307,8 @@ describe('editing a product', () => {
     const id = await fresh({ nameAr: 'قديم' });
     await patch(id, { nameAr: 'قديم', categoryId: dairy, subcategoryId: milk });
     const changed = await events(a, 'product.field_changed', id);
-    expect(changed.map(e => e.details)).toEqual([
+    // both events come from one transaction and share a timestamp: compare them in field order
+    expect(changed.map(e => e.details as { field: string }).sort((x, y) => x.field.localeCompare(y.field))).toEqual([
       { field: 'categoryId', old: null, new: dairy },
       { field: 'subcategoryId', old: null, new: milk },
     ]);
