@@ -69,7 +69,7 @@ export class GeneratedFilesController {
   @Contract('Generation job state (queued, running, done or failed); completed jobs include fileId', undefined, {
     type: 'object', required: ['state'], properties: { state: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, fileId: { type: 'string', format: 'uuid' }, message: { type: 'string' } },
   })
-  job(@Req() req: AppRequest, @Param('jobId', new ZodPipe(z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/))) jobId: string) {
+  job(@Req() req: AppRequest, @Param('jobId', new ZodPipe(dto.generationJobIdParam)) jobId: string) {
     return this.files.job(context(req, this.config), jobId);
   }
   @Get() @Access({ permission: 'files.view' })

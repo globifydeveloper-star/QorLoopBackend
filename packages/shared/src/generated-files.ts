@@ -19,10 +19,16 @@ export interface GenerateFileJob extends GenerateParams {
   exportToken?: string;
 }
 export interface GenerationJobStatus { state: 'queued' | 'running' | 'done' | 'failed'; fileId?: string; message?: string }
-/** Same request in the same minute = the same job; with an exportToken, an edit within that minute makes a new one. */
+/**
+ * Same request in the same minute = the same job; with an exportToken, an edit within that minute makes a new one.
+ * The parameters, minute and full token are hashed so the id has a fixed length (`generate-<tenantId>-<32 hex>`,
+ * 78 characters with a UUID tenant): it travels in GET /api/generated-files/jobs/:jobId, which allows at most
+ * GENERATION_JOB_ID_MAX characters (the router's default path-parameter limit).
+ */
 export const generationJobId = (job: GenerateFileJob) => {
   const minute = Math.floor(new Date(job.requestedAt).getTime() / 60_000);
-  return `generate-${job.tenantId}-${job.marketplaceId}-${job.kind}-${job.scope}-${job.reference}-${minute}${job.exportToken ? `-${job.exportToken.slice(0, 16)}` : ''}`;
+  const key = createHash('sha256').update(JSON.stringify([job.marketplaceId, job.kind, job.scope, job.reference, minute, job.exportToken ?? null])).digest('hex');
+  return `generate-${job.tenantId}-${key.slice(0, 32)}`;
 };
 export const STALE_EXPORT_MESSAGE = 'The catalogue or export values changed since this file was requested. Preview and generate it again.';
 

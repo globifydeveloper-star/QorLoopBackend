@@ -235,6 +235,10 @@ export const reconRowsQuery = z.object({
   cursor: z.string().max(200).optional(),
 }).strict();
 
+/** Path-parameter limit of the API router (Fastify's default maxParamLength); longer ids get 414 before validation. */
+export const GENERATION_JOB_ID_MAX = 100;
+/** jobId in GET /api/generated-files/jobs/:jobId, as generationJobId writes it (`generate-<tenantId>-<32 hex>`). */
+export const generationJobIdParam = z.string().min(1).max(GENERATION_JOB_ID_MAX).regex(/^[A-Za-z0-9_-]+$/);
 // Preview and generation intentionally take the same strict input.
 const exportTokenValue = z.string().regex(/^[a-f0-9]{64}$/);
 export const generateMarketplaceFile = z.object({

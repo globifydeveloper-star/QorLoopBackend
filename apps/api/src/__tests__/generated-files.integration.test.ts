@@ -10,6 +10,7 @@ import { ROLES, hasPermission } from '../../../../packages/core/src/roles.js';
 import { readSpreadsheetValues } from '../../../../packages/core/src/upload/parse.js';
 import { generationJobId, generatedFileId, type GenerateFileJob } from '../../../../packages/shared/src/generated-files.js';
 import { storageKeys } from '../../../../packages/shared/src/storage.js';
+import { GENERATION_JOB_ID_MAX } from '../../../../packages/shared/src/contracts.js';
 import { TenantData } from '../../../../packages/db/src/database.js';
 import { talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows, snoonuRowsWithDuplicate, barcodes, marketplaceWorkbook } from '../../../../packages/core/src/__tests__/fixtures/marketplace-files.js';
 
@@ -331,5 +332,22 @@ describe('export values in files and the batch request (migration 202611100001)'
     for (const j of d.jobs) expect((await h.request('GET', `/api/generated-files/jobs/${j.jobId}`, a, manager)).statusCode).toBe(200);
     expect((await send('/batch', { marketplaceIds: ['keeta'] })).json().data).toEqual({ jobs: [], blocked: [{ marketplaceId: 'keeta', message: 'Keeta is not enabled for this store' }] });
     expect((await h.request('POST', '/api/generated-files/batch', a, analyst, {})).statusCode).toBe(403);
+  });
+
+  it('a worst-case token-bearing job id reaches the jobs route; the route keeps auth, tenant isolation and its length limit', async () => {
+    const job: GenerateFileJob = { ...await freshJob(), kind: 'stock_price', scope: 'mismatches', reference: 'marketplace', exportToken: 'f'.repeat(64) };
+    const id = generationJobId(job), fileId = randomUUID();
+    expect(id.length).toBeLessThanOrEqual(GENERATION_JOB_ID_MAX);
+    h.generatedFiles.jobs.set(id, job);
+    h.generatedFiles.states.set(id, { state: 'done', fileId });
+    const url = '/api/generated-files/jobs/' + id;
+    const r = await h.request('GET', url, a, manager);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data).toEqual({ state: 'done', fileId });
+    expect((await h.request('GET', url, a)).statusCode).toBe(401);
+    expect((await h.request('GET', url, b, b.owner)).statusCode).toBe(404);
+    // the longest id the validator allows still reaches it (404: no such job); one character more is refused by the router
+    expect((await h.request('GET', '/api/generated-files/jobs/' + 'g'.repeat(GENERATION_JOB_ID_MAX), a, manager)).statusCode).toBe(404);
+    expect((await h.request('GET', '/api/generated-files/jobs/' + 'g'.repeat(GENERATION_JOB_ID_MAX + 1), a, manager)).statusCode).toBe(414);
   });
 });
