@@ -59,7 +59,7 @@ async function reviewContext(data: TenantData, marketplaceId: MarketplaceId) {
 }
 type Context = Awaited<ReturnType<typeof reviewContext>>;
 
-function filterFor(ctx: Context, marketplaceId: MarketplaceId, f: Pick<ReviewQuery, 'show' | 'exportState' | 'field' | 'q' | 'categoryId' | 'subcategoryId'>, productIds?: string[]): ReviewFilter {
+function filterFor(ctx: Context, marketplaceId: MarketplaceId, f: Pick<ReviewQuery, 'show' | 'exportState' | 'field' | 'categoryId' | 'subcategoryId'> & Partial<Pick<ReviewQuery, 'q'>>, productIds?: string[]): ReviewFilter {
   return {
     marketplaceId, enabledMarketplaces: ctx.enabled, toleranceFils: ctx.toleranceFils, show: f.show, exportState: f.exportState, field: f.field,
     search: searchFilter({ q: f.q, categoryId: f.categoryId, subcategoryId: f.subcategoryId }), productIds,
