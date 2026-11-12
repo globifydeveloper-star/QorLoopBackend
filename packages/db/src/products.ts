@@ -1,5 +1,8 @@
 import { Prisma } from './generated/client.js';
+<<<<<<< Updated upstream
 import type { MarketplaceStatusFilter } from '../../core/src/products/marketplace-view.js';
+=======
+>>>>>>> Stashed changes
 
 type Tx = Prisma.TransactionClient;
 
@@ -195,6 +198,7 @@ export class ProductRepository {
   labels(ids: string[]) {
     return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, select: { id: true, nameEn: true, barcode: true } });
   }
+<<<<<<< Updated upstream
   /**
    * A list page's values on one marketplace in one statement: per product id the winning listing (index
    * listings(tenant_id, marketplace_id, product_id); the same choice as recon), its upload (primary key) and the
@@ -219,6 +223,39 @@ export class ProductRepository {
       },
     }]));
   }
+=======
+  /** All actual listings of one marketplace, including unmatched and in-sync products. */
+  async marketplaceListings(f: {
+    marketplaceId: string; q?: string; barcodePrefix?: string;
+    availability: 'all' | 'available' | 'unavailable'; match: 'all' | 'matched' | 'unmatched';
+  }, after: { marketplaceProductId: string; id: string } | null, take: number) {
+    const search = f.q ? Prisma.sql` AND (l.name ILIKE ${'%' + likeText(f.q) + '%'}
+      OR l.marketplace_product_id ILIKE ${'%' + likeText(f.q) + '%'} OR p.name_en ILIKE ${'%' + likeText(f.q) + '%'}
+      OR EXISTS (SELECT 1 FROM unnest(l.barcodes) AS b(barcode) WHERE b.barcode LIKE ${likeText(f.barcodePrefix ?? f.q) + '%'})
+      ${f.barcodePrefix ? Prisma.sql` OR p.normalized_barcode LIKE ${likeText(f.barcodePrefix) + '%'}` : Prisma.empty})` : Prisma.empty;
+    const where = Prisma.sql`l.tenant_id = ${this.tenantId}::uuid AND l.marketplace_id = ${f.marketplaceId}
+      ${f.availability === 'all' ? Prisma.empty : Prisma.sql` AND l.available = ${f.availability === 'available'}`}
+      ${f.match === 'all' ? Prisma.empty : f.match === 'matched' ? Prisma.sql` AND l.product_id IS NOT NULL` : Prisma.sql` AND l.product_id IS NULL`}${search}`;
+    const cursor = after ? Prisma.sql` AND (l.marketplace_product_id, l.id) > (${after.marketplaceProductId}, ${after.id}::uuid)` : Prisma.empty;
+    const rows = await this.tx.$queryRaw<{
+      id: string; marketplace_product_id: string; name: string | null; barcodes: string[]; price: number; available: boolean; updated_at: Date;
+      product_id: string | null; product_name: string | null; product_barcode: string | null; product_erp_stock: number | null; upload_id: string | null; file_name: string | null;
+    }[]>`
+      SELECT l.id, l.marketplace_product_id, l.name, l.barcodes, l.price::float8 AS price, l.available, l.updated_at,
+             p.id AS product_id, p.name_en AS product_name, p.barcode AS product_barcode, p.erp_stock AS product_erp_stock, u.id AS upload_id, u.file_name
+      FROM listings l LEFT JOIN products p ON p.tenant_id = l.tenant_id AND p.id = l.product_id
+      LEFT JOIN uploads u ON u.tenant_id = l.tenant_id AND u.id = l.upload_id
+      WHERE ${where}${cursor} ORDER BY l.marketplace_product_id, l.id LIMIT ${take}`;
+    const [count] = await this.tx.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM listings l LEFT JOIN products p ON p.tenant_id = l.tenant_id AND p.id = l.product_id WHERE ${where}`;
+    const latestUpload = await this.tx.upload.findFirst({
+      where: { tenantId: this.tenantId, source: f.marketplaceId, status: 'applied' },
+      orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }, { id: 'asc' }], select: { id: true, fileName: true, appliedAt: true },
+    });
+    return { rows, total: count?.n ?? 0, latestUpload };
+  }
+
+>>>>>>> Stashed changes
   listings(productId: string) {
     return this.tx.listing.findMany({
       where: { tenantId: this.tenantId, productId }, orderBy: [{ marketplaceId: 'asc' }, { marketplaceProductId: 'asc' }],

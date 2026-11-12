@@ -351,3 +351,28 @@ describe('export values in files and the batch request (migration 202611100001)'
     expect((await h.request('GET', '/api/generated-files/jobs/' + 'g'.repeat(GENERATION_JOB_ID_MAX + 1), a, manager)).statusCode).toBe(414);
   });
 });
+
+
+describe('generation job status route length', () => {
+  it('accepts real token-bearing job IDs longer than 100 characters and preserves authentication and tenant isolation', async () => {
+    const job: GenerateFileJob = { ...await freshJob(), kind: 'stock_price', scope: 'mismatches', reference: 'marketplace', exportToken: 'a'.repeat(64) };
+    const id = generationJobId(job), fileId = randomUUID();
+    expect(id.length).toBeGreaterThan(100);
+    expect(id.length).toBeLessThanOrEqual(200);
+    h.generatedFiles.jobs.set(id, job);
+    h.generatedFiles.states.set(id, { state: 'done', fileId });
+    const response = await h.request('GET', '/api/generated-files/jobs/' + id, a, manager);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({ state: 'done', fileId });
+    expect((await h.request('GET', '/api/generated-files/jobs/' + id, a)).statusCode).toBe(401);
+    expect((await h.request('GET', '/api/generated-files/jobs/' + id, b, b.owner)).statusCode).toBe(404);
+  });
+
+  it('keeps the job ID length bounded at the validated 200 characters', async () => {
+    const job = await freshJob(), id = 'g'.repeat(200);
+    h.generatedFiles.jobs.set(id, job);
+    h.generatedFiles.states.set(id, { state: 'queued' });
+    expect((await h.request('GET', '/api/generated-files/jobs/' + id, a, manager)).statusCode).toBe(200);
+    expect((await h.request('GET', '/api/generated-files/jobs/' + 'g'.repeat(201), a, manager)).statusCode).toBe(414);
+  });
+});

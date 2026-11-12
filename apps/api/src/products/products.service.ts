@@ -14,7 +14,10 @@ import { DEFAULT_READINESS_RULES, isReady, missingDetails, READINESS_REASONS } f
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
-import { loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
+import { enabledMarketplaceIds, loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
+
+import { catalogueAvailable } from '../../../../packages/core/src/recon/status.js';
+import { BLOCKED_REASON_LABELS, setBlockReason } from '../../../../packages/core/src/marketplace-values.js';
 
 const MAX_SKIPPED_LISTED = 200;
 
@@ -128,6 +131,50 @@ export class ProductsService {
         items: page.map(r => ({ ...item(r), marketplacePrice: marketplacePrice(pricing, inputs.get(r.id)!.input, now) })),
         nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null,
         counts,
+      };
+    });
+  }
+
+  marketplaceListings(ctx: RequestContext, query: z.infer<typeof contracts.marketplaceListingsQuery>) {
+    let after: { marketplaceProductId: string; id: string } | null = null;
+    if (query.cursor) {
+      try {
+        const v: unknown = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8'));
+        if (!Array.isArray(v) || v.length !== 3 || v[0] !== query.marketplaceId || typeof v[1] !== 'string' || !z.uuid().safeParse(v[2]).success) throw new Error('cursor');
+        after = { marketplaceProductId: v[1], id: v[2] as string };
+      } catch { throw new BadRequestException('Invalid cursor'); }
+    }
+    return this.auth.authenticated(ctx, { permission: 'products.view' }, async data => {
+      const { rows, total, latestUpload } = await data.products.marketplaceListings({ ...query, ...searchFilter(query) }, after, query.limit + 1);
+      const page = rows.slice(0, query.limit);
+      const last = page[page.length - 1];
+      const ids = [...new Set(page.flatMap(r => r.product_id ? [r.product_id] : []))];
+      const [targets, edits, settings, enabled] = await Promise.all([
+        data.marketplaceValues.targets(ids, query.marketplaceId), data.stock.edits(ids), data.recon.settings(), enabledMarketplaceIds(data),
+      ]);
+      const byProduct = new Map(targets.map(t => [t.productId, t]));
+      const adjustment = (id: string | null, erpStock: number | null) => {
+        const target = id ? byProduct.get(id) : undefined;
+        if (!target || erpStock === null) return null;
+        const blocked = setBlockReason(target);
+        const av = target.override?.availability;
+        return {
+          catalogueAvailable: catalogueAvailable({ ...target.product, erpStock, catalogueStock: catalogueStock(erpStock, edits.get(id!) ?? null).stock }, settings.stockThreshold),
+          override: av?.state === 'pending' ? { value: av.value, persistent: av.persistent } : null,
+          version: target.override ? { id: target.override.id, version: target.override.version } : null,
+          blockedReason: !enabled.includes(query.marketplaceId) ? BLOCKED_REASON_LABELS.marketplace_disabled : blocked ? BLOCKED_REASON_LABELS[blocked] : null,
+        };
+      };
+      return {
+        total, latestUpload,
+        items: page.map(r => ({
+          id: r.id, marketplaceProductId: r.marketplace_product_id, name: r.name, barcodes: r.barcodes,
+          price: r.price, available: r.available, updatedAt: r.updated_at,
+          availabilityAdjustment: adjustment(r.product_id, r.product_erp_stock),
+          product: r.product_id ? { id: r.product_id, nameEn: r.product_name, barcode: r.product_barcode } : null,
+          sourceFile: r.upload_id ? { id: r.upload_id, fileName: r.file_name } : null,
+        })),
+        nextCursor: rows.length > query.limit && last ? Buffer.from(JSON.stringify([query.marketplaceId, last.marketplace_product_id, last.id])).toString('base64url') : null,
       };
     });
   }
