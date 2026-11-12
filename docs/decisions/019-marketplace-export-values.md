@@ -38,6 +38,7 @@ Layer 4 never writes layers 1 to 3 or 5.
 | (11 Nov) | Row order: `to_fix`, `waiting_for_export`, `blocked`, `pinned`, `in_sync`, `not_exportable`. |
 | (11 Nov) | Freshness approach accepted. ADR number 019. |
 | (11 Nov) | "Disable marketplace" is not needed now. No work beyond the existing switch, and the `marketplace_disabled` block reason that the switch already gives. |
+| (12 Nov) | "Copy from marketplace": bulk action `copy_from_marketplace` fills A's export values from B's live current listing (price, availability or both). No schema change. Skip a field when A's next file already writes B's value. Pins kept unless `replacePins`. Blocked as bulk `set`, availability "No" included. Older-file values are counted and shown. See [marketplace-values-api.md](../marketplace-values-api.md#copy-from-marketplace) and the [Step 0 report](../reports/2026-11-12-copy-from-marketplace-step-0.md). |
 
 ### Behaviour
 

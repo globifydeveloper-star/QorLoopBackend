@@ -119,20 +119,34 @@ Audit events: `product.marketplace_values_set` and `product.marketplace_values_c
 type Selection = { productIds: uuid[] /* 1..500 */ }
                | { filter: { show?, exportState?, field?, q?, categoryId?, subcategoryId? } };  // same as the Review query
 type Action = { type: 'set', values: <same as PUT values> }
-            | { type: 'use_catalogue', fields: ('availability' | 'price')[] };              // "Use catalogue values"
+            | { type: 'use_catalogue', fields: ('availability' | 'price')[] }               // "Use catalogue values"
+            | { type: 'copy_from_marketplace',                                                // "Copy from <marketplace>"
+                sourceMarketplaceId: MarketplaceId,      // another enabled marketplace with an applied file
+                fields: ('availability' | 'price')[],    // 1..2, each once
+                persistent?: boolean,                    // default false: fix once; true: pinned
+                replacePins?: boolean };                 // default false: pinned fields of the target are kept
 body = { marketplaceId, selection: Selection, action: Action, reason?: string }
+// copy: reason defaults to "Copied from <Source>"
 
 POST /api/marketplace-values/bulk/preview          // reads only
-data = { marketplaceId, selection, action, reason, limit: 5000,
-         selected, willChange, unchanged, blocked,  // selected = willChange + unchanged + blocked
+data = { marketplaceId, selection, action, reason /* the reason written */, limit: 5000,
+         source: { marketplaceId, latestFile: { uploadId, fileName, uploadedAt, appliedAt } } | null,   // copy only
+         selected, willChange, unchanged, blocked,
+         // selected = willChange + unchanged + blocked + notOnSource + pinnedKept (the last two are 0 unless copying)
          blockedByReason: { reason: 'not_listed'|'inactive'|'erp_inactive'|'missing_from_erp'|'not_found', label, count }[],
-         rows: { productId, nameEn, barcode, changes: { field, op: 'set'|'clear', before, after }[] }[],  // first 10
+         notOnSource: number, notOnSourceByReason: { reason: 'not_on_source'|'source_price_invalid', label, count }[],
+         pinnedKept: number,                      // products left unchanged only because their differing field is pinned
+         fromOlderFile: number,                   // changed products whose copied value is from an older source file
+         rows: { productId, nameEn, barcode,
+                 source?: { available, price, uploadId, fileName, isLatestFile: boolean },   // copy only
+                 changes: { field, op: 'set'|'clear', before, after }[] }[],                 // first 10 changed products
          previewToken: string /* 64 hex */ }
 
 POST /api/marketplace-values/bulk/apply
 body = <preview body> & { previewToken: string /* REQUIRED */, idempotencyKey: string /* 8..100 [A-Za-z0-9_-] */ }
-data = { operationId, replayed: boolean, appliedAt, marketplaceId,
-         selected, willChange, unchanged, blocked, blockedByReason, created, updated, clearedFields }
+data = { operationId, replayed: boolean, appliedAt, marketplaceId, sourceMarketplaceId: MarketplaceId | null,
+         selected, willChange, unchanged, blocked, blockedByReason, notOnSource, notOnSourceByReason, pinnedKept, fromOlderFile,
+         created, updated, clearedFields }
 ```
 
 | Rule | Behaviour |
@@ -141,7 +155,24 @@ data = { operationId, replayed: boolean, appliedAt, marketplaceId,
 | Who may receive a value | `set` blocks products that are not listed, not active, ERP-inactive or missing from the ERP. `use_catalogue` is allowed for every owned product. |
 | Apply | Re-plans under the store lock. A plan that differs from the previewed one is a 409 with no writes. |
 | Idempotency | The same key and body within 24 h replays the first result; the same key with another body is a 409. |
-| Audit | One `marketplace.values_bulk_applied` event, with compact `changes` rows (product id first; GIN-indexed for product history). |
+| Audit | One `marketplace.values_bulk_applied` event, with compact `changes` rows (product id first; GIN-indexed for product history). A copy also records `sourceMarketplaceId` and `sourceUploadId` (the source's latest applied file). |
+
+### Copy from marketplace
+
+On the Review screen of marketplace A, this fills A's export values from marketplace B's current values instead of the catalogue: price only, availability only, or both. It never changes the catalogue or B. The values written are ordinary export values, so Review states, pins in the comparison, acknowledgement by A's next file and the generated files treat them like hand-set values. Owner decisions, 12 November 2026:
+
+| Case | Behaviour |
+| --- | --- |
+| B's value | B's live current listing of the product, matched by catalogue product id and picked as the comparison picks it (newest, then marketplace product id). It may come from an older partial file: `fromOlderFile` counts those, and each preview row shows its file (`source.fileName`, `isLatestFile`). |
+| Refused (400) | B is A; B is not enabled; B has no applied file; A is not enabled. |
+| Blocked | Exactly as bulk `set`: not listed on A, inactive, ERP-inactive, missing from the ERP (availability "No" included), or not this store's product. |
+| Not on B | No matched listing on B (`not_on_source`). Nothing is written. For price, a B price outside 0.001 to 100,000 QAR counts as `source_price_invalid`, and availability can still be copied. |
+| Unchanged | A field is skipped when A's next file already writes B's value: A's pending value, else the catalogue value of the stored comparison. Prices are compared exactly, in fils. |
+| Pins on A | Kept by default (`pinnedKept`). With `replacePins: true`, the pin takes B's value and stays pinned. A pin change queues a recompute. |
+| New values | Fix once unless `persistent: true`. A pending fix-once value of A that differs is replaced (version + 1). |
+| Token | Also covers B and B's latest applied file. A new B file between preview and apply is a 409. |
+
+Read-only check on the demo store: `scripts\dev\copy-from-marketplace-check.ps1 [-Target talabat] [-Source snoonu] [-Fields price,availability]`. It calls the preview only.
 
 ## GET /api/recon/summary (added field)
 
