@@ -47,15 +47,15 @@ export const KEEP_TABLES = Object.freeze([
  * are RESTRICT, except upload_rows / upload_errors / erp_upload_changes -> uploads, which CASCADE; they are deleted
  * explicitly anyway, for exact counts). `where` limits a step to part of the store's rows; the rest is kept.
  *
- * When feature/marketplace-export-values is merged (migration 202611100001_marketplace_value_overrides), add
- * { table: 'marketplace_value_overrides' } BEFORE 'products': its product and user foreign keys are RESTRICT.
- * The completeness test fails until it is classified.
+ * marketplace_value_overrides (migration 202611100001, ADR 019) goes before products: its product and user foreign keys
+ * are RESTRICT. Pending and cleared export values are the store's business data, like product price rules.
  */
 export const DELETE_STEPS = Object.freeze([
   { table: 'erp_upload_changes' },
   { table: 'upload_errors' },
   { table: 'upload_rows' },
   { table: 'catalogue_stock_edits' },
+  { table: 'marketplace_value_overrides' },
   { table: 'recon_rows' },
   { table: 'recon_summaries' },
   { table: 'listings' },

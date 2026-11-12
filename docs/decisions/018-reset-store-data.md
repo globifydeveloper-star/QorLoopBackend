@@ -29,7 +29,7 @@ Two scripts, both dry runs by default. Each prints only fixed messages and error
 
 **Completeness.** Every table with a `tenant_id` must be in exactly one of KEEP, DELETE or ASK; ASK is empty now. A test checks this against the migrated schema, and a real run also checks it against the live database and refuses on a mismatch.
 
-**`marketplace_value_overrides`.** When `feature/marketplace-export-values` is merged (migration `202611100001_marketplace_value_overrides`), add `{ table: 'marketplace_value_overrides' }` to `DELETE_STEPS` **before `products`**: its product and user foreign keys are RESTRICT. Also add a row for it to the test's `seedStore`. Until then, the completeness test and the seed test fail, and a real run refuses.
+**`marketplace_value_overrides`.** Deleted (migration `202611100001_marketplace_value_overrides`, ADR 019), in `DELETE_STEPS` **before `products`**: its product and user foreign keys are RESTRICT. The test's `seedStore` writes one pending export price per store.
 
 ### How the reset runs
 

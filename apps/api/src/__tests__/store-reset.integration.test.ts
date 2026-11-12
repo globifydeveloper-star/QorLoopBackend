@@ -26,7 +26,7 @@ const sql = (c: Raw): Q => async (text, params = []) =>
 const KEPT_ACTIONS = ['store.provisioned', 'auth.login_failed', 'invitation.created', 'team.role_changed', 'settings.changed', 'pricing.settings_changed', 'template.updated'];
 const DELETED_ACTIONS = ['upload.applied', 'pricing.bulk_applied', 'product.field_changed', 'category.created', 'file.generated', 'recon.failed', 'pricing.marketplace_rule_set', 'some.future_action'];
 const EXPECTED_DELETED = {
-  erp_upload_changes: 1, upload_errors: 1, upload_rows: 1, catalogue_stock_edits: 1, recon_rows: 1, recon_summaries: 1, listings: 2,
+  erp_upload_changes: 1, upload_errors: 1, upload_rows: 1, catalogue_stock_edits: 1, marketplace_value_overrides: 1, recon_rows: 1, recon_summaries: 1, listings: 2,
   product_offers: 1, product_price_rules: 1, marketplace_price_rules: 1, generated_files: 1, notifications: 1, uploads: 2, products: 2,
   category_price_rules: 1, category_mappings: 1, categories: 2, audit_events: DELETED_ACTIONS.length,
 };
@@ -34,7 +34,7 @@ const EXPECTED_DELETED = {
 type Fixture = Awaited<ReturnType<typeof testDatabase>>;
 type Prisma = Fixture['prisma'];
 
-/** One store with rows in every table that has a tenant_id (all 30). */
+/** One store with rows in every table that has a tenant_id (all 31). */
 async function seedStore(prisma: Prisma, slug: string) {
   const id = randomUUID();
   const future = new Date(Date.now() + 86_400_000);
@@ -73,6 +73,7 @@ async function seedStore(prisma: Prisma, slug: string) {
   await prisma.uploadError.create({ data: { tenantId: id, uploadId: talabat.id, row: 3, reason: 'Missing barcode' } });
   await prisma.erpUploadChange.create({ data: { tenantId: id, uploadId: erp.id, productId: p1.id, rowNumber: 2, barcode: '6281000000011', kind: 'new' } });
   await prisma.catalogueStockEdit.create({ data: { tenantId: id, productId: p1.id, stock: 5, erpStockAtEdit: 3, setById: owner.id, setAt: new Date() } });
+  await prisma.marketplaceValueOverride.create({ data: { tenantId: id, productId: p1.id, marketplaceId: 'talabat', priceValue: 5.75, priceState: 'pending', priceSetById: owner.id, priceSetAt: new Date() } });
   await prisma.reconRow.create({ data: { tenantId: id, productId: p1.id, marketplaceId: 'talabat', status: 'in_sync' } });
   await prisma.reconSummary.create({ data: { tenantId: id, marketplaceId: 'talabat', reference: 'marketplace', listed: 1, total: 1, hasData: true, computedAt: new Date() } });
   await prisma.generatedFile.create({ data: { tenantId: id, marketplaceId: 'talabat', kind: 'stock', scope: 'all', reference: 'erp', fileName: 'f.csv', storageKey: `tenants/${id}/generated/g.csv`, productCount: 1, generatedById: owner.id, expiresAt: future } });
@@ -130,9 +131,6 @@ describe('store data reset on PGlite (ADR 018)', () => {
     const lists = [...plan.KEEP_TABLES, ...plan.DELETE_TABLES, ...plan.ASK_TABLES] as string[];
     for (const t of tables.tenantTables) expect([t, lists.filter(x => x === t).length]).toEqual([t, 1]);
     expect(plan.ASK_TABLES).toEqual([]);
-    // marketplace_value_overrides (feature/marketplace-export-values, migration 202611100001) is not on main yet. When it
-    // is merged, this test fails until the table is added to DELETE_STEPS before products, and the seed test below fails
-    // until seedStore writes a row to it.
   });
 
   it('deletes children before parents, and no kept table references a deleted one', async () => {
@@ -318,12 +316,12 @@ describe('store data reset: checks, queues and storage without a database', () =
   it('lists every reason a real run must not start, including the open sessions', () => {
     expect(plan.refusals(clean)).toEqual([]);
     const all = plan.refusals({
-      classification: { ...clean.classification, unclassified: ['marketplace_value_overrides'] },
+      classification: { ...clean.classification, unclassified: ['some_future_table'] },
       backup: { ok: false, reason: 'no .dump file in the backup folder' }, api: { port: 4000, open: true },
       sessions: [{ pid: 4242, app: 'pgAdmin 4', addr: '127.0.0.1', state: 'idle' }, { pid: 77, app: '(no application name)', addr: '::1', state: 'idle' }],
       redis: { workers: { ...clean.redis.workers, 'email-outbox': 1 }, jobs: { recon: { active: 1 } } },
     }).join('\n');
-    for (const part of ['marketplace_value_overrides', 'db-backup.ps1 -Label before-reset', 'port 4000', '2 other session(s)', 'pid 4242 pgAdmin 4 from 127.0.0.1 (idle)',
+    for (const part of ['some_future_table', 'db-backup.ps1 -Label before-reset', 'port 4000', '2 other session(s)', 'pid 4242 pgAdmin 4 from 127.0.0.1 (idle)',
       'pid 77', 'email-outbox 1', 'jobs for this store are running (recon 1)']) expect(all).toContain(part);
     expect(plan.refusals({ ...clean, redis: { unreachable: true } })[0]).toContain('--skip-redis');
     expect(plan.refusals({ ...clean, redis: { error: 'NOPERM' } })[0]).toContain('NOPERM');
