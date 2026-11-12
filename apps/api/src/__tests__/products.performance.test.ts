@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { performance } from 'node:perf_hooks';
 import { createHarness, type Harness, type Store } from './harness.js';
-import { ProductRepository, type ProductFilter, type ProductTab } from '../../../../packages/db/src/products.js';
-import type { Prisma } from '../../../../packages/db/src/generated/client.js';
+import { ProductRepository, marketplaceValuesSql, type ProductFilter, type ProductTab } from '../../../../packages/db/src/products.js';
+import { Prisma } from '../../../../packages/db/src/generated/client.js';
 
 // Timings and query plans only mean something on a real PostgreSQL with pg_trgm; the embedded database has neither.
 const realPostgres = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -140,6 +140,57 @@ realPostgres('products at 25,000 rows (real PostgreSQL)', () => {
       'GET /api/products/:id (chain)': await time(async () => expect((await h.request('GET', '/api/products/' + first.items[0].id, s, s.owner)).statusCode).toBe(200)),
     };
     console.log('[perf] ' + JSON.stringify({ products: PRODUCTS, categoryRules: 70, productRules: PRODUCTS / 10, offers: PRODUCTS / 25, medianMs: timings }, null, 2));
+    for (const [label, ms] of Object.entries(timings)) expect([label, ms <= SLOW_MS]).toEqual([label, true]);
+  }, 600_000);
+
+  it('adds Talabat values and filters by marketplace status within budget', async () => {
+    const prisma = h.fixture.prisma;
+    const owner = await prisma.user.findFirstOrThrow({ where: { tenantId: s.id } });
+    const upload = await prisma.upload.create({ data: { tenantId: s.id, source: 'talabat', fileName: 'talabat.xlsx', size: 1, storageKey: 'perf/talabat-list', uploadedById: owner.id, status: 'applied', appliedAt: new Date() } });
+    // 90% listed (every 50th twice), every 7th a stock mismatch, every 11th a price mismatch.
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO listings (id, tenant_id, marketplace_id, marketplace_product_id, product_id, barcodes, price, available, upload_id, created_at, updated_at)
+      SELECT gen_random_uuid(), tenant_id, 'talabat', 'T-' || n || '-' || k, id, ARRAY[]::text[], 2.5 + k, n % 7 <> 0, $2::uuid, now(), now() - (k || ' seconds')::interval
+      FROM (SELECT id, tenant_id, row_number() OVER (ORDER BY id) AS n FROM products WHERE tenant_id = $1::uuid) x
+      CROSS JOIN LATERAL (SELECT generate_series(0, CASE WHEN n % 50 = 0 THEN 1 ELSE 0 END) AS k) g
+      WHERE n % 10 <> 0`, s.id, upload.id);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO recon_rows (id, tenant_id, product_id, marketplace_id, status, status_vs_erp, stock_issue, stock_issue_vs_erp,
+                              price_mismatch_vs_marketplace, price_mismatch_vs_erp, actual_price, actual_available, marketplace_price, erp_price, last_updated)
+      SELECT gen_random_uuid(), tenant_id, id, 'talabat', st, st, si, si, pm, pm, 2.5, n % 7 <> 0, 2.5, 2.5, now()
+      FROM (SELECT id, tenant_id, n,
+                   CASE WHEN n % 10 = 0 THEN 'not_listed' WHEN n % 7 = 0 OR n % 11 = 0 THEN 'mismatch' ELSE 'in_sync' END AS st,
+                   CASE WHEN n % 10 <> 0 AND n % 7 = 0 THEN 'unavailable_but_in_stock' END AS si, (n % 10 <> 0 AND n % 11 = 0) AS pm
+            FROM (SELECT id, tenant_id, row_number() OVER (ORDER BY id) AS n FROM products WHERE tenant_id = $1::uuid) y) x`, s.id);
+    await prisma.$executeRawUnsafe('ANALYZE');
+
+    const query = (q: string) => async () => expect((await h.request('GET', '/api/products?limit=50&marketplaceId=talabat' + q, s, s.owner)).statusCode).toBe(200);
+    const page = (await h.request('GET', '/api/products?limit=50&marketplaceId=talabat&marketplaceStatus=mismatch', s, s.owner)).json().data;
+    expect(page.items).toHaveLength(50);
+    expect(page.items.every((i: { marketplace: { comparison: string } }) => i.marketplace.comparison === 'mismatch')).toBe(true);
+    const timings: Record<string, number> = {
+      'GET /api/products?marketplaceId=talabat': await time(query('')),
+      '... &marketplaceStatus=mismatch': await time(query('&marketplaceStatus=mismatch')),
+      '... &marketplaceStatus=in_sync': await time(query('&marketplaceStatus=in_sync')),
+      '... &marketplaceStatus=not_in_file': await time(query('&marketplaceStatus=not_in_file')),
+      '... &marketplaceStatus=mismatch&q=milk': await time(query('&marketplaceStatus=mismatch&q=milk')),
+      '... &marketplaceStatus=mismatch page 2': await time(query('&marketplaceStatus=mismatch&cursor=' + page.nextCursor)),
+    };
+    const ids = (page.items as { id: string }[]).map(i => i.id);
+    const valuesPlan = (await prisma.$queryRaw<{ 'QUERY PLAN': string }[]>(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS) ${marketplaceValuesSql(s.id, 'talabat', ids)}`))
+      .map(r => r['QUERY PLAN']).join('\n');
+    // The shape of the Prisma relation filters for mismatch: EXISTS on listings and on recon_rows.
+    const filterPlan = await explain(`
+      SELECT id, name_en FROM products p WHERE p.tenant_id = $1::uuid
+        AND EXISTS (SELECT 1 FROM listings l WHERE l.tenant_id = p.tenant_id AND l.product_id = p.id AND l.marketplace_id = 'talabat')
+        AND EXISTS (SELECT 1 FROM recon_rows r WHERE r.tenant_id = p.tenant_id AND r.product_id = p.id AND r.marketplace_id = 'talabat'
+                    AND (r.status = 'mismatch' OR (r.status = 'missing_from_erp' AND r.stock_issue IS NOT NULL)))
+      ORDER BY name_en, id LIMIT 51`, [s.id]);
+    console.log('[perf] ' + JSON.stringify({ products: PRODUCTS, marketplace: 'talabat', medianMs: timings }, null, 2));
+    console.log('[perf] EXPLAIN page marketplace values (50 ids)\n' + valuesPlan);
+    console.log('[perf] EXPLAIN marketplaceStatus=mismatch filter (equivalent SQL)\n' + filterPlan);
+    expect(valuesPlan).toMatch(/listings_tenant_id_marketplace_id_product_id_idx/);
+    expect(valuesPlan).not.toMatch(/Seq Scan on (listings|recon_rows)/);
     for (const [label, ms] of Object.entries(timings)) expect([label, ms <= SLOW_MS]).toEqual([label, true]);
   }, 600_000);
 });

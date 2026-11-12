@@ -5,6 +5,7 @@ import { ADOPT_MODES } from '../../core/src/price-adoption.js';
 import { ACTIVITY_GROUPS } from '../../core/src/activity.js';
 import { ERP_CHANGE_KINDS } from '../../core/src/upload/apply.js';
 import { CONFLICT_CHOICES, STOCK_MAX, STOCK_REASON_MAX } from '../../core/src/catalogue-stock.js';
+import { MARKETPLACE_STATUS_FILTERS } from '../../core/src/products/marketplace-view.js';
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
@@ -58,7 +59,11 @@ export const productListQuery = z.object({
   subcategoryId: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(1000).optional(),
-}).strict();
+  /** Adds each product's values on this marketplace (must be enabled for the store). */
+  marketplaceId: z.enum(MARKETPLACES).optional(),
+  /** Only with marketplaceId. */
+  marketplaceStatus: z.enum(MARKETPLACE_STATUS_FILTERS).optional(),
+}).strict().refine(q => !q.marketplaceStatus || q.marketplaceId, { path: ['marketplaceStatus'], message: 'marketplaceStatus needs marketplaceId' });
 export const updateProduct = z.object({
   nameAr: z.string().trim().max(200).transform(v => v || null).optional(),
   categoryId: z.uuid().nullable().optional(),

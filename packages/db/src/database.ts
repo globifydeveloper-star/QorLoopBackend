@@ -15,7 +15,7 @@ import { MarketplaceValuesRepository } from './marketplace-values.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository, CatalogueStockRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
-export type { PricingSelection, ProductFilter, ProductTab } from './products.js';
+export type { PricingSelection, ProductFilter, ProductMarketplaceFilter, ProductMarketplaceRow, ProductTab } from './products.js';
 
 export { PrismaClient };
 export type { Role };

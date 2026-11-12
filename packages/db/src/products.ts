@@ -1,8 +1,22 @@
-import type { Prisma } from './generated/client.js';
+import { Prisma } from './generated/client.js';
+import type { MarketplaceStatusFilter } from '../../core/src/products/marketplace-view.js';
 
 type Tx = Prisma.TransactionClient;
 
 export type ProductTab = 'all' | 'active' | 'inactive' | 'new' | 'missing';
+
+/**
+ * The catalogue list's marketplace filter. Selects exactly the products core marketplaceComparison classifies as
+ * `status` (change both together): in_sync = listed + recon in_sync; mismatch = listed + (recon mismatch, or
+ * missing_from_erp with a stock issue); not_in_file = not listed. Columns are those of `reference`.
+ */
+export interface ProductMarketplaceFilter {
+  marketplaceId: string;
+  status: MarketplaceStatusFilter;
+  reference: 'marketplace' | 'erp';
+  /** The marketplace has an applied upload; without one nothing is compared and nothing matches. */
+  hasData: boolean;
+}
 
 /** Search and category filters shared by the list and its tab counts (the tab itself is not part of it). */
 export interface ProductFilter {
@@ -11,6 +25,52 @@ export interface ProductFilter {
   barcodePrefix?: string;
   categoryId?: string;
   subcategoryId?: string;
+  /** Only the catalogue list sets it (GET /api/products?marketplaceId=...&marketplaceStatus=...). */
+  marketplace?: ProductMarketplaceFilter;
+}
+
+/** One product's values on one marketplace, as read for a list page (ProductRepository.marketplaceValues). */
+export interface ProductMarketplaceRow {
+  productId: string;
+  /** The winning listing (same choice as recon): newest updated_at, then marketplace_product_id. */
+  listing: { price: string; available: boolean; uploadedAt: Date | null } | null;
+  recon: {
+    status: string; statusVsErp: string; stockIssue: string | null; stockIssueVsErp: string | null;
+    priceMismatchVsMarketplace: boolean; priceMismatchVsErp: boolean;
+    actualPrice: number | null; marketplacePrice: number | null; erpPrice: number | null;
+  } | null;
+}
+
+/** The statement of ProductRepository.marketplaceValues; exported so a test can EXPLAIN exactly this SQL. */
+export function marketplaceValuesSql(tenantId: string, marketplaceId: string, productIds: string[]) {
+  return Prisma.sql`
+    SELECT p.id AS product_id, l.price::text AS l_price, l.available AS l_available, u.created_at AS uploaded_at,
+           r.id IS NOT NULL AS has_recon, r.status, r.status_vs_erp, r.stock_issue, r.stock_issue_vs_erp,
+           r.price_mismatch_vs_marketplace, r.price_mismatch_vs_erp,
+           r.actual_price::float8 AS actual_price, r.marketplace_price::float8 AS marketplace_price, r.erp_price::float8 AS erp_price
+    FROM unnest(${productIds}::uuid[]) AS p(id)
+    LEFT JOIN LATERAL (
+      SELECT price, available, upload_id FROM listings
+      WHERE tenant_id = ${tenantId}::uuid AND marketplace_id = ${marketplaceId} AND product_id = p.id
+      ORDER BY updated_at DESC, marketplace_product_id
+      LIMIT 1
+    ) AS l ON true
+    LEFT JOIN uploads u ON u.tenant_id = ${tenantId}::uuid AND u.id = l.upload_id
+    LEFT JOIN recon_rows r ON r.tenant_id = ${tenantId}::uuid AND r.product_id = p.id AND r.marketplace_id = ${marketplaceId}`;
+}
+
+function marketplaceWhere(m: ProductMarketplaceFilter): Prisma.ProductWhereInput {
+  // no applied upload: no product is in the file or compared (core rule 1)
+  if (!m.hasData) return { id: { in: [] } };
+  const listed: Prisma.ProductWhereInput = { listings: { some: { marketplaceId: m.marketplaceId } } };
+  if (m.status === 'not_in_file') return { listings: { none: { marketplaceId: m.marketplaceId } } };
+  const erp = m.reference === 'erp';
+  const recon: Prisma.ReconRowWhereInput = m.status === 'in_sync'
+    ? (erp ? { statusVsErp: 'in_sync' } : { status: 'in_sync' })
+    : erp
+      ? { OR: [{ statusVsErp: 'mismatch' }, { statusVsErp: 'missing_from_erp', stockIssueVsErp: { not: null } }] }
+      : { OR: [{ status: 'mismatch' }, { status: 'missing_from_erp', stockIssue: { not: null } }] };
+  return { AND: [listed, { reconRows: { some: { marketplaceId: m.marketplaceId, ...recon } } }] };
 }
 
 const TAB_WHERE: Record<ProductTab, Prisma.ProductWhereInput> = {
@@ -54,6 +114,7 @@ export class ProductRepository {
   private where(f: ProductFilter): Prisma.ProductWhereInput {
     return {
       tenantId: this.tenantId,
+      ...(f.marketplace ? marketplaceWhere(f.marketplace) : {}),
       ...(f.categoryId ? { categoryId: f.categoryId } : {}),
       ...(f.subcategoryId ? { subcategoryId: f.subcategoryId } : {}),
       // name via the pg_trgm index, barcode via (tenant, normalized_barcode), SKU via (tenant, sku)
@@ -133,6 +194,30 @@ export class ProductRepository {
   /** Name and barcode of a few products (examples on a screen). */
   labels(ids: string[]) {
     return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, select: { id: true, nameEn: true, barcode: true } });
+  }
+  /**
+   * A list page's values on one marketplace in one statement: per product id the winning listing (index
+   * listings(tenant_id, marketplace_id, product_id); the same choice as recon), its upload (primary key) and the
+   * stored recon row (unique (tenant_id, product_id, marketplace_id)). Every join is tenant-scoped; ids of another
+   * store simply find nothing. Prices as text keep the 3 stored decimals.
+   */
+  async marketplaceValues(marketplaceId: string, productIds: string[]): Promise<Map<string, ProductMarketplaceRow>> {
+    if (!productIds.length) return new Map();
+    const rows = await this.tx.$queryRaw<{
+      product_id: string; l_price: string | null; l_available: boolean | null; uploaded_at: Date | null; has_recon: boolean;
+      status: string | null; status_vs_erp: string | null; stock_issue: string | null; stock_issue_vs_erp: string | null;
+      price_mismatch_vs_marketplace: boolean | null; price_mismatch_vs_erp: boolean | null;
+      actual_price: number | null; marketplace_price: number | null; erp_price: number | null;
+    }[]>(marketplaceValuesSql(this.tenantId, marketplaceId, productIds));
+    return new Map(rows.map(r => [r.product_id, {
+      productId: r.product_id,
+      listing: r.l_price === null ? null : { price: r.l_price, available: r.l_available!, uploadedAt: r.uploaded_at },
+      recon: !r.has_recon ? null : {
+        status: r.status!, statusVsErp: r.status_vs_erp!, stockIssue: r.stock_issue, stockIssueVsErp: r.stock_issue_vs_erp,
+        priceMismatchVsMarketplace: r.price_mismatch_vs_marketplace!, priceMismatchVsErp: r.price_mismatch_vs_erp!,
+        actualPrice: r.actual_price, marketplacePrice: r.marketplace_price, erpPrice: r.erp_price,
+      },
+    }]));
   }
   listings(productId: string) {
     return this.tx.listing.findMany({
