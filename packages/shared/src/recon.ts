@@ -15,6 +15,7 @@ export type ReconReason =
   | 'product.status'
   | 'product.activated'
   | 'upload.applied'
+  | 'marketplace.values'
   | 'manual'
   | 'sweep';
 

@@ -26,6 +26,10 @@ const summary = {
           listed: count, notListed: count, noData: count, missingFromErp: count, newCount: count,
           lastUploadAt: { type: ['string', 'null'], format: 'date-time' },
           stale: { type: 'boolean', description: 'The latest applied upload is older than the store setting staleHours' },
+          export: {
+            type: 'object', description: 'The Review card: rows to fix, waiting for export, pinned and blocked (against the catalogue, live)',
+            properties: { toFix: count, waitingForExport: count, pinned: count, blocked: count },
+          },
         },
       },
     },

@@ -54,6 +54,7 @@ model Tenant {
   inputTemplates        InputTemplate[]
   erpUploadChanges      ErpUploadChange[]
   catalogueStockEdits   CatalogueStockEdit[]
+  marketplaceValues     MarketplaceValueOverride[]
 
   @@map("tenants")
 }
@@ -80,6 +81,8 @@ model User {
   generatedFiles      GeneratedFile[]
   notifications       Notification[]
   catalogueStockEdits CatalogueStockEdit[]
+  availabilityValueSets MarketplaceValueOverride[] @relation("MarketplaceValueAvailabilitySetBy")
+  priceValueSets        MarketplaceValueOverride[] @relation("MarketplaceValuePriceSetBy")
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -233,6 +236,7 @@ model Marketplace {
   name               String
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
   tenantMarketplaces TenantMarketplace[]
+  valueOverrides     MarketplaceValueOverride[]
 
   @@map("marketplaces")
 }
@@ -321,6 +325,7 @@ model Product {
   reconRows         ReconRow[]
   erpUploadChanges  ErpUploadChange[]
   stockEdit         CatalogueStockEdit?
+  marketplaceValues MarketplaceValueOverride[]
 
   @@unique([tenantId, normalizedBarcode])
   @@unique([tenantId, id])
@@ -676,4 +681,44 @@ model CatalogueStockEdit {
 
   @@unique([tenantId, productId])
   @@map("catalogue_stock_edits")
+}
+
+// ───────────────────────── Per-marketplace export values (migration 202611100001) ─────────────────────────
+
+/// What the generated file writes for one product on one marketplace, instead of the catalogue value. No row = the
+/// catalogue value. Two independent fields, each with its own state (pending | cleared) and provenance; persistent
+/// false = fix once (cleared by a later matching upload of that marketplace), true = pinned (cleared only by the
+/// manager). `version` is the optimistic concurrency check. Never writes products, stock, rules, offers or listings.
+/// Partial index marketplace_value_overrides_pending_idx and audit_events_marketplace_values_changes_gin_idx: SQL only.
+model MarketplaceValueOverride {
+  id                     String      @id @default(uuid()) @db.Uuid
+  tenantId               String      @map("tenant_id") @db.Uuid
+  tenant                 Tenant      @relation(fields: [tenantId], references: [id])
+  productId              String      @map("product_id") @db.Uuid
+  product                Product     @relation(fields: [tenantId, productId], references: [tenantId, id])
+  marketplaceId          String      @map("marketplace_id")
+  marketplace            Marketplace @relation(fields: [marketplaceId], references: [id])
+  availabilityValue      Boolean?    @map("availability_value")
+  availabilityState      String?     @map("availability_state") // pending | cleared; null = never set
+  availabilitySetById    String?     @map("availability_set_by_id") @db.Uuid
+  availabilitySetBy      User?       @relation("MarketplaceValueAvailabilitySetBy", fields: [tenantId, availabilitySetById], references: [tenantId, id], onDelete: Restrict)
+  availabilitySetAt      DateTime?   @map("availability_set_at") @db.Timestamptz(3)
+  availabilityReason     String?     @map("availability_reason")
+  availabilityClearedAt  DateTime?   @map("availability_cleared_at") @db.Timestamptz(3)
+  availabilityPersistent Boolean     @default(false) @map("availability_persistent")
+  priceValue             Decimal?    @map("price_value") @db.Decimal(12, 3)
+  priceState             String?     @map("price_state") // pending | cleared; null = never set
+  priceSetById           String?     @map("price_set_by_id") @db.Uuid
+  priceSetBy             User?       @relation("MarketplaceValuePriceSetBy", fields: [tenantId, priceSetById], references: [tenantId, id], onDelete: Restrict)
+  priceSetAt             DateTime?   @map("price_set_at") @db.Timestamptz(3)
+  priceReason            String?     @map("price_reason")
+  priceClearedAt         DateTime?   @map("price_cleared_at") @db.Timestamptz(3)
+  pricePersistent        Boolean     @default(false) @map("price_persistent")
+  version                Int         @default(1)
+  createdAt              DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([tenantId, productId, marketplaceId])
+  @@index([tenantId, marketplaceId, productId])
+  @@map("marketplace_value_overrides")
 }

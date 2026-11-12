@@ -33,6 +33,8 @@ export function activitySql(tenantId: string, q: ActivityFilter) {
     branch('product', Prisma.sql`e.action = 'pricing.bulk_applied' AND (e.details -> 'changes') @> ${JSON.stringify([[q.productId]])}::jsonb`),
     // literal action list, identical to the predicate of audit_events_stock_bulk_changes_gin_idx, so the planner can use it
     branch('product', Prisma.sql`e.action IN ('catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved') AND (e.details -> 'changes') @> ${JSON.stringify([[q.productId]])}::jsonb`),
+    // literal action list, identical to the predicate of audit_events_marketplace_values_changes_gin_idx (202611100001)
+    branch('product', Prisma.sql`e.action IN ('marketplace.values_bulk_applied', 'marketplace.values_upload_cleared') AND (e.details -> 'changes') @> ${JSON.stringify([[q.productId]])}::jsonb`),
     ...(q.includeTenantUploads ? [branch('tenant', Prisma.sql`e.action LIKE 'upload.%'`)] : []),
   ] : [branch('tenant', Prisma.sql`true`)];
   return Prisma.sql`SELECT c.id, to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS time,
