@@ -133,6 +133,26 @@ export class PricingRepository {
       select: { id: true, productId: true, price: true, validFrom: true, validUntil: true, updatedAt: true },
     });
   }
+  /** A bounded page of offers whose dates include now and whose products are active. */
+  async activeOffers(now: Date, page: number, limit: number) {
+    const where: Prisma.ProductOfferWhereInput = {
+      tenantId: this.tenantId, product: { status: 'active' },
+      OR: [{ validFrom: null }, { validFrom: { lte: now } }],
+      AND: [{ OR: [{ validUntil: null }, { validUntil: { gte: now } }] }],
+    };
+    const [total, rows] = await Promise.all([
+      this.tx.productOffer.count({ where }),
+      this.tx.productOffer.findMany({
+        where, orderBy: [{ product: { nameEn: 'asc' } }, { productId: 'asc' }],
+        skip: (page - 1) * limit, take: limit,
+        select: {
+          id: true, productId: true, price: true, validFrom: true, validUntil: true,
+          product: { select: { nameEn: true, barcode: true, erpPrice: true } },
+        },
+      }),
+    ]);
+    return { total, rows };
+  }
   /** A product has at most one offer through the API: setting one replaces any other. */
   async replaceOffer(productId: string, offer: { price: number; validFrom: Date | null; validUntil: Date | null }) {
     await this.tx.productOffer.deleteMany({ where: { tenantId: this.tenantId, productId } });

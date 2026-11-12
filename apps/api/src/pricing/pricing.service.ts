@@ -65,6 +65,21 @@ export class PricingService {
     return this.auth.authenticated(ctx, { permission: 'pricing.view' }, async data => settingsView(await loadPricing(data)));
   }
 
+  activeOffers(ctx: RequestContext, query: z.infer<typeof contracts.activeOffersQuery>) {
+    return this.auth.authenticated(ctx, { permission: 'pricing.view' }, async data => {
+      const now = new Date();
+      const { total, rows } = await data.pricing.activeOffers(now, query.page, query.limit);
+      return {
+        asOf: now, total, page: query.page, limit: query.limit,
+        items: rows.map(o => ({
+          productId: o.productId, nameEn: o.product.nameEn, barcode: o.product.barcode,
+          erpPrice: o.product.erpPrice.toNumber(), price: o.price.toNumber(),
+          validFrom: o.validFrom, validUntil: o.validUntil,
+        })),
+      };
+    });
+  }
+
   /** One audit event per changed setting and per changed marketplace rule; an unchanged value writes nothing. */
   updateSettings(ctx: RequestContext, input: z.infer<typeof contracts.updatePricingSettings>) {
     return this.change(ctx, 'pricing.settings', (data, actor) => this.writeSettings(data, actor, ctx.requestId, input));

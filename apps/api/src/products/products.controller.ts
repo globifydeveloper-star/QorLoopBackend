@@ -78,6 +78,17 @@ export class ProductsController {
     return this.products.activate(context(req, this.config), input);
   }
 
+  @Get('marketplace-listings') @Access({ permission: 'products.view' })
+  @ApiQuery({ name: 'marketplaceId', required: true, enum: ['talabat', 'snoonu', 'rafeeq', 'keeta'] })
+  @ApiQuery({ name: 'q', required: false, description: 'Listing or catalogue name, barcode prefix or marketplace product ID' })
+  @ApiQuery({ name: 'availability', required: false, enum: ['all', 'available', 'unavailable'] })
+  @ApiQuery({ name: 'match', required: false, enum: ['all', 'matched', 'unmatched'] })
+  @ApiQuery({ name: 'cursor', required: false }) @ApiQuery({ name: 'limit', required: false })
+  @Contract('Actual marketplace listings, including unmatched ones, keyset paged by marketplace product ID; total is for the current filters. Includes latest applied file metadata without storage keys.')
+  marketplaceListings(@Req() req: AppRequest, @Query(new ZodPipe(dto.marketplaceListingsQuery)) query: z.infer<typeof dto.marketplaceListingsQuery>) {
+    return this.products.marketplaceListings(context(req, this.config), query);
+  }
+
   @Get(':id') @Access({ permission: 'products.view' })
   @Contract('One product with its marketplace listings, category names and the informational arabicNameMissing / categoryMissing flags')
   get(@Req() req: AppRequest, @Param('id', new ParseUUIDPipe()) id: string) { return this.products.get(context(req, this.config), id); }

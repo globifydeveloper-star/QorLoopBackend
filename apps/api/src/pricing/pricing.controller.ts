@@ -149,6 +149,14 @@ export class PricingController {
   @Contract('Default rule, rounding, per-marketplace switch and rules, comparison reference and the rule order', undefined, settings)
   settings(@Req() req: AppRequest) { return this.pricing.settings(context(req, this.config)); }
 
+  @Get('pricing/active-offers') @Access({ permission: 'pricing.view' })
+  @ApiQuery({ name: 'page', required: false, description: 'Page number, default 1' })
+  @ApiQuery({ name: 'limit', required: false, description: '1-200, default 20' })
+  @Contract('Currently valid offers on active products, ordered by product name. Dates are evaluated at asOf.')
+  activeOffers(@Req() req: AppRequest, @Query(new ZodPipe(dto.activeOffersQuery)) query: z.infer<typeof dto.activeOffersQuery>) {
+    return this.pricing.activeOffers(context(req, this.config), query);
+  }
+
   @Put('pricing/settings') @Access({ permission: 'pricing.edit' })
   @Contract('Change any of the pricing settings; marketplaceRules, when given, is the full set (one audit event per changed field or rule)', dto.updatePricingSettings, settings)
   updateSettings(@Req() req: AppRequest, @Body(new ZodPipe(dto.updatePricingSettings)) input: z.infer<typeof dto.updatePricingSettings>) {

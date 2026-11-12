@@ -64,6 +64,21 @@ export const productListQuery = z.object({
   /** Only with marketplaceId. */
   marketplaceStatus: z.enum(MARKETPLACE_STATUS_FILTERS).optional(),
 }).strict().refine(q => !q.marketplaceStatus || q.marketplaceId, { path: ['marketplaceStatus'], message: 'marketplaceStatus needs marketplaceId' });
+/** Offers currently setting the price of active catalogue products. */
+export const activeOffersQuery = z.object({
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+}).strict();
+/** Actual marketplace listings, independent of ERP matching and stored reconciliation rows. */
+export const marketplaceListingsQuery = z.object({
+  marketplaceId: z.enum(MARKETPLACES),
+  q: z.string().trim().max(200).optional(),
+  availability: z.enum(['all', 'available', 'unavailable']).default('all'),
+  match: z.enum(['all', 'matched', 'unmatched']).default('all'),
+  cursor: z.string().max(2000).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+}).strict();
+
 export const updateProduct = z.object({
   nameAr: z.string().trim().max(200).transform(v => v || null).optional(),
   categoryId: z.uuid().nullable().optional(),
