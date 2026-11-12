@@ -1,7 +1,9 @@
 import type { Database } from '../../../packages/db/src/database.js';
 import { randomUUID } from 'node:crypto';
 import { GenerationBlocked, generatedFileName, writeGeneratedFile } from '../../../packages/core/src/generated-files.js';
-import { generationInputs, generationJobId, generatedFileId, prepareGeneration, GENERATION_FAILURE_MESSAGE, type GenerateFileJob } from '../../../packages/shared/src/generated-files.js';
+import {
+  exportToken, generationInputs, generationJobId, generatedFileId, loadGenerationInputs, prepareGeneration, GENERATION_FAILURE_MESSAGE, STALE_EXPORT_MESSAGE, type GenerateFileJob,
+} from '../../../packages/shared/src/generated-files.js';
 import { storageKeys, type ObjectStorage } from '../../../packages/shared/src/storage.js';
 import { XLSX_CONTENT_TYPE } from '../../../packages/core/src/upload/error-report.js';
 import { describeApplyError } from './apply-upload.js';
@@ -23,6 +25,9 @@ export async function generateFile(deps: GenerationDeps, job: GenerateFileJob): 
     const prior = await deps.database.run(job.tenantId, d => d.generatedFiles.get(id));
     if (prior) return { fileId: prior.id };
     const inputs = await generationInputs(deps.database, job.tenantId, job);
+    // the inputs the API checked (preview or request time) must still be the inputs now (migration 202611100001)
+    const token = exportToken(inputs, job);
+    if (job.exportToken && job.exportToken !== token) throw new GenerationBlocked(STALE_EXPORT_MESSAGE);
     enter('round-trip');
     const { plan, warnings, ext, format } = await prepareGeneration(deps.storage, inputs, job);
     enter('serialize');
@@ -40,6 +45,9 @@ export async function generateFile(deps: GenerationDeps, job: GenerateFileJob): 
     await deps.database.run(job.tenantId, async d => {
       // Another attempt might have finished while this one was parsing. It must not overwrite its object.
       if (await d.generatedFiles.get(id)) return;
+      // Nothing the file writes may have changed while it was being made (an edit, an apply, a recompute): checked
+      // under the tenant row lock that every such writer takes, so a stale file is never stored.
+      if (exportToken(await loadGenerationInputs(d, job.marketplaceId, job.reference), job) !== token) throw new GenerationBlocked(STALE_EXPORT_MESSAGE);
       try {
         await deps.storage.put(storageKey, body, format === 'xlsx' ? XLSX_CONTENT_TYPE : 'text/csv; charset=utf-8');
         await d.generatedFiles.create({

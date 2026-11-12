@@ -252,3 +252,34 @@ describe('catalogue stock against the ERP stock (ADR 017)', () => {
     expect(countRows([r], 'erp').stock).toBe(0);
   });
 });
+
+describe('pinned export values in the comparison (migration 202611100001)', () => {
+  it('a pinned price or availability the marketplace shows raises no mismatch, for both references', () => {
+    // listed at 12, unavailable; the catalogue says 11 and available; the pins say exactly that marketplace state
+    const listed = { price: 12, available: false };
+    const before = reconcile(input({ listing: listed }), settings);
+    expect(before).toMatchObject({ status: 'mismatch', stockIssue: 'unavailable_but_in_stock', priceMismatchVsMarketplace: true, priceMismatchVsErp: true });
+    const pinned = reconcile(input({ listing: listed, pin: { price: 12, available: false } }), settings);
+    expect(pinned).toMatchObject({ status: 'in_sync', statusVsErp: 'in_sync', stockIssue: null, stockIssueVsErp: null, priceMismatchVsMarketplace: false, priceMismatchVsErp: false });
+    // the stored catalogue values themselves do not change
+    expect(pinned).toMatchObject({ marketplacePrice: 11, catalogueAvailable: true, erpAvailable: true });
+  });
+  it('a difference from the pin is a mismatch against the pin (price within the tolerance is shown)', () => {
+    expect(reconcile(input({ listing: { price: 11, available: true }, pin: { price: 12 } }), settings)).toMatchObject({ status: 'mismatch', priceMismatchVsMarketplace: true });
+    expect(reconcile(input({ listing: { price: 12.4, available: true }, pin: { price: 12 } }), { ...settings, priceTolerance: 0.5 })).toMatchObject({ priceMismatchVsMarketplace: false });
+  });
+  it('a pin that cannot be exported is ignored: the catalogue is compared again; "no" needs only a listing', () => {
+    const erpOff = product({ erpActive: false });
+    expect(reconcile(input({ product: erpOff, listing: { price: 12, available: true }, pin: { price: 12, available: true } }), settings))
+      .toMatchObject({ stockIssue: 'available_but_out_of_stock', priceMismatchVsMarketplace: true });
+    expect(reconcile(input({ product: erpOff, listing: { price: 11, available: false }, pin: { available: false } }), settings)).toMatchObject({ stockIssue: null });
+  });
+  it('computeReconRows applies a pin to its marketplace only', () => {
+    const p = { ...product(), id: 'p1', catalogueStock: 5, pricing: { erpPrice: 10, categoryId: null, subcategoryId: null, productRule: null, offers: [] } };
+    const snapshot = { defaultRule: { mode: 'same' }, rounding: 'exact', perMarketplaceEnabled: false, marketplaceRules: {} } as unknown as PricingSettingsSnapshot;
+    const listings = new Map([['talabat:p1', { price: 12, available: true }], ['snoonu:p1', { price: 12, available: true }]]);
+    const rows = computeReconRows([p], [{ marketplaceId: 'talabat', hasData: true }, { marketplaceId: 'snoonu', hasData: true }], listings,
+      { snapshot, categoryRules: [] }, settings, new Date(), new Map([['talabat:p1', { price: 12 }]]));
+    expect(rows.map(r => [r.marketplaceId, r.priceMismatchVsMarketplace])).toEqual([['talabat', false], ['snoonu', true]]);
+  });
+});

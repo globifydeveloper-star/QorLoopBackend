@@ -46,6 +46,8 @@ import { TemplatesController } from './templates/templates.controller.js';
 import { TemplatesService } from './templates/templates.service.js';
 import { CatalogueStockController } from './catalogue/catalogue-stock.controller.js';
 import { CatalogueStockService } from './catalogue/catalogue-stock.service.js';
+import { MarketplaceValuesController } from './marketplace-values/marketplace-values.controller.js';
+import { MarketplaceValuesService } from './marketplace-values/marketplace-values.service.js';
 import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
 
 @Controller()
@@ -89,14 +91,14 @@ export async function buildApp(config: Config, options: { database?: Database; c
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
   const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController],
+    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController, MarketplaceValuesController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
       { provide: READINESS, useValue: () => checkReadiness(() => database.ping(), options.redisHealth ?? (() => {
         if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
         return queueRedis.ping();
       }), () => storage.check()) },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },

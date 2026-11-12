@@ -20,6 +20,17 @@ const previewSchema = {
     firstRows: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean', 'null'] } } },
     sourceFile: { type: 'object', properties: { name: { type: 'string' }, uploadedAt: date } },
     warnings: { type: 'array', items: { type: 'string' } }, referenceUsed: { type: 'string', enum: ['erp', 'marketplace'] },
+    valueBasis: { type: 'string', enum: ['export_values'], description: 'An export value in effect is written in every file; otherwise the reference value' },
+    exportToken: { type: 'string', description: 'Send with the generate request: 409 when what the file writes changed since this preview' },
+    exportValueProducts: { ...count, description: 'Written products whose price or availability is an export value' },
+    blockedExportProducts: { ...count, description: 'Products with an export value that cannot be written (the reference value is written)' },
+    fromOlderFile: { ...count, description: 'Selected products whose listing came from an older marketplace file than the source file' },
+  },
+};
+const jobsSchema = {
+  type: 'object', properties: {
+    jobs: { type: 'array', items: { type: 'object', properties: { marketplaceId: { type: 'string' }, jobId: { type: 'string' } } } },
+    blocked: { type: 'array', items: { type: 'object', properties: { marketplaceId: { type: 'string' }, message: { type: 'string' } } } },
   },
 };
 const historySchema = {
@@ -49,11 +60,16 @@ export class GeneratedFilesController {
   generate(@Req() req: AppRequest, @Body(new ZodPipe(dto.generateMarketplaceFile)) input: z.infer<typeof dto.generateMarketplaceFile>) {
     return this.files.generate(context(req, this.config), input);
   }
+  @Post('batch') @HttpCode(202) @Access({ permission: 'files.generate' })
+  @Contract('Queue the updated files of several marketplaces at once (default: every enabled one, e.g. Talabat and Snoonu); poll each jobId', dto.generateMarketplaceFiles, jobsSchema, 202)
+  generateMany(@Req() req: AppRequest, @Body(new ZodPipe(dto.generateMarketplaceFiles)) input: z.infer<typeof dto.generateMarketplaceFiles>) {
+    return this.files.generateMany(context(req, this.config), input);
+  }
   @Get('jobs/:jobId') @Access({ permission: 'files.view' })
   @Contract('Generation job state (queued, running, done or failed); completed jobs include fileId', undefined, {
     type: 'object', required: ['state'], properties: { state: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, fileId: { type: 'string', format: 'uuid' }, message: { type: 'string' } },
   })
-  job(@Req() req: AppRequest, @Param('jobId', new ZodPipe(z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/))) jobId: string) {
+  job(@Req() req: AppRequest, @Param('jobId', new ZodPipe(dto.generationJobIdParam)) jobId: string) {
     return this.files.job(context(req, this.config), jobId);
   }
   @Get() @Access({ permission: 'files.view' })

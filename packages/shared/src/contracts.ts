@@ -8,6 +8,7 @@ import { CONFLICT_CHOICES, STOCK_MAX, STOCK_REASON_MAX } from '../../core/src/ca
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
+import { EXPORT_STATES, MARKETPLACE_PRICE_MAX, MARKETPLACE_REASON_MAX, MARKETPLACE_VALUE_FIELDS } from '../../core/src/marketplace-values.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
@@ -234,12 +235,28 @@ export const reconRowsQuery = z.object({
   cursor: z.string().max(200).optional(),
 }).strict();
 
+/** Path-parameter limit of the API router (Fastify's default maxParamLength); longer ids get 414 before validation. */
+export const GENERATION_JOB_ID_MAX = 100;
+/** jobId in GET /api/generated-files/jobs/:jobId, as generationJobId writes it (`generate-<tenantId>-<32 hex>`). */
+export const generationJobIdParam = z.string().min(1).max(GENERATION_JOB_ID_MAX).regex(/^[A-Za-z0-9_-]+$/);
 // Preview and generation intentionally take the same strict input.
+const exportTokenValue = z.string().regex(/^[a-f0-9]{64}$/);
 export const generateMarketplaceFile = z.object({
   marketplaceId: z.enum(MARKETPLACES),
   kind: z.enum(['stock', 'price', 'stock_price']),
   scope: z.enum(['mismatches', 'all']).default('mismatches'),
   reference: reconReference.optional(),
+  /** exportToken from the preview: 409 when what the file would write changed since (preview ignores it). */
+  exportToken: exportTokenValue.optional(),
+}).strict();
+/** One request for the updated files of several marketplaces (default: every enabled one, e.g. Talabat and Snoonu). */
+export const generateMarketplaceFiles = z.object({
+  marketplaceIds: z.array(z.enum(MARKETPLACES)).min(1).max(MARKETPLACES.length).refine(m => new Set(m).size === m.length, 'List each marketplace once').optional(),
+  kind: z.enum(['stock', 'price', 'stock_price']).default('stock_price'),
+  scope: z.enum(['mismatches', 'all']).default('mismatches'),
+  reference: reconReference.optional(),
+  /** exportToken per marketplace from its preview; a marketplace whose values moved is reported, not generated. */
+  exportTokens: z.partialRecord(z.enum(MARKETPLACES), exportTokenValue).optional(),
 }).strict();
 
 // ───────── ERP change review & catalogue stock (ADR 017) ─────────
@@ -296,3 +313,58 @@ const conflictShape = {
 };
 export const conflictsResolvePreview = z.object(conflictShape).strict();
 export const conflictsResolveApply = z.object({ ...conflictShape, ...idempotency }).strict();
+
+// ───────── Marketplace export values and the Review screen (migration 202611100001) ─────────
+const valueField = z.enum(MARKETPLACE_VALUE_FIELDS);
+const reviewFilterShape = {
+  /** needs_change (default): blocked, waiting for export or to fix; all: every row of the marketplace. */
+  show: z.enum(['needs_change', 'all']).default('needs_change'),
+  /** Exactly this state (of the row, or of `field`); takes precedence over show. */
+  exportState: z.enum(EXPORT_STATES).optional(),
+  /** Judge show / exportState on availability or price only. */
+  field: valueField.optional(),
+  categoryId: z.uuid().optional(),
+  subcategoryId: z.uuid().optional(),
+};
+export const marketplaceReviewQuery = z.object({
+  marketplaceId: z.enum(MARKETPLACES),
+  ...reviewFilterShape,
+  /** Name contains, SKU equals, barcode starts with (as the product list). */
+  q: z.string().trim().max(200).optional().transform(v => v || undefined),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().max(200).optional(),
+}).strict();
+const exportPrice = threeDecimals(z.number().gt(0).max(MARKETPLACE_PRICE_MAX));
+/** persistent: false (default) = fix once, cleared by a later matching upload; true = pinned, cleared only by the manager. */
+export const marketplaceSetValues = z.object({
+  availability: z.object({ value: z.boolean(), persistent: z.boolean().optional() }).strict().optional(),
+  price: z.object({ value: exportPrice, persistent: z.boolean().optional() }).strict().optional(),
+}).strict().refine(v => v.availability !== undefined || v.price !== undefined, 'Set availability, price or both');
+const valueReason = z.string().trim().max(MARKETPLACE_REASON_MAX).optional().transform(v => v || null);
+/** The export value as last read: { id, version } of its row, or null when the product had none (409 when it moved). */
+const valueVersion = z.object({ id: z.uuid(), version: z.number().int().min(1) }).strict().nullable();
+export const setMarketplaceValues = z.object({ values: marketplaceSetValues, reason: valueReason, expected: valueVersion }).strict();
+export const clearMarketplaceValuesQuery = z.object({
+  fields: z.enum(['availability', 'price', 'all']).default('all'),
+  /** The row as last read; required when the product has an export value (409 when it moved). */
+  expectedId: z.uuid().optional(),
+  expectedVersion: z.coerce.number().int().min(1).optional(),
+}).strict().refine(v => (v.expectedId === undefined) === (v.expectedVersion === undefined), { message: 'Give expectedId and expectedVersion together', path: ['expectedVersion'] });
+const marketplaceSelection = z.union([
+  z.object({ productIds: z.array(z.uuid()).min(1).max(BULK_PRODUCT_IDS_MAX) }).strict(),
+  /** Every row of the Review list with this filter (the screen's current filter); at most MARKETPLACE_VALUES_BULK_LIMIT. */
+  z.object({ filter: z.object({ ...reviewFilterShape, q: z.string().trim().min(1).max(200).optional() }).strict() }).strict(),
+]);
+export const marketplaceValueAction = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('set'), values: marketplaceSetValues }).strict(),
+  /** "Use catalogue values": removes the export value of these fields; the file writes the current catalogue value. */
+  z.object({ type: z.literal('use_catalogue'), fields: z.array(valueField).min(1).max(2).refine(f => new Set(f).size === f.length, 'List each field once') }).strict(),
+]);
+const marketplaceBulkShape = { marketplaceId: z.enum(MARKETPLACES), selection: marketplaceSelection, action: marketplaceValueAction, reason: valueReason };
+export const marketplaceValuesBulkPreview = z.object(marketplaceBulkShape).strict();
+export const marketplaceValuesBulkApply = z.object({
+  ...marketplaceBulkShape,
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
+  /** Required: the previewToken of the preview the manager confirmed; 409 when the re-planned writes differ. */
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();

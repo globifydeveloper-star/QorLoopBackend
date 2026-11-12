@@ -623,9 +623,9 @@ describe('confirm and apply', () => {
       expect(await h.fixture.prisma.listing.count({ where: { tenantId: s.id, marketplaceId: 'talabat' } })).toBe(1);
       // listings are summarised per apply, not per row; products are untouched
       expect((await events(s, 'upload.applied')).map(e => e.details)).toEqual([
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 2, uploadId: first },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 0, uploadId: partial },
-        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 1, uploadId: full },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 3, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 2, exportValuesCleared: 0, uploadId: first },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 1, listingsRemoved: 0, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 0, exportValuesCleared: 0, uploadId: partial },
+        { created: 0, updated: 0, flagged: 0, listingsUpserted: 2, listingsRemoved: 1, skipped: 0, matchedAtApply: 1, unmatchedAtApply: 1, exportValuesCleared: 0, uploadId: full },
       ]);
       expect(await events(s, 'product.field_changed')).toHaveLength(0);
       expect((await product(s, '6281000000011')).erpPrice.toNumber()).toBe(1.5);

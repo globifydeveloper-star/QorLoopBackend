@@ -46,6 +46,28 @@ export interface ReconInput {
   hasData: boolean;
   /** The resolved Marketplace price (pricing engine, with this marketplace's step) and the rule step that chose it. */
   marketplacePrice: { price: number; source: PriceSource };
+  /**
+   * A pinned export value in effect (migration 202611100001, see pinInEffect): the comparison target of that field for
+   * both references, instead of the catalogue or ERP value. The stored catalogue values themselves do not change.
+   */
+  pin?: ReconPin;
+}
+
+/** Pending pinned export values of one product on one marketplace. */
+export interface ReconPin { available?: boolean; price?: number }
+
+/**
+ * The part of a pin that the comparison uses: a pin of a product that cannot be exported (blocked) is ignored and the
+ * catalogue is compared again, as the Review shows it. "No" needs only a listing; "yes" and a price also need an
+ * active, ERP-active product in the latest ERP file (owner decision D).
+ */
+export function pinInEffect(product: Pick<ReconProduct, 'status' | 'erpActive' | 'inLatestErpFile'>, pin: ReconPin | undefined): ReconPin | undefined {
+  if (!pin) return undefined;
+  const eligible = product.status === 'active' && product.erpActive && product.inLatestErpFile;
+  const out: ReconPin = {};
+  if (pin.available !== undefined && (pin.available === false || eligible)) out.available = pin.available;
+  if (pin.price !== undefined && eligible) out.price = pin.price;
+  return out.available === undefined && out.price === undefined ? undefined : out;
 }
 
 export interface ReconResult {
@@ -122,10 +144,12 @@ export function reconcile(input: ReconInput, settings: ReconSettings): ReconResu
   } else {
     // 5. compare price and availability, each against its own reference: the catalogue (expected price, catalogue
     //    stock) and the ERP (ERP price, ERP stock)
-    stockIssue = stockIssueOf(availableInCatalogue, listing.available);
-    stockIssueVsErp = stockIssueOf(available, listing.available);
-    priceMismatchVsErp = priceMismatch(listing.price, product.erpPrice, settings.priceTolerance);
-    priceMismatchVsMarketplace = priceMismatch(listing.price, marketplacePrice.price, settings.priceTolerance);
+    //    A pinned export value in effect replaces the target of its field for both references.
+    const pin = pinInEffect(product, input.pin);
+    stockIssue = stockIssueOf(pin?.available ?? availableInCatalogue, listing.available);
+    stockIssueVsErp = stockIssueOf(pin?.available ?? available, listing.available);
+    priceMismatchVsErp = priceMismatch(listing.price, pin?.price ?? product.erpPrice, settings.priceTolerance);
+    priceMismatchVsMarketplace = priceMismatch(listing.price, pin?.price ?? marketplacePrice.price, settings.priceTolerance);
     status = stockIssue || priceMismatchVsMarketplace ? 'mismatch' : 'in_sync';
     statusVsErp = stockIssueVsErp || priceMismatchVsErp ? 'mismatch' : 'in_sync';
   }

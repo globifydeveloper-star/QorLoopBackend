@@ -50,3 +50,13 @@ describe('catalogue.stock_edit (ADR 017)', () => {
     expect(hasPermission('analyst', 'catalogue.stock_edit')).toBe(false);
   });
 });
+
+describe('marketplace.values_edit (owner decision B)', () => {
+  it('Owner, Admin and Catalogue Manager may set export values; the Analyst reads only', () => {
+    expect(hasPermission('owner', 'marketplace.values_edit')).toBe(true);
+    expect(hasPermission('admin', 'marketplace.values_edit')).toBe(true);
+    expect(hasPermission('catalogue_manager', 'marketplace.values_edit')).toBe(true);
+    expect(hasPermission('analyst', 'marketplace.values_edit')).toBe(false);
+    expect(hasPermission('analyst', 'recon.view')).toBe(true);
+  });
+});
