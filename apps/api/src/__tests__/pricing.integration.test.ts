@@ -83,8 +83,9 @@ describe('pricing settings', () => {
     });
     expect(calls).toEqual([{ tenantId: a.id, reason: 'pricing.settings' }]);
     const changed = await events(a, 'pricing.settings_changed');
-    // compareReferenceDefault was sent unchanged: no event for it
-    expect(changed.map(e => e.details)).toEqual([
+    // compareReferenceDefault was sent unchanged: no event for it.
+    // Both events come from one request and may share a timestamp: compare them in field order.
+    expect(changed.map(e => e.details as { field: string }).sort((x, y) => x.field.localeCompare(y.field))).toEqual([
       { field: 'defaultRule', old: { mode: 'same' }, new: { mode: 'percent', value: 10 } },
       { field: 'rounding', old: 'exact', new: '0.25' },
     ]);
@@ -108,9 +109,11 @@ describe('pricing settings', () => {
     ]);
     r = await put('/api/pricing/settings', manager, { marketplaceRules: [{ marketplaceId: 'talabat', mode: 'amount', value: 1, rounding: 'exact' }] });
     expect(r.json().data.marketplaceRules).toEqual([{ marketplaceId: 'talabat', mode: 'amount', value: 1, rounding: 'exact' }]);
-    expect((await events(a, 'pricing.marketplace_rule_set')).map(e => e.details)).toEqual([
-      { marketplaceId: 'talabat', old: null, new: { mode: 'percent', value: 15, rounding: '0.25' } },
+    const ruleSet = (await events(a, 'pricing.marketplace_rule_set')).map(e => e.details as { marketplaceId: string });
+    // the first two come from one request and may share a timestamp: compare them in marketplace order
+    expect([...ruleSet.slice(0, 2).sort((x, y) => x.marketplaceId.localeCompare(y.marketplaceId)), ...ruleSet.slice(2)]).toEqual([
       { marketplaceId: 'snoonu', old: null, new: { mode: 'same', rounding: 'exact' } },
+      { marketplaceId: 'talabat', old: null, new: { mode: 'percent', value: 15, rounding: '0.25' } },
       { marketplaceId: 'talabat', old: { mode: 'percent', value: 15, rounding: '0.25' }, new: { mode: 'amount', value: 1, rounding: 'exact' } },
     ]);
     expect((await events(a, 'pricing.marketplace_rule_deleted')).map(e => e.details)).toEqual([{ marketplaceId: 'snoonu', old: { mode: 'same', rounding: 'exact' } }]);
