@@ -107,8 +107,6 @@ export async function buildApp(config: Config, options: { database?: Database; c
   })
   class ApiModule {}
   const adapter = new FastifyAdapter({
-    // Generation job IDs include a tenant UUID, choices and an export fingerprint. Match the route validator.
-    routerOptions: { maxParamLength: 200 },
     bodyLimit: 32 * 1024, trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
     logger: options.logger === false ? false : {
       level: 'info',
