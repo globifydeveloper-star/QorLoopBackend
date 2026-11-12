@@ -1,7 +1,7 @@
 import { Prisma } from './generated/client.js';
 import {
   EXPORT_STATES, NEEDS_CHANGE_STATES, exportStateRank,
-  type ExportState, type MarketplaceValueField, type PlanTarget, type PlannedChange, type StoredField, type StoredOverride,
+  type CopyTarget, type ExportState, type MarketplaceValueField, type PlannedChange, type SourceListing, type StoredField, type StoredOverride,
 } from '../../core/src/marketplace-values.js';
 import type { ProductFilter } from './products.js';
 
@@ -188,14 +188,19 @@ export class MarketplaceValuesRepository {
    * What the planner needs of each product, from live data (not the stored recon): listed = a listing of this
    * marketplace matched to the product now; the eligibility gates; the stored export value. Absent ids are not returned.
    */
-  async targets(productIds: string[], marketplaceId: string): Promise<(PlanTarget & { nameEn: string; barcode: string })[]> {
+  async targets(productIds: string[], marketplaceId: string): Promise<(CopyTarget & { nameEn: string; barcode: string })[]> {
     if (!productIds.length) return [];
-    const rows = await this.tx.$queryRaw<({ id: string; name_en: string; barcode: string; status: string; erp_active: boolean; in_latest_erp_file: boolean; listed: boolean } & OverrideColumns)[]>`
+    const rows = await this.tx.$queryRaw<({
+      id: string; name_en: string; barcode: string; status: string; erp_active: boolean; in_latest_erp_file: boolean; listed: boolean;
+      has_recon: boolean; catalogue_available: boolean | null; marketplace_price: number | null;
+    } & OverrideColumns)[]>`
       SELECT p.id, p.name_en, p.barcode, p.status, p.erp_active, p.in_latest_erp_file,
              EXISTS (SELECT 1 FROM listings l WHERE l.tenant_id = p.tenant_id AND l.marketplace_id = ${marketplaceId} AND l.product_id = p.id) AS listed,
+             r.product_id IS NOT NULL AS has_recon, r.catalogue_available, r.marketplace_price::float8 AS marketplace_price,
              ${OVERRIDE_COLUMNS}
       FROM products p
       LEFT JOIN marketplace_value_overrides o ON o.tenant_id = p.tenant_id AND o.product_id = p.id AND o.marketplace_id = ${marketplaceId}
+      LEFT JOIN recon_rows r ON r.tenant_id = p.tenant_id AND r.product_id = p.id AND r.marketplace_id = ${marketplaceId}
       WHERE p.tenant_id = ${this.tenantId}::uuid AND p.id = ANY(${productIds}::uuid[])`;
     const by = new Map(rows.map(r => [r.id, r]));
     // in the order given: the plan (and so the preview token) is the same for the same request
@@ -204,8 +209,28 @@ export class MarketplaceValuesRepository {
       return r ? [{
         productId: r.id, nameEn: r.name_en, barcode: r.barcode, listed: r.listed,
         product: { status: r.status, erpActive: r.erp_active, inLatestErpFile: r.in_latest_erp_file }, override: storedOverride(r),
+        // what A's next file writes without an export value (the stored comparison's catalogue values, as Review's `export`)
+        catalogue: r.has_recon ? { available: r.catalogue_available, price: r.marketplace_price } : null,
       }] : [];
     });
+  }
+
+  /**
+   * The current listing of each given product on the SOURCE marketplace, picked as the comparison picks it
+   * (ReconRepository.listings: newest, then marketplace product id), with the file it came from. Live, not the stored recon.
+   */
+  async sourceListings(sourceMarketplaceId: string, productIds: string[]): Promise<Map<string, SourceListing>> {
+    if (!productIds.length) return new Map();
+    const rows = await this.tx.$queryRaw<{ product_id: string; available: boolean; price: number; upload_id: string | null; file_name: string | null }[]>`
+      SELECT l.product_id, l.available, l.price::float8 AS price, l.upload_id, u.file_name
+      FROM (
+        SELECT DISTINCT ON (product_id) product_id, available, price, upload_id
+        FROM listings
+        WHERE tenant_id = ${this.tenantId}::uuid AND marketplace_id = ${sourceMarketplaceId} AND product_id = ANY(${productIds}::uuid[])
+        ORDER BY product_id, updated_at DESC, marketplace_product_id
+      ) l
+      LEFT JOIN uploads u ON u.tenant_id = ${this.tenantId}::uuid AND u.id = l.upload_id`;
+    return new Map(rows.map(r => [r.product_id, { available: r.available, price: r.price, uploadId: r.upload_id, fileName: r.file_name }]));
   }
 
   /**

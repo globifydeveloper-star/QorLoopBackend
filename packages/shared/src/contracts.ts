@@ -379,6 +379,15 @@ export const marketplaceValueAction = z.discriminatedUnion('type', [
   z.object({ type: z.literal('set'), values: marketplaceSetValues }).strict(),
   /** "Use catalogue values": removes the export value of these fields; the file writes the current catalogue value. */
   z.object({ type: z.literal('use_catalogue'), fields: z.array(valueField).min(1).max(2).refine(f => new Set(f).size === f.length, 'List each field once') }).strict(),
+  /**
+   * "Copy from marketplace": these fields take the source marketplace's current listing values (catalogue unchanged).
+   * persistent: false (default) = fix once, true = pinned. replacePins: false (default) keeps the target's pinned fields.
+   */
+  z.object({
+    type: z.literal('copy_from_marketplace'), sourceMarketplaceId: z.enum(MARKETPLACES),
+    fields: z.array(valueField).min(1).max(2).refine(f => new Set(f).size === f.length, 'List each field once'),
+    persistent: z.boolean().optional(), replacePins: z.boolean().optional(),
+  }).strict(),
 ]);
 const marketplaceBulkShape = { marketplaceId: z.enum(MARKETPLACES), selection: marketplaceSelection, action: marketplaceValueAction, reason: valueReason };
 export const marketplaceValuesBulkPreview = z.object(marketplaceBulkShape).strict();

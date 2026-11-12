@@ -11,8 +11,9 @@ import { MARKETPLACE_LABELS } from '../../../../packages/core/src/price-change.j
 import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
 import {
   BLOCKED_REASON_LABELS, EXPORT_STATES, MARKETPLACE_VALUES_BULK_LIMIT, SET_BLOCK_REASONS,
-  marketplaceValuesPlanSignature, planMarketplaceValues, reviewRow,
-  type FieldChange, type MarketplaceValueAction, type MarketplaceValueField, type MarketplaceValuePlan, type PlannedChange, type StoredField,
+  marketplaceValuesPlanSignature, planCopyFromMarketplace, planMarketplaceValues, reviewRow,
+  type CopyPlan, type FieldChange, type MarketplaceValueAction, type MarketplaceValueField, type MarketplaceValuePlan, type NotOnSourceReason,
+  type PlannedChange, type SourceListing, type StoredField,
 } from '../../../../packages/core/src/marketplace-values.js';
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
@@ -119,11 +120,21 @@ export const VALUE_CHANGE_COLUMNS = ['productId', 'field', 'op', 'oldValue', 'ol
 const changeEntries = (c: PlannedChange) => c.fields.map(f => [c.productId, f.field, f.op, f.before?.value ?? null, f.before?.state ?? null, f.before?.persistent ?? null, f.after.value, f.after.state, f.after.persistent]);
 const fieldDetails = (f: FieldChange) => ({ field: f.field, op: f.op, before: f.before, after: f.after });
 
-function counts(plan: MarketplaceValuePlan, selected: number) {
+const NOT_ON_SOURCE_LABELS: Record<NotOnSourceReason, string> = {
+  not_on_source: 'Not listed on the marketplace copied from', source_price_invalid: 'Price on the marketplace copied from is outside 0.001 to 100,000 QAR',
+};
+
+/** selected = willChange + unchanged + blocked + notOnSource + pinnedKept (the last two are 0 unless copying). */
+function counts(plan: MarketplaceValuePlan | CopyPlan, selected: number) {
   const blockedByReason = (Object.keys(plan.blocked) as (keyof MarketplaceValuePlan['blocked'])[])
     .filter(k => plan.blocked[k] > 0).map(reason => ({ reason, label: SET_BLOCK_LABELS[reason], count: plan.blocked[reason] }));
+  const copy = 'copy' in plan ? plan.copy : null;
+  const notOnSourceByReason = copy ? (Object.keys(copy.notOnSource) as NotOnSourceReason[])
+    .filter(k => copy.notOnSource[k] > 0).map(reason => ({ reason, label: NOT_ON_SOURCE_LABELS[reason], count: copy.notOnSource[reason] })) : [];
   return {
     selected, willChange: plan.changes.length, unchanged: plan.unchanged, blocked: blockedByReason.reduce((n, b) => n + b.count, 0), blockedByReason,
+    notOnSource: notOnSourceByReason.reduce((n, b) => n + b.count, 0), notOnSourceByReason,
+    pinnedKept: copy?.pinnedKept ?? 0, fromOlderFile: copy?.fromOlderFile ?? 0,
   };
 }
 
@@ -226,7 +237,18 @@ export class MarketplaceValuesService {
   /** The selected products (explicit ids, or the Review list with a filter, in list order) and the plan; reads only. */
   private async planBulk(data: TenantData, input: BulkInput) {
     const c = await reviewContext(data, input.marketplaceId);
-    if (input.action.type === 'set' && !c.marketplaceEnabled) throw invalid('marketplaceId', `${MARKETPLACE_LABELS[input.marketplaceId]} is not enabled for this store`);
+    const { action } = input;
+    if (action.type !== 'use_catalogue' && !c.marketplaceEnabled) throw invalid('marketplaceId', `${MARKETPLACE_LABELS[input.marketplaceId]} is not enabled for this store`);
+    // copy: the source must be another enabled marketplace with an applied file (its listings are the values copied)
+    let source: { marketplaceId: MarketplaceId; latestFile: { uploadId: string; fileName: string; uploadedAt: Date; appliedAt: Date | null } } | null = null;
+    if (action.type === 'copy_from_marketplace') {
+      const src = action.sourceMarketplaceId;
+      if (src === input.marketplaceId) throw invalid('action.sourceMarketplaceId', 'Choose another marketplace to copy from');
+      if (!c.enabled.includes(src)) throw invalid('action.sourceMarketplaceId', `${MARKETPLACE_LABELS[src]} is not enabled for this store`);
+      const latest = await data.generatedFiles.latestApplied(src);
+      if (!latest) throw invalid('action.sourceMarketplaceId', `${MARKETPLACE_LABELS[src]} has no applied file yet; upload one before copying its values`);
+      source = { marketplaceId: src, latestFile: { uploadId: latest.id, fileName: latest.fileName, uploadedAt: latest.createdAt, appliedAt: latest.appliedAt } };
+    }
     let ids: string[];
     let selected: number;
     if ('productIds' in input.selection) {
@@ -241,21 +263,36 @@ export class MarketplaceValuesService {
       throw invalid('selection', `This selection has ${selected.toLocaleString('en-US')} products; one change can cover at most ${MARKETPLACE_VALUES_BULK_LIMIT.toLocaleString('en-US')}. Narrow the filter.`);
     }
     const targets = await data.marketplaceValues.targets(ids, input.marketplaceId);
-    const plan = planMarketplaceValues(targets, ids.length - targets.length, input.action as MarketplaceValueAction, input.reason);
+    let plan: MarketplaceValuePlan | CopyPlan;
+    let listings: Map<string, SourceListing> | null = null;
+    let reason = input.reason;
+    if (action.type === 'copy_from_marketplace' && source) {
+      listings = await data.marketplaceValues.sourceListings(source.marketplaceId, targets.map(t => t.productId));
+      reason ??= `Copied from ${MARKETPLACE_LABELS[source.marketplaceId]}`;
+      plan = planCopyFromMarketplace(targets, ids.length - targets.length, listings, source.latestFile.uploadId, action, reason);
+    } else {
+      plan = planMarketplaceValues(targets, ids.length - targets.length, action as MarketplaceValueAction, reason);
+    }
     const labels = new Map(targets.map(t => [t.productId, t]));
-    const rows = plan.changes.slice(0, PREVIEW_ROWS).map(ch => ({
-      productId: ch.productId, nameEn: labels.get(ch.productId)!.nameEn, barcode: labels.get(ch.productId)!.barcode, changes: ch.fields.map(fieldDetails),
-    }));
-    return { plan, selected, rows, previewToken: sha(marketplaceValuesPlanSignature(plan)) };
+    const rows = plan.changes.slice(0, PREVIEW_ROWS).map(ch => {
+      const l = listings?.get(ch.productId);
+      return {
+        productId: ch.productId, nameEn: labels.get(ch.productId)!.nameEn, barcode: labels.get(ch.productId)!.barcode,
+        // copy only: the source listing the value comes from, and whether it is from the source's latest applied file
+        ...(l ? { source: { available: l.available, price: l.price, uploadId: l.uploadId, fileName: l.fileName, isLatestFile: l.uploadId === source!.latestFile.uploadId } } : {}),
+        changes: ch.fields.map(fieldDetails),
+      };
+    });
+    return { plan, selected, rows, source, reason, previewToken: sha(marketplaceValuesPlanSignature(plan)) };
   }
 
   /** What a bulk change would do now: counts, blocked reasons, the first rows and the token apply requires. */
   bulkPreview(ctx: RequestContext, input: BulkInput) {
     return this.auth.authenticated(ctx, { permission: 'marketplace.values_edit', mutation: true }, async data => {
-      const { plan, selected, rows, previewToken } = await this.planBulk(data, input);
+      const { plan, selected, rows, source, reason, previewToken } = await this.planBulk(data, input);
       return {
-        marketplaceId: input.marketplaceId, selection: input.selection, action: input.action, reason: input.reason, limit: MARKETPLACE_VALUES_BULK_LIMIT,
-        ...counts(plan, selected), rows, previewToken,
+        marketplaceId: input.marketplaceId, selection: input.selection, action: input.action, reason, limit: MARKETPLACE_VALUES_BULK_LIMIT,
+        source, ...counts(plan, selected), rows, previewToken,
       };
     });
   }
@@ -275,18 +312,20 @@ export class MarketplaceValuesService {
         if (d?.requestHash !== hash) throw new ConflictException('This idempotency key was already used for a different change');
         return { result: { operationId: prior.id, replayed: true, appliedAt: prior.createdAt, ...d.result }, changes: [] as PlannedChange[] };
       }
-      const { plan, selected, previewToken } = await this.planBulk(data, input);
+      const { plan, selected, source, reason, previewToken } = await this.planBulk(data, input);
       if (expectedToken !== previewToken) throw new ConflictException('The selected products or their export values changed since the preview; preview again before applying');
       await data.marketplaceValues.write(input.marketplaceId, p.user.id, plan.changes);
       const result = {
-        marketplaceId: input.marketplaceId, ...counts(plan, selected),
+        marketplaceId: input.marketplaceId, sourceMarketplaceId: source?.marketplaceId ?? null, ...counts(plan, selected),
         created: plan.changes.filter(c => c.overrideId === null).length,
         updated: plan.changes.filter(c => c.overrideId !== null && c.fields.some(f => f.op === 'set')).length,
         clearedFields: plan.changes.reduce((n, c) => n + c.fields.filter(f => f.op === 'clear').length, 0),
       };
       const event = await data.event('marketplace.values_bulk_applied', p.user.id, null, ctx.requestId, {
         idempotencyKey, requestHash: hash, previewToken, marketplaceId: input.marketplaceId,
-        selection: input.selection as Prisma.InputJsonObject, action: input.action as Prisma.InputJsonObject, reason: input.reason,
+        // copy: the marketplace and file the values came from
+        sourceMarketplaceId: source?.marketplaceId ?? null, sourceUploadId: source?.latestFile.uploadId ?? null,
+        selection: input.selection as Prisma.InputJsonObject, action: input.action as Prisma.InputJsonObject, reason,
         result: result as unknown as Prisma.InputJsonObject, changeColumns: [...VALUE_CHANGE_COLUMNS], changes: plan.changes.flatMap(changeEntries),
       });
       return { result: { operationId: event.id, replayed: false, appliedAt: event.createdAt, ...result }, changes: plan.changes };
