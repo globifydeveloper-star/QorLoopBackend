@@ -59,14 +59,11 @@ export const productListQuery = z.object({
   subcategoryId: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(1000).optional(),
-<<<<<<< Updated upstream
   /** Adds each product's values on this marketplace (must be enabled for the store). */
   marketplaceId: z.enum(MARKETPLACES).optional(),
   /** Only with marketplaceId. */
   marketplaceStatus: z.enum(MARKETPLACE_STATUS_FILTERS).optional(),
 }).strict().refine(q => !q.marketplaceStatus || q.marketplaceId, { path: ['marketplaceStatus'], message: 'marketplaceStatus needs marketplaceId' });
-=======
-}).strict();
 /** Offers currently setting the price of active catalogue products. */
 export const activeOffersQuery = z.object({
   page: z.coerce.number().int().min(1).max(10_000).default(1),
@@ -82,7 +79,6 @@ export const marketplaceListingsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 }).strict();
 
->>>>>>> Stashed changes
 export const updateProduct = z.object({
   nameAr: z.string().trim().max(200).transform(v => v || null).optional(),
   categoryId: z.uuid().nullable().optional(),

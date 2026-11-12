@@ -1,8 +1,5 @@
 import { Prisma } from './generated/client.js';
-<<<<<<< Updated upstream
 import type { MarketplaceStatusFilter } from '../../core/src/products/marketplace-view.js';
-=======
->>>>>>> Stashed changes
 
 type Tx = Prisma.TransactionClient;
 
@@ -198,7 +195,6 @@ export class ProductRepository {
   labels(ids: string[]) {
     return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, select: { id: true, nameEn: true, barcode: true } });
   }
-<<<<<<< Updated upstream
   /**
    * A list page's values on one marketplace in one statement: per product id the winning listing (index
    * listings(tenant_id, marketplace_id, product_id); the same choice as recon), its upload (primary key) and the
@@ -223,7 +219,6 @@ export class ProductRepository {
       },
     }]));
   }
-=======
   /** All actual listings of one marketplace, including unmatched and in-sync products. */
   async marketplaceListings(f: {
     marketplaceId: string; q?: string; barcodePrefix?: string;
@@ -255,7 +250,6 @@ export class ProductRepository {
     return { rows, total: count?.n ?? 0, latestUpload };
   }
 
->>>>>>> Stashed changes
   listings(productId: string) {
     return this.tx.listing.findMany({
       where: { tenantId: this.tenantId, productId }, orderBy: [{ marketplaceId: 'asc' }, { marketplaceProductId: 'asc' }],
