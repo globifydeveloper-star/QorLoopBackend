@@ -1,11 +1,15 @@
 # Backup of the development database, and (fallback revert of a bulk price change) restore of the product rules only.
-#   Backup:  powershell -ExecutionPolicy Bypass -File scripts\dev\db-backup.ps1
+#   Backup:  powershell -ExecutionPolicy Bypass -File scripts\dev\db-backup.ps1 [-Label before-reset]
+#            -Label names the file qorloop-<label>-<timestamp>.dump (default before-bulk). reset-store-data.mjs accepts
+#            any *.dump in the backup folder that is under 30 minutes old.
 #   Restore: powershell -ExecutionPolicy Bypass -File scripts\dev\db-backup.ps1 -RestoreRulesFrom <the .dump file>
 # DATABASE_URL is read from .env by database-url.ps1 (no [Uri]); nothing is printed: pg_dump, pg_restore and psql get
 # --host --port --username --dbname and the password through PGPASSWORD in this process only.
 param(
     [string]$EnvFile = (Join-Path $PSScriptRoot '..\..\.env'),
     [string]$BackupDir = 'D:\Qorloop-test\backups',
+    [ValidatePattern('^[a-z0-9][a-z0-9-]{0,39}$')]
+    [string]$Label = 'before-bulk',
     [string]$RestoreRulesFrom = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -16,7 +20,7 @@ Invoke-WithDatabase $EnvFile {
     param($conn)
     if (-not $RestoreRulesFrom) {
         $null = New-Item -ItemType Directory -Path $BackupDir -Force
-        $out = Join-Path $BackupDir ("qorloop-before-bulk-{0}.dump" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $out = Join-Path $BackupDir ("qorloop-{0}-{1}.dump" -f $Label, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         & pg_dump @conn --format=custom --no-owner "--file=$out"
         if ($LASTEXITCODE -ne 0) { throw "pg_dump failed (exit $LASTEXITCODE)." }
         $tables = & pg_restore --list $out | Select-String 'TABLE DATA public (products|product_price_rules|audit_events|recon_rows) '
