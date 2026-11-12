@@ -11,7 +11,9 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
     'template.updated',
     // catalogue stock (ADR 017)
     'product.stock_set', 'product.stock_reset', 'product.stock_conflict', 'product.stock_conflict_resolved',
-    'catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved'],
+    'catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved',
+    // per-marketplace export values (migration 202611100001)
+    'product.marketplace_values_set', 'product.marketplace_values_cleared', 'marketplace.values_bulk_applied', 'marketplace.values_upload_cleared'],
   catalogue: ['products.activated', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
   team_security: ['settings.changed', 'store.provisioned', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
@@ -145,6 +147,8 @@ export function presentActivity(action: string, details: unknown, options: { pro
       'auth.recovery_failed': 'Recovery-code verification failed', 'auth.recovery_used': 'Recovery code used',
       'recon.recompute_requested': 'Reconciliation requested', 'recon.failed': 'Reconciliation failed',
       'file.generated': 'Marketplace file generated', 'file.generation_failed': 'Marketplace file generation failed',
+      'product.marketplace_values_set': 'Marketplace export value set', 'product.marketplace_values_cleared': 'Marketplace export value removed (catalogue value used)',
+      'marketplace.values_bulk_applied': 'Marketplace export values changed in bulk', 'marketplace.values_upload_cleared': 'Export values confirmed by a marketplace file',
     };
     summary = summaries[action] ?? summary;
   }

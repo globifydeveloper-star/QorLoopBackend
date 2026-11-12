@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import type { Database, TenantData } from '../../db/src/database.js';
-import { GenerationBlocked, duplicateRowsWarning, planGeneratedFile, type GenerateParams } from '../../core/src/generated-files.js';
+import { GenerationBlocked, duplicateRowsWarning, fileValues, planGeneratedFile, selectedForFile, type GenerateParams } from '../../core/src/generated-files.js';
 import { ParseError, readSpreadsheetValues } from '../../core/src/upload/parse.js';
 import { extensionOf, inspectFile } from '../../core/src/upload/safety.js';
 import { UPLOAD_LIMITS } from '../../core/src/upload/constants.js';
@@ -13,12 +13,38 @@ import { JOB_DEFAULTS } from './queue.js';
 
 export const GENERATED_FILES_QUEUE = 'generated-files';
 export const GENERATION_FAILURE_MESSAGE = 'We could not generate this file. Please try again.';
-export interface GenerateFileJob extends GenerateParams { tenantId: string; actorId: string; requestId: string; requestedAt: string }
+export interface GenerateFileJob extends GenerateParams {
+  tenantId: string; actorId: string; requestId: string; requestedAt: string;
+  /** exportToken of the inputs the API checked (migration 202611100001): the worker refuses inputs that moved since. */
+  exportToken?: string;
+}
 export interface GenerationJobStatus { state: 'queued' | 'running' | 'done' | 'failed'; fileId?: string; message?: string }
+/**
+ * Same request in the same minute = the same job; with an exportToken, an edit within that minute makes a new one.
+ * The parameters, minute and full token are hashed so the id has a fixed length (`generate-<tenantId>-<32 hex>`,
+ * 78 characters with a UUID tenant): it travels in GET /api/generated-files/jobs/:jobId, which allows at most
+ * GENERATION_JOB_ID_MAX characters (the router's default path-parameter limit).
+ */
 export const generationJobId = (job: GenerateFileJob) => {
   const minute = Math.floor(new Date(job.requestedAt).getTime() / 60_000);
-  return `generate-${job.tenantId}-${job.marketplaceId}-${job.kind}-${job.scope}-${job.reference}-${minute}`;
+  const key = createHash('sha256').update(JSON.stringify([job.marketplaceId, job.kind, job.scope, job.reference, minute, job.exportToken ?? null])).digest('hex');
+  return `generate-${job.tenantId}-${key.slice(0, 32)}`;
 };
+export const STALE_EXPORT_MESSAGE = 'The catalogue or export values changed since this file was requested. Preview and generate it again.';
+
+/**
+ * A fingerprint of everything the file would write for these parameters: the source upload, and per row (by product)
+ * the identifier, the selection flags and the written price and availability. Preview hands it out; generation and the
+ * worker (before it stores the file, under the tenant lock) refuse inputs whose fingerprint moved.
+ */
+export function exportToken(inputs: Pick<GenerationInputs, 'upload' | 'rows' | 'referenceUsed'>, p: GenerateParams): string {
+  const rows = [...inputs.rows].sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0)).map(r => {
+    const v = fileValues(r, p);
+    return [r.productId, r.marketplaceProductId, selectedForFile(r, p) ? 1 : 0, v.price === null ? null : Math.round(v.price * 1000), v.available,
+      r.actualPrice === null ? null : Math.round(r.actualPrice * 1000), r.status];
+  });
+  return createHash('sha256').update(JSON.stringify([inputs.upload.id, inputs.referenceUsed, p.kind, p.scope, p.marketplaceId, rows])).digest('hex');
+}
 /** A stable UUID gives retries the same database row and object key without a schema change. */
 export function generatedFileId(jobId: string): string {
   const hex = createHash('sha256').update(jobId).digest('hex').slice(0, 32).split('');
@@ -77,7 +103,9 @@ export async function loadGenerationInputs(data: TenantData, marketplaceId: stri
   const settings = await data.pricing.settings();
   const referenceUsed = reference ?? (settings?.compareReferenceDefault === 'erp' ? 'erp' : 'marketplace');
   // availability and stock issue follow the reference: catalogue stock (marketplace) or ERP stock (erp), ADR 017
-  const rows = await data.generatedFiles.reconRows(marketplaceId, referenceUsed);
+  // export values in effect are written in every file (migration 202611100001); pinned prices use the store tolerance
+  const { priceTolerance } = await data.recon.settings();
+  const rows = await data.generatedFiles.reconRows(marketplaceId, referenceUsed, priceTolerance);
   if (!rows.length) throw new GenerationBlocked('This marketplace has not been reconciled yet.');
   return { upload, rows, referenceUsed };
 }

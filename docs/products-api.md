@@ -69,7 +69,7 @@ The issues are null whenever `comparison` is `not_in_file` or `not_applicable`.
 applied upload matches nothing.
 
 **Freshness.** The file values are live. The comparison is from the last recompute, so right after an upload it can lag
-by one recompute (open gap G32).
+by one recompute (open gap G37).
 
 **Later additions.** `marketplace` is an object: further fields (for example the planned export value, ADR 018
 proposal) will be added beside these without changing them. Clients must ignore unknown fields.

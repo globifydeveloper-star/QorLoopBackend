@@ -161,3 +161,20 @@ describe('marketplace round trip', () => {
     expect(generatedFileName('../Snoonu"\r\n', 'stock_price', at, '.csv')).toBe('Snoonu_Update_03Nov2026_0007.csv');
   });
 });
+
+describe('export values (migration 202611100001, owner decision C)', () => {
+  it('a pending export value is written in every file, even when the comparison is in sync; a value the marketplace shows is left alone', async () => {
+    const original = await read(await marketplaceWorkbook(talabatHeaders, talabatRows));
+    const rows = fixtureRecon().map(r => r.productId === 'p2'
+      ? { ...r, exportPrice: 4.5, exportAvailable: false, overridesPrice: true, overridesAvailability: true, pendingPrice: true, pendingAvailability: true }
+      : r.productId === 'p0' ? { ...r, exportPrice: 1.75, overridesPrice: true } : r);
+    const price = planGeneratedFile(original, talabatMapping, talabatHeaders, rows, { ...params, kind: 'price' });
+    // T0: pinned at the price the marketplace shows (no rewrite); T1: catalogue mismatch; T2: in sync but a pending 4.50
+    expect(price.rows.slice(1).map(row => [row[0], row[2]])).toEqual([['T1', '3.30'], ['T2', '4.50']]);
+    expect(price.exportValueProducts).toBe(1);
+    // the ERP-reference file writes the export value too; rows without one keep the ERP value as before
+    const erp = planGeneratedFile(original, talabatMapping, talabatHeaders, rows, { ...params, reference: 'erp' });
+    expect(erp.rows.find(row => row[0] === 'T2')!.slice(2, 4)).toEqual(['4.50', false]);
+    expect(erp.rows.find(row => row[0] === 'T1')![2]).toBe('3.00');
+  });
+});

@@ -1,7 +1,7 @@
 import type { MarketplaceId } from '../constants.js';
 import { toFils } from '../money.js';
 import { PRICE_RULE_ORDER, resolveMarketplacePrice, type CategoryRuleItem, type PricingSettingsSnapshot, type ProductPricingInput } from '../pricing.js';
-import { reconcile, type ReconListing, type ReconProduct, type ReconResult, type ReconSettings } from './status.js';
+import { reconcile, type ReconListing, type ReconPin, type ReconProduct, type ReconResult, type ReconSettings } from './status.js';
 
 export interface ReconMarketplace {
   marketplaceId: MarketplaceId;
@@ -45,6 +45,8 @@ export function computeReconRows(
   pricing: { snapshot: PricingSettingsSnapshot; categoryRules: CategoryRuleItem[] },
   settings: ReconSettings,
   now: Date,
+  /** Pending pinned export values keyed `${marketplaceId}:${productId}` (MarketplaceValuesRepository.pins). */
+  pins: ReadonlyMap<string, ReconPin> = new Map(),
 ): ReconRowResult[] {
   const rows: ReconRowResult[] = [];
   const marketplaceStep = PRICE_RULE_ORDER.indexOf('marketplace');
@@ -58,7 +60,8 @@ export function computeReconRows(
       const price = decided || !ownRule.has(m.marketplaceId)
         ? agnostic
         : resolveMarketplacePrice(p.pricing, pricing.snapshot, pricing.categoryRules, { marketplace: m.marketplaceId, now });
-      const r = reconcile({ product: p, listing: listings.get(`${m.marketplaceId}:${p.id}`) ?? null, hasData: m.hasData, marketplacePrice: price }, settings);
+      const key = `${m.marketplaceId}:${p.id}`;
+      const r = reconcile({ product: p, listing: listings.get(key) ?? null, hasData: m.hasData, marketplacePrice: price, pin: pins.get(key) }, settings);
       rows.push(Object.assign(r, { productId: p.id, marketplaceId: m.marketplaceId }));
     }
   }
