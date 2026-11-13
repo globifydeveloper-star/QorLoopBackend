@@ -9,7 +9,7 @@ import { Contract, ZodPipe } from '../http/contracts.js';
 import { ProductsService } from './products.service.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
 import { RECON_REFERENCES, STOCK_ISSUES } from '../../../../packages/core/src/recon/status.js';
-import { MARKETPLACE_COMPARISONS, MARKETPLACE_STATUS_FILTERS, PRICE_ISSUES } from '../../../../packages/core/src/products/marketplace-view.js';
+import { MARKETPLACE_COMPARISONS, MARKETPLACE_STATUS_FILTERS, MARKETPLACES_DIFFER, PRICE_ISSUES } from '../../../../packages/core/src/products/marketplace-view.js';
 
 /** Only with ?marketplaceId. An object so later fields (for example an export value) can be added beside these. */
 const marketplace = {
@@ -39,6 +39,7 @@ const product = {
     catalogueStockSource: { type: 'string', enum: ['erp', 'owner'] }, stockConflict: { type: 'boolean', description: 'An ERP stock change met the owner value; resolve it' },
     updatedAt: { type: 'string', format: 'date-time' },
     marketplace,
+    compareMarketplace: { ...marketplace, description: 'Only with compareMarketplaceId: the product on the second marketplace (same shape as marketplace)' },
   },
 };
 const tabCounts = { type: 'object', properties: Object.fromEntries(dto.productTab.options.map(t => [t, { type: 'integer' }])) };
@@ -57,6 +58,8 @@ export class ProductsController {
   @ApiQuery({ name: 'cursor', required: false, description: 'nextCursor from the previous page' })
   @ApiQuery({ name: 'marketplaceId', required: false, enum: [...MARKETPLACES], description: 'Adds a marketplace object to each product; the marketplace must be enabled for the store (else 400)' })
   @ApiQuery({ name: 'marketplaceStatus', required: false, enum: [...MARKETPLACE_STATUS_FILTERS], description: 'Only with marketplaceId; also applies to the tab counts' })
+  @ApiQuery({ name: 'compareMarketplaceId', required: false, enum: [...MARKETPLACES], description: 'Only with marketplaceId, and another marketplace: adds a compareMarketplace object (same shape as marketplace); must be enabled (else 400)' })
+  @ApiQuery({ name: 'marketplacesDiffer', required: false, enum: [...MARKETPLACES_DIFFER], description: 'Only with compareMarketplaceId: products whose listings on the two marketplaces differ in price (exact), availability or either, or that are listed on only one; also applies to the tab counts' })
   @Contract('Products ordered by English name, keyset paged, with a count per tab for the same search and category', undefined, {
     type: 'object', properties: { items: { type: 'array', items: product }, nextCursor: { type: ['string', 'null'] }, counts: tabCounts },
   })

@@ -16,6 +16,8 @@ Query (strict, unknown keys give a 400):
 | `cursor` | string | `nextCursor` of the previous page |
 | `marketplaceId` | `talabat` \| `snoonu` \| `rafeeq` \| `keeta` | **new.** Must be enabled for the store, else 400 `details: [{ path: 'marketplaceId', message: '<Name> is not enabled for this store' }]` |
 | `marketplaceStatus` | `mismatch` \| `in_sync` \| `not_in_file` | **new.** Only with `marketplaceId`, else 400 `details[].path = 'marketplaceStatus'` |
+| `compareMarketplaceId` | `talabat` \| `snoonu` \| `rafeeq` \| `keeta` | **new.** A second marketplace next to `marketplaceId`: adds `compareMarketplace`. Only with `marketplaceId` and another marketplace, and it must be enabled; else 400 `details[].path = 'compareMarketplaceId'` |
+| `marketplacesDiffer` | `any` \| `price` \| `availability` | **new.** Only with `compareMarketplaceId`, else 400. See "Two marketplaces side by side" |
 
 "Enabled" is the rule the recon uses: a switch row in Settings decides; without one, an applied upload of that
 marketplace enables it.
@@ -67,6 +69,26 @@ The issues are null whenever `comparison` is `not_in_file` or `not_applicable`.
 
 **`marketplaceStatus`** selects exactly the products whose `comparison` has that value. A marketplace without an
 applied upload matches nothing.
+
+**Two marketplaces side by side.** With `compareMarketplaceId`, each item also has `compareMarketplace`: the same
+object as `marketplace`, for the second marketplace (its own file values and comparison against the catalogue).
+`marketplacesDiffer` then keeps only the products where the two marketplaces' winning listings (the comparison's pick:
+newest, then marketplace product id) differ, compared with each other, not with the catalogue:
+
+| Value | A product is kept when |
+| --- | --- |
+| `price` | the two prices differ (exact, in fils), or it is listed on only one of them |
+| `availability` | the two availabilities differ, or it is listed on only one of them |
+| `any` | either |
+
+Products listed on neither are left out, and so is everything when either marketplace has no applied upload. Like
+`marketplaceStatus` (which still applies to `marketplaceId` only), it narrows the items **and the tab counts**, and
+pages with the usual cursor. The differing ids come from one statement (`differingIdsSql`: a `DISTINCT ON` winner per
+matched product on each side, full-joined); the page's values for the second marketplace are one more statement.
+
+```
+GET /api/products?marketplaceId=talabat&compareMarketplaceId=snoonu&marketplacesDiffer=price
+```
 
 **Freshness.** The file values are live. The comparison is from the last recompute, so right after an upload it can lag
 by one recompute (open gap G37).
