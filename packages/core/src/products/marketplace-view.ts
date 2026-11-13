@@ -15,6 +15,26 @@ export type MarketplaceComparison = (typeof MARKETPLACE_COMPARISONS)[number];
 export const MARKETPLACE_STATUS_FILTERS = ['mismatch', 'in_sync', 'not_in_file'] as const;
 export type MarketplaceStatusFilter = (typeof MARKETPLACE_STATUS_FILTERS)[number];
 
+/**
+ * "Where the two marketplaces differ" (GET /api/products?marketplaceId=A&compareMarketplaceId=B&marketplacesDiffer=...):
+ * the product's winning listings on A and B (the comparison's pick: newest, then marketplace product id) have a
+ * different price (exact, in fils), a different availability, or either; or the product is listed on only one of them.
+ * Products listed on neither are left out. ProductRepository.differingIds implements it in SQL.
+ */
+export const MARKETPLACES_DIFFER = ['any', 'price', 'availability'] as const;
+export type MarketplacesDiffer = (typeof MARKETPLACES_DIFFER)[number];
+
+/** The same rule for two listings (null = not listed), for tests and any in-memory use. */
+export function listingsDiffer(
+  a: { price: number | string; available: boolean } | null, b: { price: number | string; available: boolean } | null, on: MarketplacesDiffer,
+): boolean {
+  if (!a && !b) return false;
+  if (!a || !b) return true;
+  const price = toFils(Number(a.price)) !== toFils(Number(b.price));
+  const availability = a.available !== b.available;
+  return on === 'price' ? price : on === 'availability' ? availability : price || availability;
+}
+
 export const PRICE_ISSUES = ['marketplace_price_higher', 'marketplace_price_lower'] as const;
 export type PriceIssue = (typeof PRICE_ISSUES)[number];
 

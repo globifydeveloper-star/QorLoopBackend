@@ -104,22 +104,31 @@ export class ProductsService {
     const search = searchFilter(query);
     return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => {
       const market = query.marketplaceId ? await marketplaceContext(data, query.marketplaceId) : null;
-      const filter: ProductFilter = market && query.marketplaceStatus
+      // A second marketplace next to the first ("Compare with Talabat and Snoonu"); enabled-checked the same way.
+      const compare = market && query.compareMarketplaceId ? await marketplaceContext(data, query.compareMarketplaceId) : null;
+      let filter: ProductFilter = market && query.marketplaceStatus
         ? { ...search, marketplace: { marketplaceId: market.marketplaceId, status: query.marketplaceStatus, reference: market.reference, hasData: market.hasData } }
         : search;
+      if (market && compare && query.marketplacesDiffer) {
+        // Without an applied file on both, nothing is compared, so nothing differs (as the marketplace filter's rule 1).
+        const ids = market.hasData && compare.hasData ? await data.products.differingIds(market.marketplaceId, compare.marketplaceId, query.marketplacesDiffer) : [];
+        filter = { ...filter, productIds: ids };
+      }
       const rows = await data.products.list(filter, query.tab, after, query.limit + 1);
       const counts = await data.products.counts(filter);
       const page = rows.slice(0, query.limit);
       const showCost = canSeeCost(p.member.role);
       // catalogue stock next to the ERP stock (ADR 017): one read for the page's edits
-      const [edits, values] = await Promise.all([
+      const [edits, values, compareValues] = await Promise.all([
         data.stock.edits(page.map(r => r.id)),
         // the page's listing, upload and recon row on the marketplace: one statement, never one per row
         market ? data.products.marketplaceValues(market.marketplaceId, page.map(r => r.id)) : Promise.resolve(null),
+        compare ? data.products.marketplaceValues(compare.marketplaceId, page.map(r => r.id)) : Promise.resolve(null),
       ]);
       const item = (r: ProductRow) => ({
         ...baseItem(r, showCost), ...stockFields(r.erpStock, edits.get(r.id) ?? null),
         ...(market && values ? { marketplace: marketplaceItem(market, values.get(r.id) ?? null) } : {}),
+        ...(compare && compareValues ? { compareMarketplace: marketplaceItem(compare, compareValues.get(r.id) ?? null) } : {}),
       });
       if (!hasPermission(p.member.role, 'pricing.view')) {
         return { items: page.map(item), nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null, counts };

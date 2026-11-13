@@ -27,6 +27,27 @@ export interface ProductFilter {
   subcategoryId?: string;
   /** Only the catalogue list sets it (GET /api/products?marketplaceId=...&marketplaceStatus=...). */
   marketplace?: ProductMarketplaceFilter;
+  /** Only these products (the catalogue list's "marketplaces differ" filter; ProductRepository.differingIds). */
+  productIds?: string[];
+}
+
+/**
+ * The statement of ProductRepository.differingIds; exported so a test can EXPLAIN exactly this SQL. Each side is the
+ * winning listing per matched product (the comparison's pick: newest updated_at, then marketplace_product_id). Prices
+ * are numeric(12,3), so `<>` compares exactly, in fils.
+ */
+export function differingIdsSql(tenantId: string, a: string, b: string, on: 'any' | 'price' | 'availability') {
+  const differs = on === 'price' ? Prisma.sql`a.price <> b.price`
+    : on === 'availability' ? Prisma.sql`a.available <> b.available`
+      : Prisma.sql`(a.price <> b.price OR a.available <> b.available)`;
+  const side = (marketplaceId: string) => Prisma.sql`
+    SELECT DISTINCT ON (product_id) product_id, price, available FROM listings
+    WHERE tenant_id = ${tenantId}::uuid AND marketplace_id = ${marketplaceId} AND product_id IS NOT NULL
+    ORDER BY product_id, updated_at DESC, marketplace_product_id`;
+  return Prisma.sql`
+    SELECT COALESCE(a.product_id, b.product_id) AS id
+    FROM (${side(a)}) AS a FULL JOIN (${side(b)}) AS b ON a.product_id = b.product_id
+    WHERE a.product_id IS NULL OR b.product_id IS NULL OR ${differs}`;
 }
 
 /** One product's values on one marketplace, as read for a list page (ProductRepository.marketplaceValues). */
@@ -115,6 +136,8 @@ export class ProductRepository {
     return {
       tenantId: this.tenantId,
       ...(f.marketplace ? marketplaceWhere(f.marketplace) : {}),
+      // under AND: marketplaceWhere may itself set `id` (no applied upload) or `AND`
+      ...(f.productIds ? { AND: [...(f.marketplace ? [marketplaceWhere(f.marketplace)] : []), { id: { in: f.productIds } }] } : {}),
       ...(f.categoryId ? { categoryId: f.categoryId } : {}),
       ...(f.subcategoryId ? { subcategoryId: f.subcategoryId } : {}),
       // name via the pg_trgm index, barcode via (tenant, normalized_barcode), SKU via (tenant, sku)
@@ -218,6 +241,14 @@ export class ProductRepository {
         actualPrice: r.actual_price, marketplacePrice: r.marketplace_price, erpPrice: r.erp_price,
       },
     }]));
+  }
+  /**
+   * Products of this store whose winning listings on marketplaces a and b differ (`on`: price, availability or any),
+   * or that are listed on only one of them. Products on neither are not returned. One statement (differingIdsSql).
+   */
+  async differingIds(a: string, b: string, on: 'any' | 'price' | 'availability'): Promise<string[]> {
+    const rows = await this.tx.$queryRaw<{ id: string }[]>(differingIdsSql(this.tenantId, a, b, on));
+    return rows.map(r => r.id);
   }
   /** All actual listings of one marketplace, including unmatched and in-sync products. */
   async marketplaceListings(f: {
