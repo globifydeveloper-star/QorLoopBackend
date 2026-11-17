@@ -201,8 +201,11 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
         skipped = plan.skipped;
         Object.assign(c, {
           created: plan.create.length, updated: plan.update.length, flagged: flagged.length,
-          changes: changeRows.length, stockConflicts: shownConflicts, stockEditsCleared: stock.cleared.length, blockedUpdated: plan.update.filter(p => blocked.has(p.id)).length,
+          changes: changeRows.length, stockConflicts: shownConflicts, stockEditsCleared: stock.cleared.length,
         });
+        // only when the file touched a blocked product, so upload events without one keep their shape
+        const blockedUpdated = plan.update.filter(p => blocked.has(p.id)).length;
+        if (blockedUpdated) c.blockedUpdated = blockedUpdated;
         applied = { changesRecorded: true, changes: changeRows.length, stockConflicts: shownConflicts, stockEditsCleared: stock.cleared.length };
       } else {
         enter('listings');
