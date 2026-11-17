@@ -37,7 +37,7 @@ export class BulkPricingService {
     const { idempotencyKey, previewToken: expectedToken, ...input } = body;
     const hash = requestHash(input);
     const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.bulk', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
-      const prior = await data.pricing.bulkOperation(idempotencyKey, new Date(Date.now() - BULK_IDEMPOTENCY_WINDOW_MS));
+      const prior = await data.pricing.bulkOperation('pricing.bulk_applied', idempotencyKey, new Date(Date.now() - BULK_IDEMPOTENCY_WINDOW_MS));
       if (prior) {
         const details = prior.details as { requestHash?: string; result?: ApplyResult } | null;
         if (details?.requestHash !== hash) throw new ConflictException('This idempotency key was already used for a different price change');

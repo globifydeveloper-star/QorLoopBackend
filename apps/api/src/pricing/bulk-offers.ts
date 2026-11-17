@@ -1,0 +1,68 @@
+import { createHash } from 'node:crypto';
+import type { z } from 'zod';
+import type { TenantData } from '../../../../packages/db/src/database.js';
+import type * as contracts from '../../../../packages/shared/src/contracts.js';
+import type { MarketplaceId } from '../../../../packages/core/src/constants.js';
+import {
+  BULK_OFFER_ITEMS_MAX, bulkOfferSignature, bulkOfferTotals, planBulkOffers,
+  type BulkOfferPlan, type BulkOfferProduct, type BulkOfferRow, type PlannedOffer,
+} from '../../../../packages/core/src/bulk-offers.js';
+import { canonical } from './bulk-pricing.js';
+import { enabledMarketplaceIds, loadPricing, productInputs } from './pricing.data.js';
+
+export type BulkOfferInput = z.infer<typeof contracts.bulkOfferPreview>;
+
+/**
+ * Plans a bulk offer from current data inside the request's transaction (preview and apply both call it; apply never
+ * reuses a preview). A fixed number of queries whatever the item count: the products, their rules and offers, the
+ * pricing snapshot, the enabled marketplaces and the pending price export values.
+ */
+export async function planOffers(data: TenantData, input: BulkOfferInput, now = new Date()) {
+  const ids = [...new Set(input.items.map(i => i.productId))];
+  const [found, pricing, enabled] = await Promise.all([data.products.pricingProducts(ids), loadPricing(data), enabledMarketplaceIds(data)]);
+  const [inputs, exportPrices] = await Promise.all([productInputs(data, found), data.pricing.pendingExportPrices(found.map(p => p.id), enabled)]);
+  const products = new Map(found.map((p): [string, BulkOfferProduct] => {
+    const { input: pricingInput, offers } = inputs.get(p.id)!;
+    return [p.id, {
+      id: p.id, status: p.status, pricing: pricingInput,
+      offers: offers.map(o => ({ price: o.price.toNumber(), validFrom: o.validFrom, validUntil: o.validUntil })),
+    }];
+  }));
+  const plan = planBulkOffers(input.items, products, {
+    settings: pricing.snapshot, categoryRules: pricing.categoryRules, enabled,
+    exportPrices: exportPrices as Map<string, MarketplaceId[]>, now,
+  });
+  const labels = new Map(found.map(p => [p.id, { nameEn: p.nameEn, barcode: p.barcode }]));
+  return { plan, labels };
+}
+export type PlannedOffers = Awaited<ReturnType<typeof planOffers>>;
+
+export const offerPreviewToken = (plan: BulkOfferPlan) => createHash('sha256').update(bulkOfferSignature(plan.sets)).digest('hex');
+
+/** What an idempotency key is bound to: the items as sent (order kept: it names the rows), without key and token. */
+export const offerRequestHash = (input: BulkOfferInput) => createHash('sha256').update(canonical({ items: input.items })).digest('hex');
+
+const planned = (o: PlannedOffer | null) => (o ? { price: o.price, validFrom: o.validFrom?.toISOString() ?? null, validUntil: o.validUntil?.toISOString() ?? null } : null);
+
+/** One row as preview returns it. */
+export function offerRow(r: BulkOfferRow, labels: PlannedOffers['labels']) {
+  const label = labels.get(r.productId);
+  return {
+    index: r.index, productId: r.productId, nameEn: label?.nameEn ?? null, barcode: label?.barcode ?? null,
+    outcome: r.outcome, reason: r.reason, message: r.message, warnings: r.warnings,
+    normalPrice: r.normalPrice, ...(r.normalPrices ? { normalPrices: r.normalPrices } : {}), lowestNormalPrice: r.lowestNormalPrice,
+    currentOffer: r.currentOffer, offer: planned(r.offer),
+  };
+}
+
+/** Every row, the totals and the token; reads only. */
+export function offersPreview({ plan, labels }: PlannedOffers) {
+  return { items: plan.rows.map(r => offerRow(r, labels)), totals: bulkOfferTotals(plan), limit: BULK_OFFER_ITEMS_MAX, previewToken: offerPreviewToken(plan) };
+}
+
+/** The columns of each entry of the audit event's `changes` (compact arrays, product id first). */
+export const OFFER_CHANGE_COLUMNS = ['productId', 'oldPrice', 'oldFrom', 'oldUntil', 'newPrice', 'newFrom', 'newUntil'] as const;
+export const offerChangeEntry = (r: BulkOfferRow) => [
+  r.productId, r.previous?.price ?? null, r.previous?.validFrom?.toISOString() ?? null, r.previous?.validUntil?.toISOString() ?? null,
+  r.offer!.price, r.offer!.validFrom?.toISOString() ?? null, r.offer!.validUntil?.toISOString() ?? null,
+];

@@ -14,7 +14,7 @@ import { DEFAULT_READINESS_RULES, isReady, missingDetails, READINESS_REASONS } f
 import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { catalogueStock, type StockEditState } from '../../../../packages/core/src/catalogue-stock.js';
-import { enabledMarketplaceIds, loadPricing, marketplacePrice, productInputs, productPricingView } from '../pricing/pricing.data.js';
+import { enabledMarketplaceIds, loadPricing, marketplacePrice, offerFields, productInputs, productPricingView } from '../pricing/pricing.data.js';
 
 import { catalogueAvailable } from '../../../../packages/core/src/recon/status.js';
 import { BLOCKED_REASON_LABELS, setBlockReason } from '../../../../packages/core/src/marketplace-values.js';
@@ -137,7 +137,10 @@ export class ProductsService {
       const [pricing, inputs] = await Promise.all([loadPricing(data), productInputs(data, page)]);
       const now = new Date();
       return {
-        items: page.map(r => ({ ...item(r), marketplacePrice: marketplacePrice(pricing, inputs.get(r.id)!.input, now) })),
+        items: page.map(r => {
+          const { input, offers } = inputs.get(r.id)!;
+          return { ...item(r), marketplacePrice: marketplacePrice(pricing, input, now), ...offerFields(pricing, input, offers, now) };
+        }),
         nextCursor: rows.length > query.limit ? encodeCursor(page[page.length - 1]!) : null,
         counts,
       };

@@ -32,6 +32,7 @@ import { BullReconQueue, type ReconQueue } from '../../../packages/shared/src/re
 import { PricingController } from './pricing/pricing.controller.js';
 import { PricingService } from './pricing/pricing.service.js';
 import { BulkPricingService } from './pricing/bulk-pricing.service.js';
+import { BulkOffersService } from './pricing/bulk-offers.service.js';
 import { ReconController } from './recon/recon.controller.js';
 import { ReconService } from './recon/recon.service.js';
 import { GeneratedFilesController } from './generated-files/generated-files.controller.js';
@@ -49,6 +50,14 @@ import { CatalogueStockService } from './catalogue/catalogue-stock.service.js';
 import { MarketplaceValuesController } from './marketplace-values/marketplace-values.controller.js';
 import { MarketplaceValuesService } from './marketplace-values/marketplace-values.service.js';
 import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
+
+/** Every route keeps the 32 KB body limit except these: a 500-row bulk offer with both dates is about 68 KB. */
+export const DEFAULT_BODY_LIMIT = 32 * 1024;
+export const LARGE_BODY_LIMIT = 128 * 1024;
+export const LARGE_BODY_ROUTES: ReadonlySet<string> = new Set([
+  '/api/pricing/offers/bulk/preview', '/api/pricing/offers/bulk/apply',
+  '/api/pricing/offers/bulk-remove/preview', '/api/pricing/offers/bulk-remove/apply',
+]);
 
 @Controller()
 class SystemController {
@@ -98,7 +107,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
         if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
         return queueRedis.ping();
       }), () => storage.check()) },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
+      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, BulkOffersService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },
@@ -107,7 +116,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
   })
   class ApiModule {}
   const adapter = new FastifyAdapter({
-    bodyLimit: 32 * 1024, trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
+    bodyLimit: DEFAULT_BODY_LIMIT, trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
     logger: options.logger === false ? false : {
       level: 'info',
       ...(options.logStream ? { stream: options.logStream } : {}),
@@ -117,6 +126,10 @@ export async function buildApp(config: Config, options: { database?: Database; c
   });
   const app = await NestFactory.create<NestFastifyApplication>(ApiModule, adapter, { logger: false, abortOnError: false });
   const server = app.getHttpAdapter().getInstance();
+  // Routes are declared at app.init(), after this hook: only the listed bulk offer routes get the larger body limit.
+  server.addHook('onRoute', route => {
+    if (LARGE_BODY_ROUTES.has(route.url)) route.bodyLimit = LARGE_BODY_LIMIT;
+  });
   await app.register(cookie);
   await app.register(helmet, { contentSecurityPolicy: config.NODE_ENV === 'production' ? undefined : false });
   let redis: import('ioredis').Redis | undefined;

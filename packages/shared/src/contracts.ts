@@ -9,6 +9,7 @@ import { MARKETPLACE_STATUS_FILTERS, MARKETPLACES_DIFFER } from '../../core/src/
 import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
+import { BULK_OFFER_ITEMS_MAX } from '../../core/src/bulk-offers.js';
 import { EXPORT_STATES, MARKETPLACE_PRICE_MAX, MARKETPLACE_REASON_MAX, MARKETPLACE_VALUE_FIELDS } from '../../core/src/marketplace-values.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
@@ -237,6 +238,28 @@ const bulkShape = {
 export const bulkPricePreview = z.object(bulkShape).strict();
 export const bulkPriceApply = z.object({
   ...bulkShape,
+  /** Chosen by the client once per intended change (a UUID): a repeat with the same key and body applies nothing again. */
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
+  /** previewToken from the preview: when the re-planned writes differ, 409 instead of applying something else. */
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
+
+// ───────── Bulk offers (offers v1 step 5): one row per product with its own price and dates ─────────
+/**
+ * The price is any number here: out-of-range, zero or over-precise prices are reported per row (invalid_price), not
+ * as a 400. Dates are ISO instants with an offset; the UI sends a Qatar start day D as D T00:00:00.000+03:00 and an
+ * end day E as E T23:59:59.999+03:00. A missing start means "from now"; a missing end is rejected per row (end_required).
+ */
+export const bulkOfferItem = z.object({
+  productId: z.uuid(),
+  price: z.number(),
+  validFrom: z.iso.datetime({ offset: true }).nullable().optional(),
+  validUntil: z.iso.datetime({ offset: true }).nullable().optional(),
+}).strict();
+const bulkOfferShape = { items: z.array(bulkOfferItem).min(1).max(BULK_OFFER_ITEMS_MAX) };
+export const bulkOfferPreview = z.object(bulkOfferShape).strict();
+export const bulkOfferApply = z.object({
+  ...bulkOfferShape,
   /** Chosen by the client once per intended change (a UUID): a repeat with the same key and body applies nothing again. */
   idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
   /** previewToken from the preview: when the re-planned writes differ, 409 instead of applying something else. */

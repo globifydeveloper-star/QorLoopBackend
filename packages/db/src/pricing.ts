@@ -117,12 +117,13 @@ export class PricingRepository {
   }
 
   /**
-   * The bulk price change applied with this idempotency key since `since` (its single 'pricing.bulk_applied' audit
-   * event, which stores the key). The created_at bound keeps the lookup on the (tenant_id, created_at) index.
+   * The bulk operation applied with this idempotency key since `since`: its single audit event of type `action`
+   * ('pricing.bulk_applied', 'pricing.offers_bulk_set', ...), which stores the key. The created_at bound keeps the
+   * lookup on the (tenant_id, created_at) index.
    */
-  bulkOperation(idempotencyKey: string, since: Date) {
+  bulkOperation(action: string, idempotencyKey: string, since: Date) {
     return this.tx.auditEvent.findFirst({
-      where: { tenantId: this.tenantId, action: 'pricing.bulk_applied', createdAt: { gte: since }, details: { path: ['idempotencyKey'], equals: idempotencyKey } },
+      where: { tenantId: this.tenantId, action, createdAt: { gte: since }, details: { path: ['idempotencyKey'], equals: idempotencyKey } },
       orderBy: { createdAt: 'desc' }, select: { id: true, details: true, createdAt: true },
     });
   }
@@ -160,5 +161,28 @@ export class PricingRepository {
   }
   async deleteOffers(productId: string) {
     return (await this.tx.productOffer.deleteMany({ where: { tenantId: this.tenantId, productId } })).count;
+  }
+  /**
+   * replaceOffer for many products (bulk offers): one DELETE of every offer of these products, then one INSERT. Until
+   * the unique (tenant_id, product_id) index of migration 202611110001 exists, the request's tenant row lock is what
+   * keeps one offer per product. Prices are sent as 3-decimal text (DECIMAL(12,3) exactly).
+   */
+  async replaceOffers(offers: { productId: string; price: number; validFrom: Date | null; validUntil: Date | null }[]) {
+    if (!offers.length) return 0;
+    await this.tx.productOffer.deleteMany({ where: { tenantId: this.tenantId, productId: { in: offers.map(o => o.productId) } } });
+    return (await this.tx.productOffer.createMany({
+      data: offers.map(o => ({ tenantId: this.tenantId, productId: o.productId, price: o.price.toFixed(3), validFrom: o.validFrom, validUntil: o.validUntil })),
+    })).count;
+  }
+  /** Products with a pending price export value (pinned or not) on these marketplaces: it outranks an offer there. */
+  async pendingExportPrices(productIds: string[], marketplaceIds: readonly string[]) {
+    if (!productIds.length || !marketplaceIds.length) return new Map<string, string[]>();
+    const rows = await this.tx.marketplaceValueOverride.findMany({
+      where: { tenantId: this.tenantId, productId: { in: productIds }, marketplaceId: { in: [...marketplaceIds] }, priceState: 'pending' },
+      select: { productId: true, marketplaceId: true }, orderBy: [{ productId: 'asc' }, { marketplaceId: 'asc' }],
+    });
+    const by = new Map<string, string[]>();
+    for (const r of rows) by.set(r.productId, [...(by.get(r.productId) ?? []), r.marketplaceId]);
+    return by;
   }
 }

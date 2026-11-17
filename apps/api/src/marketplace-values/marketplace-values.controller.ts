@@ -9,6 +9,7 @@ import { CONFIG } from '../tokens.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract, ZodPipe } from '../http/contracts.js';
 import { MarketplaceValuesService } from './marketplace-values.service.js';
+import { offerViewSchema } from '../pricing/pricing.controller.js';
 
 const marketplaceParam = new ZodPipe(z.enum(MARKETPLACES));
 const count = { type: 'integer' };
@@ -38,6 +39,8 @@ export const reviewItemSchema = {
       type: 'object', description: 'What it should be (the source of truth)', properties: {
         available: bool, price: { ...money, description: 'The rule price' }, priceSource: { type: ['string', 'null'] },
         stock: count, stockSource: { type: 'string', enum: ['erp', 'owner'] }, stockConflict: { type: 'boolean' },
+        normalPrice: { ...money, description: 'Live: the price on this marketplace without the offer (per-marketplace step included)' },
+        offer: { ...offerViewSchema, type: ['object', 'null'], description: "Live: the product's offer in any state (scheduled, active, ended), null when none" },
       },
     },
     export: {
