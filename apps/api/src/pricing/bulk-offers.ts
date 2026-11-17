@@ -24,7 +24,7 @@ export async function planOffers(data: TenantData, input: BulkOfferInput, now = 
   const products = new Map(found.map((p): [string, BulkOfferProduct] => {
     const { input: pricingInput, offers } = inputs.get(p.id)!;
     return [p.id, {
-      id: p.id, status: p.status, pricing: pricingInput,
+      id: p.id, status: p.status, isBlocked: p.blockedAt !== null, pricing: pricingInput,
       offers: offers.map(o => ({ price: o.price.toNumber(), validFrom: o.validFrom, validUntil: o.validUntil })),
     }];
   }));
@@ -91,7 +91,7 @@ export async function planOfferRemoval(data: TenantData, input: BulkOfferRemoveI
   const inputs = await productInputs(data, found);
   const products = new Map(found.map((p): [string, BulkOfferProduct] => {
     const { input: pricingInput, offers } = inputs.get(p.id)!;
-    return [p.id, { id: p.id, status: p.status, pricing: pricingInput, offers: offers.map(o => ({ price: o.price.toNumber(), validFrom: o.validFrom, validUntil: o.validUntil })) }];
+    return [p.id, { id: p.id, status: p.status, isBlocked: p.blockedAt !== null, pricing: pricingInput, offers: offers.map(o => ({ price: o.price.toNumber(), validFrom: o.validFrom, validUntil: o.validUntil })) }];
   }));
   const plan = planBulkOfferRemoval(input.productIds, products, { settings: pricing.snapshot, categoryRules: pricing.categoryRules, now });
   const labels = new Map(found.map(p => [p.id, { nameEn: p.nameEn, barcode: p.barcode }]));

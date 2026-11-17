@@ -118,7 +118,7 @@ export async function processUpload(deps: ProcessDeps, job: ProcessUploadJob): P
     ] as const);
     const catalog = products.map(p => ({
       id: p.id, normalizedBarcode: p.normalizedBarcode, sku: p.sku, nameEn: p.nameEn, erpPrice: p.erpPrice.toNumber(), costPrice: p.costPrice?.toNumber() ?? null,
-      erpStock: p.erpStock, inLatestErpFile: p.inLatestErpFile, stockEdit: edits.get(p.id) ?? null,
+      erpStock: p.erpStock, inLatestErpFile: p.inLatestErpFile, stockEdit: edits.get(p.id) ?? null, isBlocked: p.blockedAt !== null,
     }));
     const contains = upload.contains === 'partial' ? 'partial' : 'full';
     const review: Review = upload.source === 'erp'

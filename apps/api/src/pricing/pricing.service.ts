@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { PRODUCT_BLOCKED_MESSAGE } from '../../../../packages/core/src/products/blocking.js';
 import { z } from 'zod';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
 import type { TenantData } from '../../../../packages/db/src/database.js';
@@ -179,9 +180,11 @@ export class PricingService {
     });
   }
 
+  /** The product a price rule or offer edit changes: 404 when absent, 409 when blocked (a blocked product takes no change). */
   private async product(data: TenantData, id: string) {
     const product = await data.products.get(id);
     if (!product) throw new NotFoundException('Product not found');
+    if (product.blockedAt) throw new ConflictException(PRODUCT_BLOCKED_MESSAGE);
     return product;
   }
 

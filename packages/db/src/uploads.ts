@@ -117,7 +117,7 @@ export class UploadRepository {
   productSnapshot() {
     return this.tx.product.findMany({
       where: { tenantId: this.tenantId },
-      select: { id: true, normalizedBarcode: true, sku: true, nameEn: true, erpPrice: true, costPrice: true, erpStock: true, inLatestErpFile: true },
+      select: { id: true, normalizedBarcode: true, sku: true, nameEn: true, erpPrice: true, costPrice: true, erpStock: true, inLatestErpFile: true, blockedAt: true },
     });
   }
   listingSnapshot(marketplaceId: string) {
@@ -156,6 +156,7 @@ export class UploadRepository {
       select: {
         id: true, normalizedBarcode: true, sku: true, nameEn: true, nameAr: true, brand: true, erpCategory: true,
         erpPrice: true, costPrice: true, erpStock: true, erpActive: true, inLatestErpFile: true,
+        blockedAt: true, // the apply still updates a blocked product; only the change list and its counts skip it
       },
     });
   }

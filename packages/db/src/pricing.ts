@@ -137,7 +137,7 @@ export class PricingRepository {
   /** A bounded page of offers whose dates include now and whose products are active. */
   async activeOffers(now: Date, page: number, limit: number) {
     const where: Prisma.ProductOfferWhereInput = {
-      tenantId: this.tenantId, product: { status: 'active' },
+      tenantId: this.tenantId, product: { status: 'active', blockedAt: null }, // a blocked product's offers are not current
       OR: [{ validFrom: null }, { validFrom: { lte: now } }],
       AND: [{ OR: [{ validUntil: null }, { validUntil: { gte: now } }] }],
     };

@@ -13,6 +13,8 @@ export type Permission =
   | 'products.view'
   | 'products.edit'
   | 'products.activate'
+  /** Block or unblock products (old or seasonal; migration 202611170001). */
+  | 'products.block'
   | 'categories.manage'
   | 'pricing.view'
   | 'pricing.edit'
@@ -45,7 +47,7 @@ export type Permission =
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   owner: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
+    'products.view', 'products.edit', 'products.activate', 'products.block', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',
@@ -55,7 +57,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'marketplaces.edit', 'activity.view'
   ],
   admin: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
+    'products.view', 'products.edit', 'products.activate', 'products.block', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',
@@ -65,7 +67,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'marketplaces.edit', 'activity.view'
   ],
   catalogue_manager: [
-    'products.view', 'products.edit', 'products.activate', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
+    'products.view', 'products.edit', 'products.activate', 'products.block', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',
     'pricing.view', 'pricing.edit', 'pricing.bulk',
     'uploads.view', 'uploads.upload', 'uploads.apply', 'uploads.discard', 'uploads.map',
     'recon.view', 'reports.view', 'reports.export',

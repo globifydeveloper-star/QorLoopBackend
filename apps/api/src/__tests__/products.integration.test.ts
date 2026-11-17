@@ -64,12 +64,13 @@ describe('product list', () => {
     const r = await products(s, m);
     expect(r.statusCode).toBe(200);
     const d = r.json().data;
-    expect(d.counts).toEqual({ all: 5, active: 2, inactive: 1, new: 2, missing: 1 });
+    expect(d.counts).toEqual({ all: 5, active: 2, inactive: 1, new: 2, missing: 1, blocked: 0 });
     expect(d.nextCursor).toBeNull();
     expect(d.items).toHaveLength(5);
     const milk = d.items.find((i: { barcode: string }) => i.barcode === '6281000000011');
     expect(Object.keys(milk).sort()).toEqual(['barcode', 'brand', 'categoryId', 'costPrice', 'erpCategory', 'erpPrice', 'erpStock', 'id', 'inLatestErpFile',
-      'marketplacePrice', 'nameAr', 'nameEn', 'normalPrice', 'offer', 'sku', 'status', 'subcategoryId', 'updatedAt', 'catalogueStock', 'catalogueStockSource', 'stockConflict'].sort());
+      'marketplacePrice', 'nameAr', 'nameEn', 'normalPrice', 'offer', 'sku', 'status', 'subcategoryId', 'updatedAt', 'catalogueStock', 'catalogueStockSource', 'stockConflict',
+      'isBlocked', 'blockedAt', 'blockedReason'].sort());
     expect(milk).toMatchObject({ sku: 'SKU-1', erpPrice: 2.5, costPrice: 1.2, erpStock: 4, status: 'active', inLatestErpFile: true, categoryId: dairy, subcategoryId: milkSub });
     expect(r.body).not.toMatch(/imageKey|secret-key|storage/i);
   });
@@ -89,7 +90,7 @@ describe('product list', () => {
   it('searches the English name without regard to case; counts follow the search', async () => {
     const r = await products(s, m, '?q=MILK');
     expect(names(r).sort()).toEqual(['Fresh Milk 1L', 'milk powder']);
-    expect(r.json().data.counts).toEqual({ all: 2, active: 1, inactive: 0, new: 1, missing: 1 });
+    expect(r.json().data.counts).toEqual({ all: 2, active: 1, inactive: 0, new: 1, missing: 1, blocked: 0 });
   });
   it('reads % and _ in a search as text, not as wildcards', async () => {
     expect(names(await products(s, m, '?q=' + encodeURIComponent('50%')))).toEqual(['50% Cocoa']);
@@ -112,7 +113,7 @@ describe('product list', () => {
     expect(names(await products(s, m, '?subcategoryId=' + milkSub))).toEqual(['Fresh Milk 1L']);
     const r = await products(s, m, `?categoryId=${dairy}&tab=new`);
     expect(names(r)).toEqual(['Laban 500ml']);
-    expect(r.json().data.counts).toEqual({ all: 2, active: 1, inactive: 0, new: 1, missing: 0 });
+    expect(r.json().data.counts).toEqual({ all: 2, active: 1, inactive: 0, new: 1, missing: 0, blocked: 0 });
   });
   it.each([
     ['?tenantId=' + randomUUID(), 'an unknown parameter'], ['?limit=201', 'limit over 200'], ['?limit=0', 'limit 0'], ['?tab=deleted', 'an unknown tab'],
@@ -519,7 +520,7 @@ describe('OpenAPI', () => {
     expect(paths['/api/categories/erp-suggestions']?.get).toBeDefined();
     expect(paths['/api/categories/{id}/assign-from-erp']?.post?.requestBody).toBeDefined();
     const params = (paths['/api/products']!.get!.parameters ?? []) as { name: string }[];
-    expect(params.map(p => p.name).sort()).toEqual(['categoryId', 'compareMarketplaceId', 'cursor', 'limit', 'marketplaceId', 'marketplaceStatus', 'marketplacesDiffer', 'q', 'subcategoryId', 'tab']);
+    expect(params.map(p => p.name).sort()).toEqual(['blocked', 'categoryId', 'compareMarketplaceId', 'cursor', 'limit', 'marketplaceId', 'marketplaceStatus', 'marketplacesDiffer', 'q', 'subcategoryId', 'tab']);
     expect(paths['/api/products/{id}']!.patch!.parameters).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'X-CSRF-Token' })]));
   });
 });

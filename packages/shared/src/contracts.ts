@@ -10,6 +10,7 @@ import {
   BULK_PERCENT_DECREASE_MAX, BULK_PERCENT_INCREASE_MAX, BULK_PRODUCT_IDS_MAX, BULK_ROUNDINGS, PRICE_CHANGE_MAX,
 } from '../../core/src/price-change.js';
 import { BULK_OFFER_ITEMS_MAX } from '../../core/src/bulk-offers.js';
+import { BLOCKED_FILTERS, PRODUCT_BLOCK_IDS_MAX, PRODUCT_BLOCK_REASONS } from '../../core/src/products/blocking.js';
 import { EXPORT_STATES, MARKETPLACE_PRICE_MAX, MARKETPLACE_REASON_MAX, MARKETPLACE_VALUE_FIELDS } from '../../core/src/marketplace-values.js';
 export const email = z.string().trim().email().max(254).transform(v => v.toLowerCase());
 export const password = z.string().min(12).max(128);
@@ -68,6 +69,8 @@ export const productListQuery = z.object({
   compareMarketplaceId: z.enum(MARKETPLACES).optional(),
   /** Only with compareMarketplaceId: products whose listings on the two marketplaces differ, or that are on only one. */
   marketplacesDiffer: z.enum(MARKETPLACES_DIFFER).optional(),
+  /** exclude (default): blocked products are left out of the list and the tab counts; only: the Blocked tab; include: both. */
+  blocked: z.enum(BLOCKED_FILTERS).default('exclude'),
 }).strict()
   .refine(q => !q.marketplaceStatus || q.marketplaceId, { path: ['marketplaceStatus'], message: 'marketplaceStatus needs marketplaceId' })
   .refine(q => !q.compareMarketplaceId || q.marketplaceId, { path: ['compareMarketplaceId'], message: 'compareMarketplaceId needs marketplaceId' })
@@ -99,6 +102,32 @@ export const activateProducts = z.union([
   z.object({ ids: z.array(z.uuid()).min(1).max(500) }).strict(),
   z.object({ all: z.literal(true) }).strict(),
 ]);
+/** The catalogue list filters a block or unblock selects by (no cursor, limit or compare marketplace). */
+export const productSelectionFilter = z.object({
+  q: z.string().trim().max(200).optional(),
+  tab: productTab.default('all'),
+  categoryId: z.uuid().optional(),
+  subcategoryId: z.uuid().optional(),
+  marketplaceId: z.enum(MARKETPLACES).optional(),
+  marketplaceStatus: z.enum(MARKETPLACE_STATUS_FILTERS).optional(),
+}).strict()
+  .refine(q => !q.marketplaceStatus || q.marketplaceId, { path: ['marketplaceStatus'], message: 'marketplaceStatus needs marketplaceId' });
+const productSelectionShape = {
+  productIds: z.array(z.uuid()).min(1).max(PRODUCT_BLOCK_IDS_MAX).optional(),
+  filter: productSelectionFilter.optional(),
+};
+const oneSelection = (s: { productIds?: unknown; filter?: unknown }) => (s.productIds === undefined) !== (s.filter === undefined);
+const selectionMessage = { path: ['productIds'], message: 'Send productIds or filter (exactly one)' };
+/** POST /api/products/block/preview */
+export const blockProductsPreview = z.object({ ...productSelectionShape, reason: z.enum(PRODUCT_BLOCK_REASONS) }).strict()
+  .refine(oneSelection, selectionMessage);
+/** POST /api/products/block: the preview's request plus its previewToken (409 when the selection changed since). */
+export const blockProducts = z.object({
+  ...productSelectionShape, reason: z.enum(PRODUCT_BLOCK_REASONS),
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().refine(oneSelection, selectionMessage);
+/** POST /api/products/unblock */
+export const unblockProducts = z.object(productSelectionShape).strict().refine(oneSelection, selectionMessage);
 const categoryName = z.string().trim().min(1).max(100);
 export const createCategory = z.object({
   nameEn: categoryName,

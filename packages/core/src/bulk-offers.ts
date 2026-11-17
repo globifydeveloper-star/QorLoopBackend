@@ -1,6 +1,7 @@
 import type { MarketplaceId } from './constants.js';
 import { toFils, toQar } from './money.js';
 import { MARKETPLACE_LABELS, PRICE_CHANGE_MAX } from './price-change.js';
+import { PRODUCT_BLOCKED_MESSAGE } from './products/blocking.js';
 import {
   offerState, resolveMarketplacePrice,
   type CategoryRuleItem, type OfferInput, type PricingSettingsSnapshot, type ProductPricingInput,
@@ -18,7 +19,7 @@ export const OFFER_PRICE_MAX = PRICE_CHANGE_MAX;
 
 /** Rejection reasons in the order they are checked: the first one that applies is the row's reason. */
 export const BULK_OFFER_REJECT_REASONS = [
-  'duplicate_row', 'not_found', 'product_not_active', 'invalid_price', 'end_required', 'end_before_start', 'already_ended', 'price_not_below_normal',
+  'duplicate_row', 'not_found', 'product_blocked', 'product_not_active', 'invalid_price', 'end_required', 'end_before_start', 'already_ended', 'price_not_below_normal',
 ] as const;
 export type BulkOfferRejectReason = (typeof BULK_OFFER_REJECT_REASONS)[number];
 export const BULK_OFFER_WARNINGS = ['replaces_offer', 'export_value_outranks'] as const;
@@ -44,6 +45,7 @@ export function bulkOfferRejectMessage(reason: BulkOfferRejectReason, normalPric
   switch (reason) {
     case 'duplicate_row': return 'This product is in more than one row; keep one row per product';
     case 'not_found': return 'No product with this id in this store';
+    case 'product_blocked': return PRODUCT_BLOCKED_MESSAGE;
     case 'product_not_active': return 'Offers apply to active products only';
     case 'invalid_price': return `The offer price must be more than 0 and at most ${OFFER_PRICE_MAX.toLocaleString('en-US')}, with at most 3 decimals`;
     case 'end_required': return 'An offer needs an end date';
@@ -61,6 +63,8 @@ export interface BulkOfferItem { productId: string; price: number; validFrom?: s
 export interface BulkOfferProduct {
   id: string;
   status: string;
+  /** Blocked (migration 202611170001): rejected (set) or skipped (remove) as product_blocked. */
+  isBlocked?: boolean;
   pricing: ProductPricingInput;
   /** The product's offers as stored (the API keeps one; legacy duplicates count as "replace"). */
   offers: StoredOffer[];
@@ -154,6 +158,7 @@ export function planBulkOffers(items: readonly BulkOfferItem[], products: Readon
     const validUntil = parse(it.validUntil);
     if (seen.get(it.productId)! > 1) return reject('duplicate_row');
     if (!product) return reject('not_found');
+    if (product.isBlocked) return reject('product_blocked');
     if (product.status !== 'active') return reject('product_not_active');
     if (!validPrice(it.price)) return reject('invalid_price');
     if (!validUntil) return reject('end_required');
@@ -194,10 +199,10 @@ export function bulkOfferSignature(sets: readonly BulkOfferRow[]): string {
 }
 
 // ───────── Bulk remove: the ticked products lose their offer (any state) ─────────
-export const BULK_OFFER_REMOVE_SKIP_REASONS = ['not_found', 'no_offer'] as const;
+export const BULK_OFFER_REMOVE_SKIP_REASONS = ['not_found', 'product_blocked', 'no_offer'] as const;
 export type BulkOfferRemoveSkipReason = (typeof BULK_OFFER_REMOVE_SKIP_REASONS)[number];
 export const bulkOfferRemoveSkipMessage = (reason: BulkOfferRemoveSkipReason) =>
-  reason === 'not_found' ? 'No product with this id in this store' : 'This product has no offer';
+  reason === 'not_found' ? 'No product with this id in this store' : reason === 'product_blocked' ? PRODUCT_BLOCKED_MESSAGE : 'This product has no offer';
 
 export interface BulkOfferRemoveRow {
   productId: string;
@@ -220,6 +225,7 @@ export function planBulkOfferRemoval(productIds: readonly string[], products: Re
   const rows = [...new Set(productIds)].map((productId): BulkOfferRemoveRow => {
     const product = products.get(productId);
     if (!product) return { productId, outcome: 'skipped', reason: 'not_found', message: bulkOfferRemoveSkipMessage('not_found'), currentOffer: null, previous: null, normalPrice: null };
+    if (product.isBlocked) return { productId, outcome: 'skipped', reason: 'product_blocked', message: bulkOfferRemoveSkipMessage('product_blocked'), currentOffer: null, previous: null, normalPrice: null };
     const normalPrice = resolveMarketplacePrice({ ...product.pricing, offers: [] }, ctx.settings, ctx.categoryRules, { now: ctx.now }).price;
     const latest = product.offers.at(-1) ?? null;
     if (!latest) return { productId, outcome: 'skipped', reason: 'no_offer', message: bulkOfferRemoveSkipMessage('no_offer'), currentOffer: null, previous: null, normalPrice };

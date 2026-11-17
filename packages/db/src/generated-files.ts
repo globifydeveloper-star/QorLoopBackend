@@ -70,7 +70,8 @@ export class GeneratedFilesRepository {
       FROM recon_rows r
       JOIN products p ON p.tenant_id = r.tenant_id AND p.id = r.product_id
       LEFT JOIN marketplace_value_overrides o ON o.tenant_id = r.tenant_id AND o.product_id = r.product_id AND o.marketplace_id = r.marketplace_id
-      WHERE r.tenant_id = ${this.tenantId}::uuid AND r.marketplace_id = ${marketplaceId}`;
+      WHERE r.tenant_id = ${this.tenantId}::uuid AND r.marketplace_id = ${marketplaceId}
+        AND p.blocked_at IS NULL`; // blocked products are never written to a generated file (migration 202611170001)
     // The same listing winner as ReconRepository.listings: one recon row per product, never multiply by listings.
     const winners = await this.tx.$queryRaw<{ productId: string; marketplaceProductId: string | null; uploadId: string | null }[]>`
       SELECT DISTINCT ON (product_id) product_id AS "productId", marketplace_product_id AS "marketplaceProductId", upload_id AS "uploadId"

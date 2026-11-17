@@ -18,6 +18,7 @@ import { enabledMarketplaceIds, loadPricing, marketplacePrice, offerFields, prod
 
 import { catalogueAvailable } from '../../../../packages/core/src/recon/status.js';
 import { BLOCKED_REASON_LABELS, setBlockReason } from '../../../../packages/core/src/marketplace-values.js';
+import { PRODUCT_BLOCKED_MESSAGE } from '../../../../packages/core/src/products/blocking.js';
 
 const MAX_SKIPPED_LISTED = 200;
 
@@ -33,7 +34,10 @@ function baseItem(p: ProductRow, showCost: boolean) {
     id: p.id, barcode: p.barcode, sku: p.sku, nameEn: p.nameEn, nameAr: p.nameAr, brand: p.brand, erpCategory: p.erpCategory,
     categoryId: p.categoryId, subcategoryId: p.subcategoryId, erpPrice: p.erpPrice.toNumber(),
     ...(showCost ? { costPrice: p.costPrice?.toNumber() ?? null } : {}),
-    erpStock: p.erpStock, status: p.status, inLatestErpFile: p.inLatestErpFile, updatedAt: p.updatedAt,
+    erpStock: p.erpStock, status: p.status, inLatestErpFile: p.inLatestErpFile,
+    // separate from status (migration 202611170001); names stay clear of the Marketplace values "blocked" state
+    isBlocked: p.blockedAt !== null, blockedAt: p.blockedAt, blockedReason: p.blockedReason,
+    updatedAt: p.updatedAt,
   };
 }
 
@@ -70,7 +74,7 @@ type MarketplaceContext = { marketplaceId: MarketplaceId; reference: ReconRefere
  * The marketplace of a list request: it must be one the store reconciles (core enabledMarketplaces, as the recon and
  * bulk pricing use), else 400. The comparison uses the tenant's default reference, as the recon reports do.
  */
-async function marketplaceContext(data: TenantData, marketplaceId: MarketplaceId): Promise<MarketplaceContext> {
+export async function marketplaceContext(data: TenantData, marketplaceId: MarketplaceId): Promise<MarketplaceContext> {
   const [switches, applied, settings] = await Promise.all([data.recon.marketplaceSwitches(), data.recon.lastApplied(), data.pricing.settings()]);
   const enabled = enabledMarketplaces(MARKETPLACES, switches, new Set(applied.keys())).find(m => m.marketplaceId === marketplaceId);
   if (!enabled) {
@@ -101,7 +105,7 @@ export class ProductsService {
 
   list(ctx: RequestContext, query: z.infer<typeof contracts.productListQuery>) {
     const after = query.cursor ? decodeCursor(query.cursor) : null;
-    const search = searchFilter(query);
+    const search: ProductFilter = { ...searchFilter(query), blocked: query.blocked };
     return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => {
       const market = query.marketplaceId ? await marketplaceContext(data, query.marketplaceId) : null;
       // A second marketplace next to the first ("Compare with Talabat and Snoonu"); enabled-checked the same way.
@@ -165,9 +169,10 @@ export class ProductsService {
         data.marketplaceValues.targets(ids, query.marketplaceId), data.stock.edits(ids), data.recon.settings(), enabledMarketplaceIds(data),
       ]);
       const byProduct = new Map(targets.map(t => [t.productId, t]));
-      const adjustment = (id: string | null, erpStock: number | null) => {
+      const adjustment = (id: string | null, erpStock: number | null, isBlocked: boolean) => {
         const target = id ? byProduct.get(id) : undefined;
-        if (!target || erpStock === null) return null;
+        // a blocked product is never compared: no availability adjustment, never a mismatch
+        if (!target || erpStock === null || isBlocked) return null;
         const blocked = setBlockReason(target);
         const av = target.override?.availability;
         return {
@@ -182,8 +187,10 @@ export class ProductsService {
         items: page.map(r => ({
           id: r.id, marketplaceProductId: r.marketplace_product_id, name: r.name, barcodes: r.barcodes,
           price: r.price, available: r.available, updatedAt: r.updated_at,
-          availabilityAdjustment: adjustment(r.product_id, r.product_erp_stock),
-          product: r.product_id ? { id: r.product_id, nameEn: r.product_name, barcode: r.product_barcode } : null,
+          // matched to a blocked product: not a mismatch and not "Missing from ERP"; the row says so
+          isBlocked: r.product_blocked === true,
+          availabilityAdjustment: adjustment(r.product_id, r.product_erp_stock, r.product_blocked === true),
+          product: r.product_id ? { id: r.product_id, nameEn: r.product_name, barcode: r.product_barcode, isBlocked: r.product_blocked === true } : null,
           sourceFile: r.upload_id ? { id: r.upload_id, fileName: r.file_name } : null,
         })),
         nextCursor: rows.length > query.limit && last ? Buffer.from(JSON.stringify([query.marketplaceId, last.marketplace_product_id, last.id])).toString('base64url') : null,
@@ -289,6 +296,7 @@ export class ProductsService {
       for (const id of ids ?? candidates.map(c => c.id)) {
         const c = byId.get(id);
         if (!c) { skipped.push({ id, reason: 'Not found' }); continue; }
+        if (c.blockedAt) { skipped.push({ id, reason: PRODUCT_BLOCKED_MESSAGE }); continue; }
         if (c.status !== 'new') { skipped.push({ id, reason: 'Not a new product' }); continue; }
         const readiness = isReady(c, DEFAULT_READINESS_RULES);
         if (!readiness.ready) skipped.push({ id, reason: READINESS_REASONS[readiness.missing[0]!] });

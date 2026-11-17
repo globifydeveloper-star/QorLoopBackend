@@ -1,9 +1,12 @@
 import { Prisma } from './generated/client.js';
 import type { MarketplaceStatusFilter } from '../../core/src/products/marketplace-view.js';
+import type { BlockedFilter } from '../../core/src/products/blocking.js';
 
 type Tx = Prisma.TransactionClient;
 
 export type ProductTab = 'all' | 'active' | 'inactive' | 'new' | 'missing';
+/** The tab counts, plus `blocked`: blocked products matching the same search and category (whatever the blocked filter). */
+export type ProductTabCounts = Record<ProductTab | 'blocked', number>;
 
 /**
  * The catalogue list's marketplace filter. Selects exactly the products core marketplaceComparison classifies as
@@ -29,6 +32,8 @@ export interface ProductFilter {
   marketplace?: ProductMarketplaceFilter;
   /** Only these products (the catalogue list's "marketplaces differ" filter; ProductRepository.differingIds). */
   productIds?: string[];
+  /** Blocked products: exclude (the default when unset), only, or include. Every selection built on where() leaves them out unless asked. */
+  blocked?: BlockedFilter;
 }
 
 /**
@@ -94,6 +99,11 @@ function marketplaceWhere(m: ProductMarketplaceFilter): Prisma.ProductWhereInput
   return { AND: [listed, { reconRows: { some: { marketplaceId: m.marketplaceId, ...recon } } }] };
 }
 
+/** blocked_at drives the filter (partial index products_tenant_blocked_at_idx serves `only`). */
+export function blockedWhere(mode: BlockedFilter): Prisma.ProductWhereInput {
+  return mode === 'exclude' ? { blockedAt: null } : mode === 'only' ? { blockedAt: { not: null } } : {};
+}
+
 const TAB_WHERE: Record<ProductTab, Prisma.ProductWhereInput> = {
   all: {}, active: { status: 'active' }, inactive: { status: 'inactive' }, new: { status: 'new' }, missing: { inLatestErpFile: false },
 };
@@ -102,7 +112,7 @@ const TAB_WHERE: Record<ProductTab, Prisma.ProductWhereInput> = {
 export const productSelect = {
   id: true, barcode: true, sku: true, nameEn: true, nameAr: true, brand: true, size: true, erpCategory: true,
   categoryId: true, subcategoryId: true, erpPrice: true, costPrice: true, erpStock: true, erpActive: true,
-  status: true, inLatestErpFile: true, createdAt: true, updatedAt: true,
+  status: true, inLatestErpFile: true, blockedAt: true, blockedReason: true, blockedBy: true, createdAt: true, updatedAt: true,
 } satisfies Prisma.ProductSelect;
 
 /** A bulk price change's filter: the product list's search and category, on one marketplace. */
@@ -116,7 +126,7 @@ export interface PricingSelection extends ProductFilter {
 
 /** What a bulk price change prices and shows of each product. */
 const pricingSelect = {
-  id: true, nameEn: true, barcode: true, status: true, erpPrice: true, categoryId: true, subcategoryId: true,
+  id: true, nameEn: true, barcode: true, status: true, blockedAt: true, erpPrice: true, categoryId: true, subcategoryId: true,
 } satisfies Prisma.ProductSelect;
 
 /** What a stock edit or conflict resolution needs of each product (ADR 017). */
@@ -135,6 +145,7 @@ export class ProductRepository {
   private where(f: ProductFilter): Prisma.ProductWhereInput {
     return {
       tenantId: this.tenantId,
+      ...blockedWhere(f.blocked ?? 'exclude'),
       ...(f.marketplace ? marketplaceWhere(f.marketplace) : {}),
       // under AND: marketplaceWhere may itself set `id` (no applied upload) or `AND`
       ...(f.productIds ? { AND: [...(f.marketplace ? [marketplaceWhere(f.marketplace)] : []), { id: { in: f.productIds } }] } : {}),
@@ -193,17 +204,85 @@ export class ProductRepository {
     return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], select: pricingSelect });
   }
 
-  /** Every tab count from one grouped query. */
-  async counts(f: ProductFilter): Promise<Record<ProductTab, number>> {
-    const groups = await this.tx.product.groupBy({ by: ['status', 'inLatestErpFile'], where: this.where(f), _count: { _all: true } });
-    const counts = { all: 0, active: 0, inactive: 0, new: 0, missing: 0 };
+  /**
+   * Every tab count from one grouped query. The tabs follow f.blocked (default exclude); `blocked` counts the blocked
+   * products of the same search and category whatever f.blocked says (the Blocked tab's number). blocked_reason is
+   * set exactly when blocked_at is (CHECK products_blocked_metadata_check), so it is the group key.
+   */
+  async counts(f: ProductFilter): Promise<ProductTabCounts> {
+    const mode = f.blocked ?? 'exclude';
+    const groups = await this.tx.product.groupBy({
+      by: ['status', 'inLatestErpFile', 'blockedReason'], where: this.where({ ...f, blocked: 'include' }), _count: { _all: true },
+    });
+    const counts = { all: 0, active: 0, inactive: 0, new: 0, missing: 0, blocked: 0 };
     for (const g of groups) {
       const n = g._count._all;
+      const isBlocked = g.blockedReason !== null;
+      if (isBlocked) counts.blocked += n;
+      if (mode === 'exclude' ? isBlocked : mode === 'only' ? !isBlocked : false) continue;
       counts.all += n;
       if (g.status === 'active' || g.status === 'inactive' || g.status === 'new') counts[g.status] += n;
       if (!g.inLatestErpFile) counts.missing += n;
     }
     return counts;
+  }
+
+  // ── Blocking (migration 202611170001) ──
+
+  /** A block / unblock selection by the list filters (f.blocked, default include here), in list order, at most `take` rows. */
+  blockSelection(f: ProductFilter, tab: ProductTab, take: number) {
+    return this.tx.product.findMany({
+      where: { AND: [this.where({ blocked: 'include', ...f }), TAB_WHERE[tab]] },
+      orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], take, select: { id: true, blockedAt: true },
+    });
+  }
+  blockSelectionCount(f: ProductFilter, tab: ProductTab) {
+    return this.tx.product.count({ where: { AND: [this.where({ blocked: 'include', ...f }), TAB_WHERE[tab]] } });
+  }
+  /** The given products of this store with their blocked state (another store's ids are absent). */
+  blockProducts(ids: string[]) {
+    return this.tx.product.findMany({ where: { tenantId: this.tenantId, id: { in: ids } }, orderBy: [{ nameEn: 'asc' }, { id: 'asc' }], select: { id: true, blockedAt: true } });
+  }
+  /** Blocks the not yet blocked of these products in one statement; status and every other field stay as they are. */
+  async block(ids: string[], reason: string, actorId: string, at: Date) {
+    if (!ids.length) return [];
+    const rows = await this.tx.$queryRaw<{ id: string }[]>`
+      UPDATE products SET blocked_at = ${at}, blocked_reason = ${reason}, blocked_by = ${actorId}::uuid
+      WHERE tenant_id = ${this.tenantId}::uuid AND blocked_at IS NULL AND id = ANY(${ids}::uuid[])
+      RETURNING id`;
+    return rows.map(r => r.id);
+  }
+  /** Unblocks these products in one statement: only the three blocked columns are cleared. */
+  async unblock(ids: string[]) {
+    if (!ids.length) return [];
+    const rows = await this.tx.$queryRaw<{ id: string; blocked_reason: string }[]>`
+      UPDATE products AS p SET blocked_at = NULL, blocked_reason = NULL, blocked_by = NULL
+      FROM (SELECT id, blocked_reason FROM products WHERE tenant_id = ${this.tenantId}::uuid AND blocked_at IS NOT NULL AND id = ANY(${ids}::uuid[])) AS old
+      WHERE p.tenant_id = ${this.tenantId}::uuid AND p.id = old.id
+      RETURNING p.id, old.blocked_reason`;
+    return rows.map(r => ({ id: r.id, reason: r.blocked_reason }));
+  }
+  /** Offers of these products whose dates include `at` (scheduled and ended ones are not returned). */
+  activeOffersOf(productIds: string[], at: Date) {
+    if (!productIds.length) return Promise.resolve([]);
+    return this.tx.productOffer.findMany({
+      where: {
+        tenantId: this.tenantId, productId: { in: productIds },
+        OR: [{ validFrom: null }, { validFrom: { lte: at } }],
+        AND: [{ OR: [{ validUntil: null }, { validUntil: { gte: at } }] }],
+      },
+      orderBy: [{ productId: 'asc' }, { id: 'asc' }], select: { id: true, productId: true, price: true, validFrom: true, validUntil: true },
+    });
+  }
+  /** Ends these offers now (valid_until = at); the rows stay, so the product shows the ended offer. */
+  async endOffers(offerIds: string[], at: Date) {
+    if (!offerIds.length) return 0;
+    return (await this.tx.productOffer.updateMany({ where: { tenantId: this.tenantId, id: { in: offerIds } }, data: { validUntil: at } })).count;
+  }
+  /** A blocked product has no recon rows: they are deleted on block, and the recompute does not write them again. */
+  async deleteReconRows(productIds: string[]) {
+    if (!productIds.length) return 0;
+    return this.tx.$executeRaw`DELETE FROM recon_rows WHERE tenant_id = ${this.tenantId}::uuid AND product_id = ANY(${productIds}::uuid[])`;
   }
   get(id: string) {
     return this.tx.product.findFirst({ where: { tenantId: this.tenantId, id }, select: productSelect });
@@ -265,10 +344,10 @@ export class ProductRepository {
     const cursor = after ? Prisma.sql` AND (l.marketplace_product_id, l.id) > (${after.marketplaceProductId}, ${after.id}::uuid)` : Prisma.empty;
     const rows = await this.tx.$queryRaw<{
       id: string; marketplace_product_id: string; name: string | null; barcodes: string[]; price: number; available: boolean; updated_at: Date;
-      product_id: string | null; product_name: string | null; product_barcode: string | null; product_erp_stock: number | null; upload_id: string | null; file_name: string | null;
+      product_id: string | null; product_name: string | null; product_barcode: string | null; product_erp_stock: number | null; product_blocked: boolean | null; upload_id: string | null; file_name: string | null;
     }[]>`
       SELECT l.id, l.marketplace_product_id, l.name, l.barcodes, l.price::float8 AS price, l.available, l.updated_at,
-             p.id AS product_id, p.name_en AS product_name, p.barcode AS product_barcode, p.erp_stock AS product_erp_stock, u.id AS upload_id, u.file_name
+             p.id AS product_id, p.name_en AS product_name, p.barcode AS product_barcode, p.erp_stock AS product_erp_stock, p.blocked_at IS NOT NULL AS product_blocked, u.id AS upload_id, u.file_name
       FROM listings l LEFT JOIN products p ON p.tenant_id = l.tenant_id AND p.id = l.product_id
       LEFT JOIN uploads u ON u.tenant_id = l.tenant_id AND u.id = l.upload_id
       WHERE ${where}${cursor} ORDER BY l.marketplace_product_id, l.id LIMIT ${take}`;
@@ -301,9 +380,10 @@ export class ProductRepository {
   /** What the readiness rule needs, for the given ids or (no ids) for every new product. */
   activationCandidates(ids: string[] | null) {
     return this.tx.product.findMany({
-      where: { tenantId: this.tenantId, ...(ids ? { id: { in: ids } } : { status: 'new' }) },
+      // "activate all new" never includes a blocked product; given ids are returned with blockedAt so they are skipped
+      where: { tenantId: this.tenantId, ...(ids ? { id: { in: ids } } : { status: 'new', blockedAt: null }) },
       orderBy: [{ nameEn: 'asc' }, { id: 'asc' }],
-      select: { id: true, status: true, nameAr: true, categoryId: true, subcategoryId: true },
+      select: { id: true, status: true, blockedAt: true, nameAr: true, categoryId: true, subcategoryId: true },
     });
   }
   /** One statement for any number of ids (a single uuid[] bind parameter). Only moves new products. */

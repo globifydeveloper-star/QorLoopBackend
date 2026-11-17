@@ -316,6 +316,11 @@ model Product {
   subcategoryId     String?           @map("subcategory_id") @db.Uuid
   imageKey          String?           @map("image_key")
   status            String            @default("new")
+  /// Blocked (old or seasonal): ignored by every check and change; separate from status (unblock restores it as it was).
+  blockedAt         DateTime?         @map("blocked_at") @db.Timestamptz
+  /// old | seasonal | other (CHECK constraint in 202611170001_blocked_products)
+  blockedReason     String?           @map("blocked_reason")
+  blockedBy         String?           @map("blocked_by") @db.Uuid
   updatedBy         String?           @map("updated_by")
   createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz
@@ -331,6 +336,7 @@ model Product {
   @@unique([tenantId, id])
   @@index([tenantId, sku])
   @@index([tenantId, status])
+  // Partial index products_tenant_blocked_at_idx (WHERE blocked_at IS NOT NULL): 202611170001_blocked_products.
   @@index([nameEn(ops: raw("gin_trgm_ops"))], type: Gin, map: "products_name_en_trgm_idx")
   @@map("products")
 }

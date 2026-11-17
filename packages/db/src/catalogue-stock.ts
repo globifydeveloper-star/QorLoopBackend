@@ -157,7 +157,8 @@ export class CatalogueStockRepository {
 
   /** Open conflicts, newest first (partial index catalogue_stock_edits_conflicts_idx). */
   async conflicts(skip: number, take: number) {
-    const where = { tenantId: this.tenantId, state: 'conflict' };
+    // a blocked product's conflict is not shown or counted (it stays stored; unblocking shows it again)
+    const where = { tenantId: this.tenantId, state: 'conflict', product: { blockedAt: null } };
     const [rows, total] = await Promise.all([
       this.tx.catalogueStockEdit.findMany({
         where, orderBy: [{ conflictAt: 'desc' }, { productId: 'asc' }], skip, take,
@@ -167,10 +168,10 @@ export class CatalogueStockRepository {
     ]);
     return { rows, total };
   }
-  conflictCount() { return this.tx.catalogueStockEdit.count({ where: { tenantId: this.tenantId, state: 'conflict' } }); }
+  conflictCount() { return this.tx.catalogueStockEdit.count({ where: { tenantId: this.tenantId, state: 'conflict', product: { blockedAt: null } } }); }
   /** Every open conflict's product, oldest-first by product id, at most `take` (bulk "all conflicts"). */
   async conflictProductIds(take: number) {
-    const rows = await this.tx.catalogueStockEdit.findMany({ where: { tenantId: this.tenantId, state: 'conflict' }, orderBy: { productId: 'asc' }, take, select: { productId: true } });
+    const rows = await this.tx.catalogueStockEdit.findMany({ where: { tenantId: this.tenantId, state: 'conflict', product: { blockedAt: null } }, orderBy: { productId: 'asc' }, take, select: { productId: true } });
     return rows.map(r => r.productId);
   }
 

@@ -21,8 +21,8 @@ const invalid = (path: string, message: string) => new BadRequestException({ mes
 const count = (n: number) => n.toLocaleString('en-US');
 
 /**
- * The selected products: explicit ids (any status; the planner blocks the inactive ones, absent ids count as
- * not_found), or every active product matching the filter, in list order. More than BULK_PRICE_LIMIT is refused.
+ * The selected products: explicit ids (any status; the planner blocks the inactive and the blocked ones, absent ids count
+ * as not_found), or every active, not blocked product matching the filter, in list order. More than BULK_PRICE_LIMIT is refused.
  */
 async function select(data: TenantData, input: BulkInput, compareReferenceDefault: string | undefined) {
   const { selection, marketplaceId } = input;
@@ -60,7 +60,7 @@ export async function planBulk(data: TenantData, input: BulkInput, now = new Dat
     action.type === 'match_marketplace' ? data.recon.listings([marketplaceId]) : Promise.resolve(new Map<string, { price: number }>()),
   ]);
   const plan = planBulkPriceChange(
-    products.map(p => ({ id: p.id, status: p.status, pricing: inputs.get(p.id)!.input })), notFound, action,
+    products.map(p => ({ id: p.id, status: p.status, isBlocked: p.blockedAt !== null, pricing: inputs.get(p.id)!.input })), notFound, action,
     { marketplaceId, otherMarketplaces: enabled.filter(m => m !== marketplaceId), pricing, listings, now },
   );
   const labels = new Map(products.map(p => [p.id, { nameEn: p.nameEn, barcode: p.barcode }]));
