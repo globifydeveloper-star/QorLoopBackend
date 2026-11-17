@@ -8,7 +8,7 @@ import { AuthService, type RequestContext } from '../auth/auth.service.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { BULK_IDEMPOTENCY_WINDOW_MS, BULK_TIMEOUT_MS } from './bulk-pricing.service.js';
 import {
-  OFFER_CHANGE_COLUMNS, REMOVE_CHANGE_COLUMNS, offerChangeEntry, offerPreviewToken, offerRequestHash, offersPreview, planOfferRemoval, planOffers,
+  OFFER_CHANGE_COLUMNS, REMOVE_CHANGE_COLUMNS, appliedRow, offerChangeEntry, offerPreviewToken, offerRequestHash, offersPreview, planOfferRemoval, planOffers,
   removalPreview, removeChangeEntry, removePreviewToken, removeRequestHash,
 } from './bulk-offers.js';
 
@@ -17,12 +17,19 @@ export const OFFERS_BULK_REMOVED = 'pricing.offers_bulk_removed';
 type ApplyInput = z.infer<typeof contracts.bulkOfferApply>;
 export const OFFERS_BULK_SET = 'pricing.offers_bulk_set';
 
-/** The result an apply returns, and stores in its audit event so a replay returns it again. */
+/**
+ * The result an apply returns, and stores in its audit event so a replay returns it again: the preview's counts and
+ * every row (compact: the old and new offers are in the event's changes), the totals, the token and the split.
+ */
 type ApplyResult = {
+  willChange: number;
+  unchanged: number;
+  rejected: number;
+  rows: ReturnType<typeof appliedRow>[];
   totals: ReturnType<typeof bulkOfferTotals>;
+  previewToken: string;
   created: number;
   replaced: number;
-  rejected: { index: number; productId: string; reason: string; message: string }[];
 };
 
 @Injectable()
@@ -31,7 +38,7 @@ export class BulkOffersService {
 
   /** What the bulk offer would do now, row by row; writes nothing. */
   preview(ctx: RequestContext, input: z.infer<typeof contracts.bulkOfferPreview>) {
-    return this.auth.authenticated(ctx, { permission: 'pricing.bulk', mutation: true }, async data => offersPreview(await planOffers(data, input)));
+    return this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true }, async data => offersPreview(await planOffers(data, input)));
   }
 
   /**
@@ -43,23 +50,25 @@ export class BulkOffersService {
   async apply(ctx: RequestContext, body: ApplyInput) {
     const { idempotencyKey, previewToken: expectedToken, ...input } = body;
     const hash = offerRequestHash(input);
-    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.bulk', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
+    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
       const prior = await data.pricing.bulkOperation(OFFERS_BULK_SET, idempotencyKey, new Date(Date.now() - BULK_IDEMPOTENCY_WINDOW_MS));
       if (prior) {
         const details = prior.details as { requestHash?: string; result?: ApplyResult } | null;
         if (details?.requestHash !== hash) throw new ConflictException('This idempotency key was already used for a different bulk offer');
         return { result: { operationId: prior.id, replayed: true, appliedAt: prior.createdAt, ...details.result! }, changed: false };
       }
-      const { plan } = await planOffers(data, input);
+      const { plan, labels } = await planOffers(data, input);
       const token = offerPreviewToken(plan);
       if (expectedToken && expectedToken !== token) {
         throw new ConflictException('Prices or offers changed since the preview; preview again before applying');
       }
       await data.pricing.replaceOffers(plan.sets.map(r => ({ productId: r.productId, ...r.offer! })));
       const created = plan.sets.filter(r => !r.previous).length;
+      const totals = bulkOfferTotals(plan);
       const applied: ApplyResult = {
-        totals: bulkOfferTotals(plan), created, replaced: plan.sets.length - created,
-        rejected: plan.rows.filter(r => r.outcome === 'rejected').map(r => ({ index: r.index, productId: r.productId, reason: r.reason!, message: r.message! })),
+        willChange: totals.set, unchanged: totals.unchanged, rejected: totals.rejected,
+        rows: plan.rows.map(r => appliedRow(r, labels)), totals, previewToken: token,
+        created, replaced: plan.sets.length - created,
       };
       const event = await data.event(OFFERS_BULK_SET, p.user.id, null, ctx.requestId, {
         idempotencyKey, requestHash: hash, previewToken: token,
@@ -68,13 +77,13 @@ export class BulkOffersService {
       });
       return { result: { operationId: event.id, replayed: false, appliedAt: event.createdAt, ...applied }, changed: plan.sets.length > 0 };
     });
-    if (changed) await this.recon.enqueueRecon(ctx.tenantId, 'pricing.offers_bulk');
+    if (changed) await this.recon.enqueueRecon(ctx.tenantId, 'product.offer');
     return result;
   }
 
   /** What a bulk remove would do now, product by product; writes nothing. */
   removePreview(ctx: RequestContext, input: z.infer<typeof contracts.bulkOfferRemovePreview>) {
-    return this.auth.authenticated(ctx, { permission: 'pricing.bulk', mutation: true }, async data => removalPreview(await planOfferRemoval(data, input)));
+    return this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true }, async data => removalPreview(await planOfferRemoval(data, input)));
   }
 
   /**
@@ -85,7 +94,7 @@ export class BulkOffersService {
   async removeApply(ctx: RequestContext, body: z.infer<typeof contracts.bulkOfferRemoveApply>) {
     const { idempotencyKey, previewToken: expectedToken, ...input } = body;
     const hash = removeRequestHash(input);
-    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.bulk', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
+    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true, timeout: BULK_TIMEOUT_MS }, async (data, p) => {
       const prior = await data.pricing.bulkOperation(OFFERS_BULK_REMOVED, idempotencyKey, new Date(Date.now() - BULK_IDEMPOTENCY_WINDOW_MS));
       if (prior) {
         const details = prior.details as { requestHash?: string; result?: RemoveResult } | null;
@@ -109,7 +118,7 @@ export class BulkOffersService {
       });
       return { result: { operationId: event.id, replayed: false, appliedAt: event.createdAt, ...removed }, changed: plan.removes.length > 0 };
     });
-    if (changed) await this.recon.enqueueRecon(ctx.tenantId, 'pricing.offers_bulk');
+    if (changed) await this.recon.enqueueRecon(ctx.tenantId, 'product.offer');
     return result;
   }
 }

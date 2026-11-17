@@ -46,18 +46,32 @@ const planned = (o: PlannedOffer | null) => (o ? { price: o.price, validFrom: o.
 
 /** One row as preview returns it. */
 export function offerRow(r: BulkOfferRow, labels: PlannedOffers['labels']) {
-  const label = labels.get(r.productId);
   return {
-    index: r.index, productId: r.productId, nameEn: label?.nameEn ?? null, barcode: label?.barcode ?? null,
-    outcome: r.outcome, reason: r.reason, message: r.message, warnings: r.warnings,
+    ...appliedRow(r, labels),
     normalPrice: r.normalPrice, ...(r.normalPrices ? { normalPrices: r.normalPrices } : {}), lowestNormalPrice: r.lowestNormalPrice,
     currentOffer: r.currentOffer, offer: planned(r.offer),
   };
 }
 
-/** Every row, the totals and the token; reads only. */
+/** One row as apply returns (and stores) it: the preview row without the prices and offers. */
+export function appliedRow(r: BulkOfferRow, labels: PlannedOffers['labels']) {
+  const label = labels.get(r.productId);
+  return {
+    index: r.index, productId: r.productId, nameEn: label?.nameEn ?? null, barcode: label?.barcode ?? null,
+    outcome: r.outcome, reason: r.reason, message: r.message, warnings: r.warnings,
+  };
+}
+
+/**
+ * Every row (never a sample: the panel lists each rejected row), the counts the Bulk offer table reads
+ * (willChange / unchanged / rejected), the fuller totals and the token. Apply answers the same, plus its own fields.
+ */
 export function offersPreview({ plan, labels }: PlannedOffers) {
-  return { items: plan.rows.map(r => offerRow(r, labels)), totals: bulkOfferTotals(plan), limit: BULK_OFFER_ITEMS_MAX, previewToken: offerPreviewToken(plan) };
+  const totals = bulkOfferTotals(plan);
+  return {
+    willChange: totals.set, unchanged: totals.unchanged, rejected: totals.rejected,
+    rows: plan.rows.map(r => offerRow(r, labels)), totals, limit: BULK_OFFER_ITEMS_MAX, previewToken: offerPreviewToken(plan),
+  };
 }
 
 /** The columns of each entry of the audit event's `changes` (compact arrays, product id first). */

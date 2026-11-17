@@ -1,6 +1,6 @@
 import type { MarketplaceId } from './constants.js';
 import { toFils, toQar } from './money.js';
-import { PRICE_CHANGE_MAX } from './price-change.js';
+import { MARKETPLACE_LABELS, PRICE_CHANGE_MAX } from './price-change.js';
 import {
   offerState, resolveMarketplacePrice,
   type CategoryRuleItem, type OfferInput, type PricingSettingsSnapshot, type ProductPricingInput,
@@ -75,9 +75,17 @@ export interface BulkOfferContext {
   now: Date;
 }
 
+/** One warning per fact: replaces_offer once, export_value_outranks once per marketplace whose export price wins. */
 export type BulkOfferWarning =
-  | { code: 'replaces_offer'; offer: OfferView }
-  | { code: 'export_value_outranks'; marketplaceIds: MarketplaceId[] };
+  | { code: 'replaces_offer'; message: string; offer: OfferView }
+  | { code: 'export_value_outranks'; message: string; marketplaceId: MarketplaceId };
+
+/** The Qatar calendar day (UTC+3, no daylight saving) of an instant, as YYYY-MM-DD. */
+const qatarDay = (d: Date) => new Date(d.getTime() + 3 * 3_600_000).toISOString().slice(0, 10);
+export const replacesOfferMessage = (o: StoredOffer) =>
+  `Replaces the current offer (${qar(o.price)}${o.validUntil ? `, until ${qatarDay(o.validUntil)}` : ''})`;
+export const exportValueOutranksMessage = (m: MarketplaceId) =>
+  `A pending ${MARKETPLACE_LABELS[m]} export price stays in place and outranks the offer on ${MARKETPLACE_LABELS[m]}`;
 
 export interface PlannedOffer { price: number; validFrom: Date | null; validUntil: Date | null }
 export interface BulkOfferRow {
@@ -156,9 +164,10 @@ export function planBulkOffers(items: readonly BulkOfferItem[], products: Readon
     const unchanged = stored.length === 1 && toFils(latest!.price) === toFils(offer.price)
       && sameTime(latest!.validFrom, validFrom) && sameTime(latest!.validUntil, validUntil);
     if (unchanged) return { ...base, outcome: 'unchanged', reason: null, message: null, offer, previous: null };
-    if (latest) base.warnings.push({ code: 'replaces_offer', offer: offerView(latest, ctx.now) });
-    const outranked = ctx.exportPrices.get(it.productId)?.filter(m => ctx.enabled.includes(m)) ?? [];
-    if (outranked.length) base.warnings.push({ code: 'export_value_outranks', marketplaceIds: [...outranked] });
+    if (latest) base.warnings.push({ code: 'replaces_offer', message: replacesOfferMessage(latest), offer: offerView(latest, ctx.now) });
+    for (const m of ctx.exportPrices.get(it.productId)?.filter(m => ctx.enabled.includes(m)) ?? []) {
+      base.warnings.push({ code: 'export_value_outranks', message: exportValueOutranksMessage(m), marketplaceId: m });
+    }
     return { ...base, outcome: 'set', reason: null, message: null, offer, previous: latest };
   });
   return { rows, sets: rows.filter(r => r.outcome === 'set') };

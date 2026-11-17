@@ -17,7 +17,7 @@ type OfferView  = { price: number; validFrom: string | null; validUntil: string 
 
 ## `POST /api/pricing/offers/bulk/preview`
 
-Permission `pricing.bulk`. It writes nothing. The body limit is **128 KB** on these routes (other routes keep 32 KB), so 500 rows with both dates fit.
+Permission `pricing.edit`. It writes nothing. The body limit is **128 KB** on these routes (other routes keep 32 KB), so 500 rows with both dates fit.
 
 ```ts
 // request (strict: unknown keys → 400)
@@ -31,12 +31,15 @@ Permission `pricing.bulk`. It writes nothing. The body limit is **128 KB** on th
 }
 ```
 
-A **400 for the whole request** comes from: no `items`, 0 or more than 500 items, a non-uuid `productId`, a non-number `price`, a date without an offset or that is not ISO, or an unknown key (e.g. `percent`).
+A **400 for the whole request** comes from a malformed body only: no `items`, 0 or more than 500 items, a non-uuid `productId`, a non-number `price`, a date without an offset or that is not ISO, or an unknown key (e.g. `percent`). A bad item (unknown product, bad price, bad dates) is a **rejected row**, never a 4xx for the call. These routes never answer 404.
 
 ```ts
 // response data
 {
-  items: Array<{
+  willChange: number;                  // rows that will be set
+  unchanged: number;
+  rejected: number;                    // willChange + unchanged + rejected = items sent
+  rows: Array<{                        // EVERY item, in request order (never a sample)
     index: number;                     // position in the request
     productId: string;
     nameEn: string | null; barcode: string | null;            // null when not_found
@@ -44,19 +47,21 @@ A **400 for the whole request** comes from: no `items`, 0 or more than 500 items
     reason: null | 'duplicate_row' | 'not_found' | 'product_not_active' | 'invalid_price'
                  | 'end_required' | 'end_before_start' | 'already_ended' | 'price_not_below_normal';
     message: string | null;            // e.g. "The offer price must be below the normal price (QAR 4.000)"
-    warnings: Array<
-      | { code: 'replaces_offer'; offer: OfferView }                     // the offer being replaced
-      | { code: 'export_value_outranks'; marketplaceIds: string[] }      // pending/pinned export price wins there
-    >;                                 // only on set rows
+    warnings: Array<                   // only on set rows
+      | { code: 'replaces_offer'; message: string; offer: OfferView }    // once: the offer being replaced
+      | { code: 'export_value_outranks'; message: string; marketplaceId: string }
+                                       // once PER marketplace with a pending/pinned price export value: it keeps
+                                       // winning over the offer there and is never cleared (step 0 O5)
+    >;
     normalPrice: number | null;        // price without the offer, no per-marketplace step; null when not_found
     normalPrices?: Record<string, number>;   // only with per-marketplace rules on: per enabled marketplace
     lowestNormalPrice: number | null;  // the offer must be strictly below this
     currentOffer: OfferView | null;
     offer: { price: number; validFrom: string | null; validUntil: string | null } | null; // written (set) / standing (unchanged)
   }>;
-  totals: {
+  totals: {                            // the same counts, fuller
     items: number; set: number; unchanged: number; rejected: number;   // items = set + unchanged + rejected
-    warnings: { replaces_offer: number; export_value_outranks: number };
+    warnings: { replaces_offer: number; export_value_outranks: number };   // products with that warning
     rejectedReasons: Array<{ reason: string; count: number; message: string }>;
   };
   limit: 500;
@@ -79,7 +84,7 @@ A row that passes is **`unchanged`** when the product's offer has the same price
 
 ## `POST /api/pricing/offers/bulk/apply`
 
-Permission `pricing.bulk`.
+Permission `pricing.edit`.
 
 ```ts
 // request: the preview body plus
@@ -90,10 +95,12 @@ Permission `pricing.bulk`.
   operationId: string;      // the 'pricing.offers_bulk_set' audit event
   replayed: boolean;        // true: this key was already applied; nothing written again
   appliedAt: string;
+  willChange: number; unchanged: number; rejected: number;   // as in preview; willChange = rows written
+  rows: Array<{ index; productId; nameEn; barcode; outcome; reason; message; warnings }>;   // every item (no prices)
   totals: { ...same as preview };
+  previewToken: string;     // the token of the plan that was applied
   created: number;          // set rows whose product had no offer
   replaced: number;         // set rows that replaced an offer
-  rejected: Array<{ index: number; productId: string; reason: string; message: string }>;   // reported, not written
 }
 ```
 
@@ -101,7 +108,7 @@ How apply behaves:
 
 - It runs in one transaction. It re-plans from current data and never reuses the preview.
 - It writes **only the set rows**. Rejected rows do not fail the request.
-- It records **one** audit event and queues **one** recompute (only when something was set).
+- It records **one** audit event and queues **one** recompute, `enqueueRecon('product.offer')`, only when something was set.
 - Errors:
   - `409` when `previewToken` no longer matches. Preview again.
   - `409` when the same `idempotencyKey` comes with a different body.
@@ -130,7 +137,7 @@ offer: OfferView | null;      // live: the product's offer in any state
 
 ## `POST /api/pricing/offers/bulk-remove/preview` and `/apply`
 
-Permission `pricing.bulk`. The ticked products lose their offer, whatever its state (scheduled, active or ended).
+Permission `pricing.edit`. The ticked products lose their offer, whatever its state (scheduled, active or ended).
 
 ```ts
 // preview request

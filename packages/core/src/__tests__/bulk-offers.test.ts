@@ -95,7 +95,7 @@ describe('planBulkOffers', () => {
     const moved = planBulkOffers([item('p1', 8.5, { validUntil: '2026-12-01T23:59:59.999+03:00' })], ps, ctx()).rows[0]!;
     expect(moved).toEqual(expect.objectContaining({
       outcome: 'set', previous: current,
-      warnings: [{ code: 'replaces_offer', offer: { price: 8.5, validFrom: new Date(start).toISOString(), validUntil: new Date(end).toISOString(), state: 'scheduled' } }],
+      warnings: [{ code: 'replaces_offer', message: 'Replaces the current offer (QAR 8.500, until 2026-11-30)', offer: { price: 8.5, validFrom: new Date(start).toISOString(), validUntil: new Date(end).toISOString(), state: 'scheduled' } }],
     }));
   });
 
@@ -105,10 +105,25 @@ describe('planBulkOffers', () => {
     expect(row!.outcome).toBe('set');
   });
 
-  it('warns when a pending price export value outranks the offer on an enabled marketplace', () => {
-    const exportPrices = new Map([['p1', ['talabat', 'keeta'] as const], ['p2', ['keeta'] as const]]);
+  it('warns once per enabled marketplace where a pending price export value outranks the offer', () => {
+    const exportPrices = new Map([['p1', ['talabat', 'snoonu', 'keeta'] as const], ['p2', ['keeta'] as const]]);
     const plan = planBulkOffers([item('p1', 5), item('p2', 5)], products(product('p1', 10), product('p2', 10)), ctx({ exportPrices: exportPrices as never }));
-    expect(plan.rows.map(r => r.warnings)).toEqual([[{ code: 'export_value_outranks', marketplaceIds: ['talabat'] }], []]);
+    expect(plan.rows.map(r => r.warnings)).toEqual([[
+      { code: 'export_value_outranks', marketplaceId: 'talabat', message: 'A pending Talabat export price stays in place and outranks the offer on Talabat' },
+      { code: 'export_value_outranks', marketplaceId: 'snoonu', message: 'A pending Snoonu export price stays in place and outranks the offer on Snoonu' },
+    ], []]);
+    // the totals count products, not warnings
+    expect(bulkOfferTotals(plan).warnings.export_value_outranks).toBe(1);
+  });
+
+  it('Qatar day boundaries: an end of today is valid, an end of yesterday has already ended', () => {
+    // now is 2026-11-17 12:00 in Qatar
+    const ps = products(product('p1', 10));
+    expect(reasons([item('p1', 5, { validFrom: null, validUntil: '2026-11-17T23:59:59.999+03:00' })], ps)).toEqual([null]);
+    expect(reasons([item('p1', 5, { validFrom: '2026-11-17T00:00:00.000+03:00', validUntil: '2026-11-17T23:59:59.999+03:00' })], ps)).toEqual([null]);
+    expect(reasons([item('p1', 5, { validFrom: null, validUntil: '2026-11-16T23:59:59.999+03:00' })], ps)).toEqual(['already_ended']);
+    // a start in the past is fine (the offer runs from then): only the end matters
+    expect(reasons([item('p1', 5, { validFrom: '2026-11-01T00:00:00.000+03:00', validUntil: end })], ps)).toEqual([null]);
   });
 
   it('totals, rejected reasons and the signature of the writes', () => {

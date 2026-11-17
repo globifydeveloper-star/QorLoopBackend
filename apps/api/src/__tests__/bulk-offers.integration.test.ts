@@ -81,7 +81,7 @@ afterAll(async () => { await h.close(); });
 
 describe('bulk offers: access and contract', () => {
   const body = { items: [{ productId: randomUUID(), price: 1, validUntil: END }] };
-  it('needs pricing.bulk and the CSRF token', async () => {
+  it('needs pricing.edit and the CSRF token', async () => {
     for (const path of ['preview', 'apply'] as const) {
       const b2 = path === 'apply' ? { ...body, idempotencyKey: randomUUID() } : body;
       expect((await call(path, analyst, b2)).statusCode).toBe(403);
@@ -108,6 +108,8 @@ describe('bulk offers: access and contract', () => {
     const items = Array.from({ length: 500 }, (_, i) => ({ productId: randomUUID(), price: 12.345 + i / 1000, validFrom: START, validUntil: END }));
     expect(JSON.stringify({ items }).length).toBeGreaterThan(64 * 1024);
     const data = await preview({ items });
+    expect(data).toEqual(expect.objectContaining({ willChange: 0, unchanged: 0, rejected: 500 }));
+    expect(data.rows).toHaveLength(500); // every row, never a sample
     expect(data.totals).toEqual(expect.objectContaining({ items: 500, rejected: 500, set: 0 }));
     expect(data.totals.rejectedReasons).toEqual([expect.objectContaining({ reason: 'not_found', count: 500 })]);
     const other = await h.request('POST', '/api/pricing/bulk/preview', a, manager, { marketplaceId: 'talabat', selection: { productIds: items.map(i => i.productId) }, action: { type: 'match_erp' }, padding: 'x'.repeat(40_000) });
@@ -133,7 +135,7 @@ describe('bulk offers: preview', () => {
       { productId: ids.other, price: 1, validUntil: END },                           // 7 not_found (other store)
     ];
     const data = await preview({ items });
-    const rows = data.items as Row[];
+    const rows = data.rows as Row[];
     expect(rows.map(r => [r.index, r.outcome, r.reason])).toEqual([
       [0, 'set', null], [1, 'set', null], [2, 'unchanged', null], [3, 'rejected', 'price_not_below_normal'],
       [4, 'rejected', 'end_required'], [5, 'rejected', 'product_not_active'], [6, 'rejected', 'product_not_active'], [7, 'rejected', 'not_found'],
@@ -142,7 +144,11 @@ describe('bulk offers: preview', () => {
       nameEn: 'A Milk', normalPrice: 10, lowestNormalPrice: 10, currentOffer: null, warnings: [],
       offer: { price: 8.5, validFrom: iso(START), validUntil: iso(END) },
     }));
-    expect(rows[1]!.warnings).toEqual([{ code: 'export_value_outranks', marketplaceIds: ['talabat'] }]);
+    expect(rows[1]!.warnings).toEqual([{
+      code: 'export_value_outranks', marketplaceId: 'talabat',
+      message: 'A pending Talabat export price stays in place and outranks the offer on Talabat',
+    }]);
+    expect(data).toEqual(expect.objectContaining({ willChange: 2, unchanged: 1, rejected: 5 }));
     expect(rows[2]).toEqual(expect.objectContaining({ normalPrice: 20, currentOffer: { price: 15, validFrom: null, validUntil: iso(END), state: 'active' } }));
     expect(rows[3]!.message).toBe('The offer price must be below the normal price (QAR 4.000)');
     expect(rows[7]).toEqual(expect.objectContaining({ nameEn: null, barcode: null, normalPrice: null, offer: null }));
@@ -159,7 +165,7 @@ describe('bulk offers: preview', () => {
       { productId: ids.milk, price: 5, validFrom: END, validUntil: START },
       { productId: ids.bread, price: 3, validUntil: '2020-01-01T23:59:59.999+03:00' },
       { productId: ids.laban, price: 0 },
-    ] })).items as Row[];
+    ] })).rows as Row[];
     expect(rows.map(r => r.reason)).toEqual(['duplicate_row', 'duplicate_row', 'end_before_start', 'already_ended', 'invalid_price']);
   });
 });
@@ -175,12 +181,17 @@ describe('bulk offers: apply', () => {
     const idempotencyKey = randomUUID();
     let result: Record<string, unknown> = {};
     const calls = await reconCalls(async () => { result = await apply({ ...body, idempotencyKey, previewToken }); });
-    expect(calls).toEqual([{ tenantId: a.id, reason: 'pricing.offers_bulk' }]);
+    expect(calls).toEqual([{ tenantId: a.id, reason: 'product.offer' }]);
     expect(result).toEqual(expect.objectContaining({
-      replayed: false, created: 1, replaced: 1,
+      replayed: false, created: 1, replaced: 1, willChange: 2, unchanged: 0, rejected: 1, previewToken,
       totals: expect.objectContaining({ items: 3, set: 2, unchanged: 0, rejected: 1, warnings: { replaces_offer: 1, export_value_outranks: 0 } }),
-      rejected: [{ index: 2, productId: ids.bread, reason: 'price_not_below_normal', message: 'The offer price must be below the normal price (QAR 4.000)' }],
     }));
+    const rows = result.rows as Row[];
+    expect(rows.map(r => [r.productId, r.outcome, r.reason])).toEqual([
+      [ids.milk, 'set', null], [ids.cheese, 'set', null], [ids.bread, 'rejected', 'price_not_below_normal'],
+    ]);
+    expect(rows[1]!.warnings).toEqual([expect.objectContaining({ code: 'replaces_offer', message: expect.stringContaining('QAR 15.000') })]);
+    expect(rows[2]).toEqual(expect.objectContaining({ nameEn: 'C Bread', message: 'The offer price must be below the normal price (QAR 4.000)' }));
     expect(await offersOf('milk')).toEqual([{ price: 8.5, validFrom: iso(START), validUntil: iso(END) }]);
     expect(await offersOf('cheese')).toEqual([{ price: 14, validFrom: iso(START), validUntil: iso(END) }]);
     expect(await offersOf('bread')).toEqual([]);
@@ -260,7 +271,7 @@ describe('offer fields on the product list and the Review', () => {
 
 describe('bulk offer removal', () => {
   const remove = (path: 'preview' | 'apply', who: Session, body: Body) => h.request('POST', `/api/pricing/offers/bulk-remove/${path}`, a, who, body);
-  it('needs pricing.bulk; a malformed body is a 400', async () => {
+  it('needs pricing.edit; a malformed body is a 400', async () => {
     expect((await remove('preview', analyst, { productIds: [ids.milk] })).statusCode).toBe(403);
     for (const bad of [{}, { productIds: [] }, { productIds: ['x'] }, { productIds: Array.from({ length: 501 }, () => randomUUID()) }, { productIds: [ids.milk], all: true }]) {
       expect((await remove('preview', manager, bad)).statusCode).toBe(400);
@@ -297,7 +308,7 @@ describe('bulk offer removal', () => {
       expect([r.statusCode, r.statusCode === 200 ? null : r.body]).toEqual([200, null]);
       result = r.json().data;
     });
-    expect(calls).toEqual([{ tenantId: a.id, reason: 'pricing.offers_bulk' }]);
+    expect(calls).toEqual([{ tenantId: a.id, reason: 'product.offer' }]);
     expect(result).toEqual(expect.objectContaining({
       replayed: false, totals: expect.objectContaining({ remove: 2, skipped: 2 }),
       skipped: [{ productId: ids.laban, reason: 'no_offer', message: 'This product has no offer' }, { productId: unknown, reason: 'not_found', message: 'No product with this id in this store' }],
