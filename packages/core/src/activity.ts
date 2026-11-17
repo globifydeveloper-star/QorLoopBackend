@@ -5,7 +5,8 @@ export const ACTIVITY_GROUPS = ['price', 'stock_uploads', 'catalogue', 'team_sec
 export type ActivityGroup = typeof ACTIVITY_GROUPS[number];
 export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
   price: ['pricing.settings_changed', 'pricing.marketplace_rule_set', 'pricing.marketplace_rule_deleted', 'pricing.category_rule_set',
-    'pricing.category_rule_deleted', 'pricing.prices_adopted', 'pricing.bulk_applied', 'product.price_rule_set', 'product.price_rule_deleted', 'product.offer_set', 'product.offer_deleted'],
+    'pricing.category_rule_deleted', 'pricing.prices_adopted', 'pricing.bulk_applied', 'product.price_rule_set', 'product.price_rule_deleted', 'product.offer_set', 'product.offer_deleted',
+    'pricing.offers_bulk_set', 'pricing.offers_bulk_removed'],
   stock_uploads: ['upload.created', 'upload.rejected', 'upload.queued', 'upload.mapping_confirmed', 'upload.apply_requested', 'upload.discarded',
     'upload.needs_mapping', 'upload.reviewed', 'upload.failed', 'upload.applied', 'upload.apply_failed', 'recon.recompute_requested', 'recon.failed', 'file.generated', 'file.generation_failed',
     'template.updated',
@@ -75,6 +76,31 @@ export function presentActivity(action: string, details: unknown, options: { pro
         summary = 'Product price changed by a bulk operation';
         change('rule', row[1] === null ? null : rule({ mode: row[1], value: row[2] }), row[3] === null ? null : rule({ mode: row[3], value: row[4] }));
         change('price', number(row[5]), number(row[6]));
+      }
+    }
+  } else if (action === 'pricing.offers_bulk_set') {
+    const count = number(object(object(d.result).totals).set);
+    summary = count === null ? 'Bulk offer set' : `Bulk offer set on ${count} products`;
+    if (options.productId && Array.isArray(d.changes) && Array.isArray(d.changeColumns) &&
+      d.changeColumns.join(',') === 'productId,oldPrice,oldFrom,oldUntil,newPrice,newFrom,newUntil') {
+      const row = d.changes.find((c: unknown) => Array.isArray(c) && c[0] === options.productId) as unknown[] | undefined;
+      if (row?.length === 7) {
+        summary = 'Product offer set by a bulk operation';
+        change('offerPrice', number(row[1]), number(row[4]));
+        change('offerStart', text(row[2]), text(row[5]));
+        change('offerEnd', text(row[3]), text(row[6]));
+      }
+    }
+  } else if (action === 'pricing.offers_bulk_removed') {
+    const count = number(object(object(d.result).totals).remove);
+    summary = count === null ? 'Bulk offer removal' : `Offers removed from ${count} products`;
+    if (options.productId && Array.isArray(d.changes) && Array.isArray(d.changeColumns) && d.changeColumns.join(',') === 'productId,oldPrice,oldFrom,oldUntil') {
+      const row = d.changes.find((c: unknown) => Array.isArray(c) && c[0] === options.productId) as unknown[] | undefined;
+      if (row?.length === 4) {
+        summary = 'Product offer removed by a bulk operation';
+        change('offerPrice', number(row[1]), null);
+        change('offerStart', text(row[2]), null);
+        change('offerEnd', text(row[3]), null);
       }
     }
   } else if (action === 'product.stock_set' || action === 'product.stock_reset') {

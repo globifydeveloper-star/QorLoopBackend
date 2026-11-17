@@ -5,6 +5,21 @@ import {
   type OfferInput, type PriceChainStep, type PriceRule, type ProductPricingInput,
 } from '../../../../packages/core/src/pricing.js';
 import { enabledMarketplaces } from '../../../../packages/core/src/recon/compute.js';
+import { offerView, type OfferView } from '../../../../packages/core/src/bulk-offers.js';
+
+/**
+ * The offer fields of a list row (product list, Review): the price without the offer (on `marketplace` when given,
+ * otherwise without the per-marketplace step) and the product's offer in any state (the last one if legacy
+ * duplicates exist). Pure: the page's inputs are already loaded.
+ */
+export function offerFields(
+  pricing: TenantPricing, input: ProductPricingInput, offers: { price: Decimalish; validFrom: Date | null; validUntil: Date | null }[],
+  now: Date, marketplace?: MarketplaceId,
+): { normalPrice: number; offer: OfferView | null } {
+  const normalPrice = resolveMarketplacePrice({ ...input, offers: [] }, pricing.snapshot, pricing.categoryRules, { now, marketplace }).price;
+  const last = offers.at(-1);
+  return { normalPrice, offer: last ? offerView({ price: last.price.toNumber(), validFrom: last.validFrom, validUntil: last.validUntil }, now) : null };
+}
 
 type Decimalish = { toNumber(): number };
 /** 'same' has no value on the wire, in either direction. */

@@ -18,7 +18,7 @@ import type { ReconQueue } from '../../../../packages/shared/src/recon.js';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
 import { RECON_QUEUE } from '../tokens.js';
 import { searchFilter } from '../products/products.service.js';
-import { enabledMarketplaceIds } from '../pricing/pricing.data.js';
+import { enabledMarketplaceIds, loadPricing, offerFields, productInputs } from '../pricing/pricing.data.js';
 import { canonical } from '../pricing/bulk-pricing.js';
 import { BULK_IDEMPOTENCY_WINDOW_MS, BULK_TIMEOUT_MS } from '../pricing/bulk-pricing.service.js';
 
@@ -66,8 +66,24 @@ function filterFor(ctx: Context, marketplaceId: MarketplaceId, f: Pick<ReviewQue
   };
 }
 
+type OfferFields = ReturnType<typeof offerFields>;
+/**
+ * The live offer fields of a page of Review rows on one marketplace: the price without the offer (the per-marketplace
+ * step included) and the product's offer. A fixed number of queries per page whatever its size.
+ */
+export async function reviewOffers(data: TenantData, marketplaceId: MarketplaceId, productIds: string[]): Promise<Map<string, OfferFields>> {
+  if (!productIds.length) return new Map();
+  const [products, pricing] = await Promise.all([data.products.pricingProducts(productIds), loadPricing(data)]);
+  const inputs = await productInputs(data, products);
+  const now = new Date();
+  return new Map(products.map(p => {
+    const { input, offers } = inputs.get(p.id)!;
+    return [p.id, offerFields(pricing, input, offers, now, marketplaceId)];
+  }));
+}
+
 /** One Review row as the API returns it (also the `item` of every single change). */
-export function reviewItem(r: ReviewDbRow & OverrideColumns, ctx: Context) {
+export function reviewItem(r: ReviewDbRow & OverrideColumns, ctx: Context, offer: OfferFields | null = null) {
   const override = storedOverride(r);
   const listed = r.actual_price !== null;
   const result = reviewRow({
@@ -93,6 +109,8 @@ export function reviewItem(r: ReviewDbRow & OverrideColumns, ctx: Context) {
     catalogue: {
       available: r.catalogue_available, price: r.marketplace_price, priceSource: r.marketplace_price_source,
       stock: stock.stock, stockSource: stock.source, stockConflict: edit?.state === 'conflict',
+      /** live: the price on this marketplace without the offer, and the product's offer (any state) */
+      normalPrice: offer?.normalPrice ?? null, offer: offer?.offer ?? null,
     },
     export: result.export,
     values: { availability: value('availability', override?.availability ?? null, r.availability_set_by_name), price: value('price', override?.price ?? null, r.price_set_by_name) },
@@ -151,11 +169,12 @@ export class MarketplaceValuesService {
       ]);
       const page = rows.slice(0, query.limit);
       const last = page[page.length - 1];
+      const offers = await reviewOffers(data, query.marketplaceId, page.map(r => r.product_id));
       return {
         marketplaceId: query.marketplaceId, marketplaceEnabled: c.marketplaceEnabled,
         counts: all.get(query.marketplaceId) ?? { toFix: 0, waitingForExport: 0, pinned: 0, blocked: 0 },
         latestFile: c.latestFile,
-        items: page.map(r => reviewItem(r, c)),
+        items: page.map(r => reviewItem(r, c, offers.get(r.product_id) ?? null)),
         nextCursor: rows.length > query.limit && last ? encodeReviewCursor({ rank: Number(last.rank), productId: last.product_id }) : null,
       };
     });
@@ -172,7 +191,7 @@ export class MarketplaceValuesService {
 
   private async row(data: TenantData, c: Context, marketplaceId: MarketplaceId, productId: string) {
     const [r] = await data.marketplaceValues.reviewPage(filterFor(c, marketplaceId, { show: 'all' }, [productId]), null, 1);
-    return r ? reviewItem(r, c) : null;
+    return r ? reviewItem(r, c, (await reviewOffers(data, marketplaceId, [productId])).get(productId) ?? null) : null;
   }
 
   /**

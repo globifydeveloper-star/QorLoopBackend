@@ -12,6 +12,10 @@ import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract, ZodPipe } from '../http/contracts.js';
 import { PricingService } from './pricing.service.js';
 import { BulkPricingService } from './bulk-pricing.service.js';
+import { BulkOffersService } from './bulk-offers.service.js';
+import {
+  BULK_OFFER_ITEMS_MAX, BULK_OFFER_OUTCOMES, BULK_OFFER_REJECT_REASONS, BULK_OFFER_REMOVE_SKIP_REASONS, BULK_OFFER_WARNINGS, OFFER_VIEW_STATES,
+} from '../../../../packages/core/src/bulk-offers.js';
 
 const rule = { mode: { type: 'string', enum: ['percent', 'amount', 'fixed', 'same'] }, value: { type: 'number', description: 'Absent for same' } };
 const settings = {
@@ -123,6 +127,97 @@ const bulkApplySchema = {
   },
 };
 
+// ───────── Bulk offers ─────────
+const isoOrNull = { type: ['string', 'null'], format: 'date-time' };
+export const offerViewSchema = {
+  type: 'object', properties: {
+    price: { type: 'number' }, validFrom: isoOrNull, validUntil: isoOrNull, state: { type: 'string', enum: [...OFFER_VIEW_STATES] },
+  },
+};
+const offerWarning = {
+  type: 'object', description: 'replaces_offer (once) carries the offer it replaces; export_value_outranks comes once per marketplace whose pending price export value wins over the offer there (it is never cleared)',
+  properties: {
+    code: { type: 'string', enum: [...BULK_OFFER_WARNINGS] }, message: { type: 'string' },
+    offer: offerViewSchema, marketplaceId,
+  },
+};
+const offerCounts = {
+  willChange: { ...count, description: 'Rows that will be (or were) set' }, unchanged: count,
+  rejected: { ...count, description: 'Rows reported and not written' },
+};
+const offerTotals = {
+  type: 'object', properties: {
+    items: { ...count, description: 'set + unchanged + rejected' }, set: count, unchanged: count, rejected: count,
+    warnings: { type: 'object', properties: Object.fromEntries(BULK_OFFER_WARNINGS.map(w => [w, count])) },
+    rejectedReasons: { type: 'array', items: { type: 'object', properties: { reason: { type: 'string', enum: [...BULK_OFFER_REJECT_REASONS] }, count, message: { type: 'string' } } } },
+  },
+};
+const offerAppliedRow = {
+  type: 'object', properties: {
+    index: { ...count, description: 'Position in the request' }, productId: { type: 'string', format: 'uuid' },
+    nameEn: { type: ['string', 'null'] }, barcode: { type: ['string', 'null'] },
+    outcome: { type: 'string', enum: [...BULK_OFFER_OUTCOMES] },
+    reason: { type: ['string', 'null'], enum: [...BULK_OFFER_REJECT_REASONS, null], description: 'The first failing rule, in this order' },
+    message: { type: ['string', 'null'] },
+    warnings: { type: 'array', items: offerWarning },
+  },
+};
+const offerPreviewRow = {
+  type: 'object', properties: {
+    ...offerAppliedRow.properties,
+    normalPrice: { type: ['number', 'null'], description: 'The price without the offer (no per-marketplace step); null when not_found' },
+    normalPrices: { type: 'object', description: 'Only with per-marketplace rules on: the price without the offer per enabled marketplace', additionalProperties: { type: 'number' } },
+    lowestNormalPrice: { type: ['number', 'null'], description: 'The lowest normal price across the enabled marketplaces; the offer must be below it' },
+    currentOffer: { ...offerViewSchema, type: ['object', 'null'] },
+    offer: { type: ['object', 'null'], description: 'What is written (set) or already stands (unchanged); null when rejected', properties: { price: { type: 'number' }, validFrom: isoOrNull, validUntil: isoOrNull } },
+  },
+};
+const offerPreviewSchema = {
+  type: 'object', properties: {
+    ...offerCounts,
+    rows: { type: 'array', description: 'Every item, in request order (never a sample)', items: offerPreviewRow }, totals: offerTotals,
+    limit: { ...count, description: `At most ${BULK_OFFER_ITEMS_MAX} items per request` },
+    previewToken: { type: 'string', description: 'Send it with apply: 409 if the re-planned writes differ' },
+  },
+};
+const offerApplySchema = {
+  type: 'object', properties: {
+    operationId: { type: 'string', format: 'uuid', description: "The 'pricing.offers_bulk_set' audit event" },
+    replayed: { type: 'boolean', description: 'true: this idempotency key was already applied; nothing was written again' },
+    appliedAt: { type: 'string', format: 'date-time' },
+    ...offerCounts,
+    rows: { type: 'array', description: 'Every item, in request order: outcome, reason, message and warnings', items: offerAppliedRow },
+    totals: offerTotals,
+    previewToken: { type: 'string', description: 'The token of the plan that was applied' },
+    created: { ...count, description: 'Set rows whose product had no offer' }, replaced: { ...count, description: 'Set rows that replaced an offer' },
+  },
+};
+const removeTotals = {
+  type: 'object', properties: {
+    products: { ...count, description: 'Distinct ids: remove + skipped' }, remove: count, skipped: count,
+    skippedReasons: { type: 'array', items: { type: 'object', properties: { reason: { type: 'string', enum: [...BULK_OFFER_REMOVE_SKIP_REASONS] }, count, message: { type: 'string' } } } },
+  },
+};
+const removePreviewSchema = {
+  type: 'object', properties: {
+    items: { type: 'array', items: { type: 'object', properties: {
+      productId: { type: 'string', format: 'uuid' }, nameEn: { type: ['string', 'null'] }, barcode: { type: ['string', 'null'] },
+      outcome: { type: 'string', enum: ['remove', 'skipped'] }, reason: { type: ['string', 'null'], enum: [...BULK_OFFER_REMOVE_SKIP_REASONS, null] },
+      message: { type: ['string', 'null'] }, currentOffer: { ...offerViewSchema, type: ['object', 'null'], description: 'The offer removed' },
+      normalPrice: { type: ['number', 'null'], description: 'The price after removal (no per-marketplace step); null when not_found' },
+    } } },
+    totals: removeTotals, limit: count, previewToken: { type: 'string', description: 'Send it with apply: 409 if the offers changed' },
+  },
+};
+const removeApplySchema = {
+  type: 'object', properties: {
+    operationId: { type: 'string', format: 'uuid', description: "The 'pricing.offers_bulk_removed' audit event" },
+    replayed: { type: 'boolean' }, appliedAt: { type: 'string', format: 'date-time' }, totals: removeTotals,
+    skipped: { type: 'array', items: { type: 'object', properties: { productId: { type: 'string' }, reason: { type: 'string', enum: [...BULK_OFFER_REMOVE_SKIP_REASONS] }, message: { type: 'string' } } } },
+  },
+};
+const offerDates = 'Dates are ISO instants with an offset: the UI sends a Qatar start day D as D T00:00:00.000+03:00 and an end day E as E T23:59:59.999+03:00';
+
 @ApiTags('Pricing')
 @ApiCookieAuth()
 @Controller('api')
@@ -130,8 +225,33 @@ export class PricingController {
   constructor(
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(BulkPricingService) private readonly bulk: BulkPricingService,
+    @Inject(BulkOffersService) private readonly bulkOffers: BulkOffersService,
     @Inject(CONFIG) private readonly config: Config,
   ) {}
+
+  @Post('pricing/offers/bulk/preview') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract(`What a bulk offer would do, row by row (1 to ${BULK_OFFER_ITEMS_MAX} items, each with its own price and dates): outcome set, unchanged or rejected with a reason, warnings, the normal price, the current offer, totals and a preview token. ${offerDates}. Writes nothing`, dto.bulkOfferPreview, offerPreviewSchema)
+  offersBulkPreview(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferPreview)) input: z.infer<typeof dto.bulkOfferPreview>) {
+    return this.bulkOffers.preview(context(req, this.config), input);
+  }
+
+  @Post('pricing/offers/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract(`Apply a bulk offer, re-planned from current data: the valid rows are written in one transaction with one audit event and one recompute, rejected rows are reported and not written; the same idempotencyKey and body answers the first result again (replayed: true), another body 409; a stale previewToken 409. ${offerDates}`, dto.bulkOfferApply, offerApplySchema)
+  offersBulkApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferApply)) input: z.infer<typeof dto.bulkOfferApply>) {
+    return this.bulkOffers.apply(context(req, this.config), input);
+  }
+
+  @Post('pricing/offers/bulk-remove/preview') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract(`What removing the offers of the ticked products would do (1 to ${BULK_OFFER_ITEMS_MAX} ids, duplicates counted once): per product remove or skipped (not_found, no_offer), the offer removed, the price after removal, totals and a preview token. Writes nothing`, dto.bulkOfferRemovePreview, removePreviewSchema)
+  offersBulkRemovePreview(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferRemovePreview)) input: z.infer<typeof dto.bulkOfferRemovePreview>) {
+    return this.bulkOffers.removePreview(context(req, this.config), input);
+  }
+
+  @Post('pricing/offers/bulk-remove/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Contract('Remove the offers of the ticked products (any state), re-planned from current data, in one transaction with one audit event and one recompute; skipped products are reported; the same idempotencyKey and ids answers the first result again (replayed: true), other ids 409; a stale previewToken 409', dto.bulkOfferRemoveApply, removeApplySchema)
+  offersBulkRemoveApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferRemoveApply)) input: z.infer<typeof dto.bulkOfferRemoveApply>) {
+    return this.bulkOffers.removeApply(context(req, this.config), input);
+  }
 
   @Post('pricing/bulk/preview') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
   @Contract(`What a bulk price change would do on one marketplace (at most ${BULK_PRICE_LIMIT} products): counts, blocked reasons, the largest increase and decrease, the first 10 rows and a preview token. Writes nothing`, dto.bulkPricePreview, bulkPreviewSchema)

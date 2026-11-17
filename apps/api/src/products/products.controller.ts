@@ -10,6 +10,7 @@ import { ProductsService } from './products.service.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
 import { RECON_REFERENCES, STOCK_ISSUES } from '../../../../packages/core/src/recon/status.js';
 import { MARKETPLACE_COMPARISONS, MARKETPLACE_STATUS_FILTERS, MARKETPLACES_DIFFER, PRICE_ISSUES } from '../../../../packages/core/src/products/marketplace-view.js';
+import { offerViewSchema } from '../pricing/pricing.controller.js';
 
 /** Only with ?marketplaceId. An object so later fields (for example an export value) can be added beside these. */
 const marketplace = {
@@ -40,6 +41,9 @@ const product = {
     updatedAt: { type: 'string', format: 'date-time' },
     marketplace,
     compareMarketplace: { ...marketplace, description: 'Only with compareMarketplaceId: the product on the second marketplace (same shape as marketplace)' },
+    marketplacePrice: { type: 'object', description: 'Only with pricing.view: the resolved price (offer included), without the per-marketplace step', properties: { price: { type: 'number' }, source: { type: 'string' } } },
+    normalPrice: { type: 'number', description: 'Only with pricing.view: the price without the offer, without the per-marketplace step' },
+    offer: { ...offerViewSchema, type: ['object', 'null'], description: "Only with pricing.view: the product's offer in any state (scheduled, active, ended), null when none" },
   },
 };
 const tabCounts = { type: 'object', properties: Object.fromEntries(dto.productTab.options.map(t => [t, { type: 'integer' }])) };
