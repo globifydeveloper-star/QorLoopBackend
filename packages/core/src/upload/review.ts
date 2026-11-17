@@ -15,6 +15,8 @@ export interface CatalogProduct {
   inLatestErpFile: boolean;
   /** ERP review only: the owner's catalogue stock edit, to predict stock conflicts (ADR 017) */
   stockEdit?: StockEdit | null;
+  /** Blocked (migration 202611170001): the row still updates the product, but it is never a change to review or missing */
+  isBlocked?: boolean;
 }
 
 export interface CatalogListing {
@@ -37,6 +39,8 @@ export interface ReviewRow {
   availability?: { old: boolean | null; new: boolean };
   /** ERP: the stock change will meet an owner-edited catalogue stock and raise a conflict */
   stockConflict?: boolean;
+  /** The row matches a blocked product: shown as no change (changeType none), never counted as a change */
+  isBlocked?: true;
 }
 
 export interface ReviewSummary {
@@ -59,10 +63,13 @@ export interface ReviewSummary {
   costIgnored: number;
   /** ERP rows whose negative stock was stored as 0 */
   negativeStockClamped: number;
+  /** Rows matching a blocked product: they update it (ERP) or its listing (marketplace) but count as no change */
+  blockedProducts: number;
 }
 
 /** The summary stored on an upload at review time and returned by the API (older uploads may lack the optional counts). */
-export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored' | 'negativeStockClamped' | 'nameChanges' | 'costChanges' | 'stockConflicts'> & {
+export type StoredReviewSummary = Omit<ReviewSummary, 'costIgnored' | 'negativeStockClamped' | 'nameChanges' | 'costChanges' | 'stockConflicts' | 'blockedProducts'> & {
+  blockedProducts?: number;
   costIgnored?: number;
   negativeStockClamped?: number;
   nameChanges?: number;
@@ -110,7 +117,7 @@ export function buildErpReview(
   const out: ReviewRow[] = [];
   const seenProducts = new Set<string>();
   let matched = 0, priceChanges = 0, stockChanges = 0, newProducts = 0, costIgnored = 0, negativeStockClamped = 0;
-  let nameChanges = 0, costChanges = 0, stockConflicts = 0;
+  let nameChanges = 0, costChanges = 0, stockConflicts = 0, blockedProducts = 0;
   const costMapped = Boolean(fields.cost);
 
   const kept = new Map<string, ErpRow>();
@@ -135,6 +142,12 @@ export function buildErpReview(
     }
     matched++;
     seenProducts.add(p.id);
+    if (p.isBlocked) {
+      // still applied to the product (planErpApply), never a change to review
+      blockedProducts++;
+      out.push({ rowNumber: r.rowNumber, changeType: 'none', productId: p.id, parsed: r, isBlocked: true });
+      continue;
+    }
     const priceChanged = !sameMoney(p.erpPrice, r.price);
     const stockChanged = p.erpStock !== r.stock;
     if (priceChanged) priceChanges++;
@@ -161,7 +174,7 @@ export function buildErpReview(
 
   const missing =
     contains === 'full'
-      ? products.filter((p) => p.inLatestErpFile && !seenProducts.has(p.id)).map((p) => ({ productId: p.id, barcode: p.normalizedBarcode }))
+      ? products.filter((p) => p.inLatestErpFile && !p.isBlocked && !seenProducts.has(p.id)).map((p) => ({ productId: p.id, barcode: p.normalizedBarcode }))
       : [];
 
   return {
@@ -170,7 +183,7 @@ export function buildErpReview(
     errors,
     summary: {
       rowsRead, matched, newProducts, rowsWithErrors: errors.length,
-      priceChanges, stockChanges, nameChanges, costChanges, stockConflicts, missingFromFile: missing.length, unmatched: 0, costIgnored, negativeStockClamped,
+      priceChanges, stockChanges, nameChanges, costChanges, stockConflicts, missingFromFile: missing.length, unmatched: 0, costIgnored, negativeStockClamped, blockedProducts,
     },
   };
 }
@@ -231,7 +244,7 @@ export function buildMarketplaceReview(
   const out: ReviewRow[] = [];
   const seenProducts = new Set<string>();
   const seenIds = new Set<string>();
-  let matched = 0, priceChanges = 0, availChanges = 0, unmatched = 0;
+  let matched = 0, priceChanges = 0, availChanges = 0, unmatched = 0, blockedProducts = 0;
 
   for (const r of rows) {
     if (seenIds.has(r.marketplaceProductId)) {
@@ -254,6 +267,12 @@ export function buildMarketplaceReview(
     }
     matched++;
     seenProducts.add(p.id);
+    if (p.isBlocked) {
+      // the listing is still stored, but a blocked product is never a change, a mismatch or missing
+      blockedProducts++;
+      out.push({ rowNumber: r.rowNumber, changeType: 'none', productId: p.id, parsed: r, isBlocked: true });
+      continue;
+    }
     const old = current.get(p.id);
     const priceChanged = !old || !sameMoney(old.price, r.price);
     const availChanged = !old || old.available !== r.available;
@@ -271,7 +290,7 @@ export function buildMarketplaceReview(
 
   const missing =
     contains === 'full'
-      ? [...current.keys()].filter((id) => !seenProducts.has(id)).map((id) => ({ productId: id, barcode: products.find((p) => p.id === id)?.normalizedBarcode ?? '' }))
+      ? [...current.keys()].filter((id) => !seenProducts.has(id) && !byId.get(id)?.isBlocked).map((id) => ({ productId: id, barcode: products.find((p) => p.id === id)?.normalizedBarcode ?? '' }))
       : [];
 
   return {
@@ -281,7 +300,7 @@ export function buildMarketplaceReview(
     summary: {
       rowsRead, matched, newProducts: 0, rowsWithErrors: errors.length,
       priceChanges, stockChanges: availChanges, nameChanges: 0, costChanges: 0, stockConflicts: 0,
-      missingFromFile: missing.length, unmatched, costIgnored: 0, negativeStockClamped: 0,
+      missingFromFile: missing.length, unmatched, costIgnored: 0, negativeStockClamped: 0, blockedProducts,
     },
   };
 }

@@ -51,12 +51,15 @@ export class ReconRepository {
     return new Map(rows.map(r => [r.source, r.at]));
   }
 
-  /** Every product with its pricing inputs: three statements whatever the catalogue size. */
+  /**
+   * Every product with its pricing inputs: three statements whatever the catalogue size. Blocked products are left out
+   * (migration 202611170001), so the recompute removes their rows and no summary, Dashboard or Review list counts them.
+   */
   async products(): Promise<ReconCatalogueProduct[]> {
     const [products, rules, offers, edits] = await Promise.all([
       this.tx.$queryRaw<{ id: string; status: string; erp_active: boolean; in_latest_erp_file: boolean; erp_stock: number; erp_price: number; category_id: string | null; subcategory_id: string | null }[]>`
         SELECT id, status, erp_active, in_latest_erp_file, erp_stock, erp_price::float8 AS erp_price, category_id, subcategory_id
-        FROM products WHERE tenant_id = ${this.tenantId}::uuid`,
+        FROM products WHERE tenant_id = ${this.tenantId}::uuid AND blocked_at IS NULL`,
       this.tx.$queryRaw<{ product_id: string; mode: string; value: number }[]>`
         SELECT product_id, mode, value::float8 AS value FROM product_price_rules WHERE tenant_id = ${this.tenantId}::uuid`,
       this.tx.$queryRaw<{ product_id: string; price: number; valid_from: Date | null; valid_until: Date | null }[]>`
@@ -272,6 +275,8 @@ export class ReconRepository {
     const rank = Prisma.sql`(CASE WHEN ${stock} = 'available_but_out_of_stock' THEN 0 WHEN ${stock} = 'unavailable_but_in_stock' THEN 1 WHEN ${priceFlag} THEN 2 ELSE 3 END)`;
     const filters = [
       Prisma.sql`r.tenant_id = ${this.tenantId}::uuid`, Prisma.sql`r.marketplace_id = ${q.marketplaceId}`,
+      // a blocked product has no recon rows once recomputed; this also holds before the recompute runs
+      Prisma.sql`p.blocked_at IS NULL`,
       ...(q.type === 'stock' ? [Prisma.sql`${stock} IS NOT NULL`] : q.type === 'price' ? [priceFlag] : []),
       ...(q.status ? [Prisma.sql`${status} = ${q.status}`] : []),
       ...(q.after ? [Prisma.sql`(${rank}, r.product_id) > (${q.after.rank}::int, ${q.after.productId}::uuid)`] : []),

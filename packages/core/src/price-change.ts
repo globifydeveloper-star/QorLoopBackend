@@ -2,6 +2,7 @@ import type { MarketplaceId } from './constants.js';
 import { toFils, toQar } from './money.js';
 import { resolveMarketplacePrice, type CategoryRuleItem, type PriceRule, type PriceSource, type PricingSettingsSnapshot, type ProductPricingInput } from './pricing.js';
 import { planPriceAdoption, type AdoptSkipReason } from './price-adoption.js';
+import { PRODUCT_BLOCKED_MESSAGE } from './products/blocking.js';
 
 /**
  * Changing prices by hand: the inline edit of one product and (bulk-pricing) many products at once. Both write the
@@ -99,7 +100,7 @@ export type BulkPriceActionType = BulkPriceAction['type'];
 
 /** Why a selected product cannot take the change, in the order they are checked. */
 export const BULK_BLOCK_REASONS = [
-  'not_found', 'not_active', 'offer_active', 'no_listing', 'non_positive_listing_price', 'non_positive_erp_price',
+  'not_found', 'product_blocked', 'not_active', 'offer_active', 'no_listing', 'non_positive_listing_price', 'non_positive_erp_price',
   'price_not_positive', 'price_too_high', 'unverifiable',
 ] as const;
 export type BulkBlockReason = (typeof BULK_BLOCK_REASONS)[number];
@@ -109,6 +110,7 @@ export function bulkBlockMessage(reason: BulkBlockReason, marketplaceId: Marketp
   const m = MARKETPLACE_LABELS[marketplaceId];
   switch (reason) {
     case 'not_found': return 'Not found in this store';
+    case 'product_blocked': return PRODUCT_BLOCKED_MESSAGE;
     case 'not_active': return 'Not active (only active products can be priced)';
     case 'offer_active': return 'A current offer sets the price; change or remove the offer first';
     case 'no_listing': return `Not listed on ${m}`;
@@ -122,6 +124,8 @@ export function bulkBlockMessage(reason: BulkBlockReason, marketplaceId: Marketp
 export interface BulkPriceProduct {
   id: string;
   status: string;
+  /** Blocked (migration 202611170001): counted as product_blocked, never priced. */
+  isBlocked?: boolean;
   pricing: ProductPricingInput;
 }
 
@@ -182,7 +186,8 @@ export function planBulkPriceChange(products: readonly BulkPriceProduct[], notFo
     resolveMarketplacePrice(input, snapshot, categoryRules, { marketplace, now: ctx.now });
   const active: BulkPriceProduct[] = [];
   for (const p of products) {
-    if (p.status === 'active') active.push(p);
+    if (p.isBlocked) blocked.product_blocked++;
+    else if (p.status === 'active') active.push(p);
     else blocked.not_active++;
   }
 

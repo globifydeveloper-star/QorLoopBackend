@@ -18,6 +18,7 @@ import { enabledMarketplaceIds, loadPricing, marketplacePrice, offerFields, prod
 
 import { catalogueAvailable } from '../../../../packages/core/src/recon/status.js';
 import { BLOCKED_REASON_LABELS, setBlockReason } from '../../../../packages/core/src/marketplace-values.js';
+import { PRODUCT_BLOCKED_MESSAGE } from '../../../../packages/core/src/products/blocking.js';
 
 const MAX_SKIPPED_LISTED = 200;
 
@@ -168,9 +169,10 @@ export class ProductsService {
         data.marketplaceValues.targets(ids, query.marketplaceId), data.stock.edits(ids), data.recon.settings(), enabledMarketplaceIds(data),
       ]);
       const byProduct = new Map(targets.map(t => [t.productId, t]));
-      const adjustment = (id: string | null, erpStock: number | null) => {
+      const adjustment = (id: string | null, erpStock: number | null, isBlocked: boolean) => {
         const target = id ? byProduct.get(id) : undefined;
-        if (!target || erpStock === null) return null;
+        // a blocked product is never compared: no availability adjustment, never a mismatch
+        if (!target || erpStock === null || isBlocked) return null;
         const blocked = setBlockReason(target);
         const av = target.override?.availability;
         return {
@@ -185,8 +187,10 @@ export class ProductsService {
         items: page.map(r => ({
           id: r.id, marketplaceProductId: r.marketplace_product_id, name: r.name, barcodes: r.barcodes,
           price: r.price, available: r.available, updatedAt: r.updated_at,
-          availabilityAdjustment: adjustment(r.product_id, r.product_erp_stock),
-          product: r.product_id ? { id: r.product_id, nameEn: r.product_name, barcode: r.product_barcode } : null,
+          // matched to a blocked product: not a mismatch and not "Missing from ERP"; the row says so
+          isBlocked: r.product_blocked === true,
+          availabilityAdjustment: adjustment(r.product_id, r.product_erp_stock, r.product_blocked === true),
+          product: r.product_id ? { id: r.product_id, nameEn: r.product_name, barcode: r.product_barcode, isBlocked: r.product_blocked === true } : null,
           sourceFile: r.upload_id ? { id: r.upload_id, fileName: r.file_name } : null,
         })),
         nextCursor: rows.length > query.limit && last ? Buffer.from(JSON.stringify([query.marketplaceId, last.marketplace_product_id, last.id])).toString('base64url') : null,
@@ -292,6 +296,7 @@ export class ProductsService {
       for (const id of ids ?? candidates.map(c => c.id)) {
         const c = byId.get(id);
         if (!c) { skipped.push({ id, reason: 'Not found' }); continue; }
+        if (c.blockedAt) { skipped.push({ id, reason: PRODUCT_BLOCKED_MESSAGE }); continue; }
         if (c.status !== 'new') { skipped.push({ id, reason: 'Not a new product' }); continue; }
         const readiness = isReady(c, DEFAULT_READINESS_RULES);
         if (!readiness.ready) skipped.push({ id, reason: READINESS_REASONS[readiness.missing[0]!] });

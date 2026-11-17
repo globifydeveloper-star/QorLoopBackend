@@ -344,10 +344,10 @@ export class ProductRepository {
     const cursor = after ? Prisma.sql` AND (l.marketplace_product_id, l.id) > (${after.marketplaceProductId}, ${after.id}::uuid)` : Prisma.empty;
     const rows = await this.tx.$queryRaw<{
       id: string; marketplace_product_id: string; name: string | null; barcodes: string[]; price: number; available: boolean; updated_at: Date;
-      product_id: string | null; product_name: string | null; product_barcode: string | null; product_erp_stock: number | null; upload_id: string | null; file_name: string | null;
+      product_id: string | null; product_name: string | null; product_barcode: string | null; product_erp_stock: number | null; product_blocked: boolean | null; upload_id: string | null; file_name: string | null;
     }[]>`
       SELECT l.id, l.marketplace_product_id, l.name, l.barcodes, l.price::float8 AS price, l.available, l.updated_at,
-             p.id AS product_id, p.name_en AS product_name, p.barcode AS product_barcode, p.erp_stock AS product_erp_stock, u.id AS upload_id, u.file_name
+             p.id AS product_id, p.name_en AS product_name, p.barcode AS product_barcode, p.erp_stock AS product_erp_stock, p.blocked_at IS NOT NULL AS product_blocked, u.id AS upload_id, u.file_name
       FROM listings l LEFT JOIN products p ON p.tenant_id = l.tenant_id AND p.id = l.product_id
       LEFT JOIN uploads u ON u.tenant_id = l.tenant_id AND u.id = l.upload_id
       WHERE ${where}${cursor} ORDER BY l.marketplace_product_id, l.id LIMIT ${take}`;
@@ -380,9 +380,10 @@ export class ProductRepository {
   /** What the readiness rule needs, for the given ids or (no ids) for every new product. */
   activationCandidates(ids: string[] | null) {
     return this.tx.product.findMany({
-      where: { tenantId: this.tenantId, ...(ids ? { id: { in: ids } } : { status: 'new' }) },
+      // "activate all new" never includes a blocked product; given ids are returned with blockedAt so they are skipped
+      where: { tenantId: this.tenantId, ...(ids ? { id: { in: ids } } : { status: 'new', blockedAt: null }) },
       orderBy: [{ nameEn: 'asc' }, { id: 'asc' }],
-      select: { id: true, status: true, nameAr: true, categoryId: true, subcategoryId: true },
+      select: { id: true, status: true, blockedAt: true, nameAr: true, categoryId: true, subcategoryId: true },
     });
   }
   /** One statement for any number of ids (a single uuid[] bind parameter). Only moves new products. */

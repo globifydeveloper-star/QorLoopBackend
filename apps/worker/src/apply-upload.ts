@@ -21,6 +21,8 @@ export interface ApplyCounts {
   created: number; updated: number; flagged: number; listingsUpserted: number; listingsRemoved: number; skipped: number;
   /** ERP only (ADR 017): change rows written, stock conflicts raised, owner edits removed because the ERP caught up */
   changes?: number; stockConflicts?: number; stockEditsCleared?: number;
+  /** ERP only: blocked products the file updated (not in the change list or its counts) */
+  blockedUpdated?: number;
   /** marketplace only: written listings matched to a product at apply time, and those left without one */
   matchedAtApply?: number; unmatchedAtApply?: number;
   /** marketplace only: fix-once export values this file confirmed, cleared per field (migration 202611100001) */
@@ -145,6 +147,10 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
 
       if (u.source === 'erp') {
         const products = (await d.uploads.applySnapshot()).map(p => ({ ...p, erpPrice: p.erpPrice.toNumber(), costPrice: p.costPrice?.toNumber() ?? null }));
+        // Blocked products (migration 202611170001) are still updated by the file, but never reported: no change rows, no
+        // counts, and their stock conflicts stay hidden while blocked (the stored state is kept for when they are unblocked).
+        const blocked = new Set(products.filter(p => p.blockedAt !== null).map(p => p.id));
+        const shown = (productId: string) => !blocked.has(productId);
         // "first import" is decided at review time; re-checked so a second first-import file applied later makes 'new' products
         const firstImport = (u.summary as { firstImport?: unknown } | null)?.firstImport === true && products.length === 0;
         const mapped = Object.entries((u.mapping as Record<string, string> | null) ?? {}).filter(([, header]) => header).map(([key]) => key);
@@ -172,11 +178,11 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
             const id = createdIds.get(p.normalizedBarcode);
             return id && p.rowNumber !== undefined ? [{ productId: id, rowNumber: p.rowNumber, barcode: p.normalizedBarcode, kind: 'new' as const, field: null, old: undefined, new: undefined, stockConflict: false }] : [];
           }),
-          ...plan.changes.map(ch => ({
+          ...plan.changes.filter(ch => shown(ch.productId)).map(ch => ({
             productId: ch.productId, rowNumber: ch.rowNumber, barcode: ch.barcode, kind: erpChangeKind(ch.field, ch.new), field: ch.field,
             old: ch.old, new: ch.new, stockConflict: ch.field === 'erpStock' && conflicted.has(ch.productId),
           })),
-          ...flagged.map(f => ({ productId: f.id, rowNumber: null, barcode: f.barcode, kind: 'missing' as const, field: 'inLatestErpFile', old: true, new: false, stockConflict: false })),
+          ...flagged.filter(f => shown(f.id)).map(f => ({ productId: f.id, rowNumber: null, barcode: f.barcode, kind: 'missing' as const, field: 'inLatestErpFile', old: true, new: false, stockConflict: false })),
         ];
         await d.stock.writeErpChanges(uploadId, changeRows);
 
@@ -191,12 +197,13 @@ export async function applyUpload(deps: ApplyDeps, job: ApplyUploadJob): Promise
           ...stock.cleared.map(s => stockEvent('product.stock_reset', s, { reason: 'erp_matches' })),
           ...stock.reverted.map(s => stockEvent('product.stock_conflict_resolved', s, { choice: 'erp_reverted' })),
         ]);
+        const shownConflicts = stock.conflicts.filter(s => shown(s.productId)).length;
         skipped = plan.skipped;
         Object.assign(c, {
           created: plan.create.length, updated: plan.update.length, flagged: flagged.length,
-          changes: changeRows.length, stockConflicts: stock.conflicts.length, stockEditsCleared: stock.cleared.length,
+          changes: changeRows.length, stockConflicts: shownConflicts, stockEditsCleared: stock.cleared.length, blockedUpdated: plan.update.filter(p => blocked.has(p.id)).length,
         });
-        applied = { changesRecorded: true, changes: changeRows.length, stockConflicts: stock.conflicts.length, stockEditsCleared: stock.cleared.length };
+        applied = { changesRecorded: true, changes: changeRows.length, stockConflicts: shownConflicts, stockEditsCleared: stock.cleared.length };
       } else {
         enter('listings');
         // matched again against the catalogue as it is now: the review may predate the ERP apply that created the products

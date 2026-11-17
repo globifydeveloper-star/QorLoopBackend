@@ -111,6 +111,7 @@ export class MarketplaceValuesRepository {
     const { availability, price } = fieldRanks(f.enabledMarketplaces, f.toleranceFils);
     const where = [
       Prisma.sql`r.tenant_id = ${this.tenantId}::uuid`,
+      Prisma.sql`p.blocked_at IS NULL`, // blocked products are not in the Review lists or counts
       ...(f.marketplaceId ? [Prisma.sql`r.marketplace_id = ${f.marketplaceId}`] : []),
       ...(f.productIds ? [Prisma.sql`r.product_id = ANY(${f.productIds}::uuid[])`] : []),
       ...searchSql(f.search),
