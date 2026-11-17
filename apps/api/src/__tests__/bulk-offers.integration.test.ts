@@ -257,3 +257,65 @@ describe('offer fields on the product list and the Review', () => {
     expect(one.json().data.catalogue).toEqual(expect.objectContaining({ normalPrice: 4, offer: expect.objectContaining({ state: 'active' }) }));
   });
 });
+
+describe('bulk offer removal', () => {
+  const remove = (path: 'preview' | 'apply', who: Session, body: Body) => h.request('POST', `/api/pricing/offers/bulk-remove/${path}`, a, who, body);
+  it('needs pricing.bulk; a malformed body is a 400', async () => {
+    expect((await remove('preview', analyst, { productIds: [ids.milk] })).statusCode).toBe(403);
+    for (const bad of [{}, { productIds: [] }, { productIds: ['x'] }, { productIds: Array.from({ length: 501 }, () => randomUUID()) }, { productIds: [ids.milk], all: true }]) {
+      expect((await remove('preview', manager, bad)).statusCode).toBe(400);
+    }
+    expect((await remove('apply', manager, { productIds: [ids.milk] })).statusCode).toBe(400); // no key
+  });
+
+  it('previews, removes in one transaction with one event and one recompute, replays, and refuses a stale token', async () => {
+    const unknown = randomUUID();
+    const body = { productIds: [ids.milk, ids.bread, ids.laban, unknown, ids.milk] };
+    const p = await remove('preview', manager, body);
+    expect(p.statusCode).toBe(200);
+    const d = p.json().data;
+    expect(d.items.map((i: Row) => [i.productId, i.outcome, i.reason])).toEqual([
+      [ids.milk, 'remove', null], [ids.bread, 'remove', null], [ids.laban, 'skipped', 'no_offer'], [unknown, 'skipped', 'not_found'],
+    ]);
+    expect(d.items[0]).toEqual(expect.objectContaining({ nameEn: 'A Milk', normalPrice: 10, currentOffer: expect.objectContaining({ price: 8.5, state: 'scheduled' }) }));
+    expect(d.totals).toEqual(expect.objectContaining({ products: 4, remove: 2, skipped: 2 }));
+    expect(await offersOf('milk')).toHaveLength(1);
+
+    // a stale token: cheese is unaffected, but changing milk's offer moves the token
+    const stale = await reconCalls(async () => {
+      await h.fixture.prisma.productOffer.updateMany({ where: { productId: ids.milk! }, data: { price: 8.25 } });
+      expect((await remove('apply', manager, { ...body, idempotencyKey: randomUUID(), previewToken: d.previewToken })).statusCode).toBe(409);
+    });
+    expect(stale).toEqual([]);
+    expect(await offersOf('milk')).toHaveLength(1);
+
+    const { previewToken } = (await remove('preview', manager, body)).json().data;
+    const idempotencyKey = randomUUID();
+    let result: Record<string, unknown> = {};
+    const calls = await reconCalls(async () => {
+      const r = await remove('apply', manager, { ...body, idempotencyKey, previewToken });
+      expect([r.statusCode, r.statusCode === 200 ? null : r.body]).toEqual([200, null]);
+      result = r.json().data;
+    });
+    expect(calls).toEqual([{ tenantId: a.id, reason: 'pricing.offers_bulk' }]);
+    expect(result).toEqual(expect.objectContaining({
+      replayed: false, totals: expect.objectContaining({ remove: 2, skipped: 2 }),
+      skipped: [{ productId: ids.laban, reason: 'no_offer', message: 'This product has no offer' }, { productId: unknown, reason: 'not_found', message: 'No product with this id in this store' }],
+    }));
+    expect(await offersOf('milk')).toEqual([]);
+    expect(await offersOf('bread')).toEqual([]);
+    expect(await offersOf('cheese')).toHaveLength(1);
+    const [event, ...more] = await events('pricing.offers_bulk_removed');
+    expect(more).toEqual([]);
+    expect(event!.details).toEqual(expect.objectContaining({
+      changeColumns: ['productId', 'oldPrice', 'oldFrom', 'oldUntil'],
+      changes: [[ids.milk, 8.25, iso(START), iso(END)], [ids.bread, 3.5, expect.any(String), iso(END)]],
+    }));
+    // same key, same ids in another order: the first result; other ids: 409
+    const replay = await remove('apply', manager, { productIds: [...body.productIds].reverse(), idempotencyKey });
+    expect(replay.json().data).toEqual({ ...result, replayed: true });
+    expect((await remove('apply', manager, { productIds: [ids.cheese], idempotencyKey })).statusCode).toBe(409);
+    const history = await h.request('GET', `/api/products/${ids.bread}/history`, a, a.owner);
+    expect(JSON.stringify(history.json().data)).toContain('Product offer removed by a bulk operation');
+  });
+});

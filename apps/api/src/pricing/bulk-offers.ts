@@ -4,8 +4,8 @@ import type { TenantData } from '../../../../packages/db/src/database.js';
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
 import type { MarketplaceId } from '../../../../packages/core/src/constants.js';
 import {
-  BULK_OFFER_ITEMS_MAX, bulkOfferSignature, bulkOfferTotals, planBulkOffers,
-  type BulkOfferPlan, type BulkOfferProduct, type BulkOfferRow, type PlannedOffer,
+  BULK_OFFER_ITEMS_MAX, bulkOfferRemoveSignature, bulkOfferRemoveTotals, bulkOfferSignature, bulkOfferTotals, planBulkOfferRemoval, planBulkOffers,
+  type BulkOfferPlan, type BulkOfferProduct, type BulkOfferRemovePlan, type BulkOfferRemoveRow, type BulkOfferRow, type PlannedOffer,
 } from '../../../../packages/core/src/bulk-offers.js';
 import { canonical } from './bulk-pricing.js';
 import { enabledMarketplaceIds, loadPricing, productInputs } from './pricing.data.js';
@@ -66,3 +66,40 @@ export const offerChangeEntry = (r: BulkOfferRow) => [
   r.productId, r.previous?.price ?? null, r.previous?.validFrom?.toISOString() ?? null, r.previous?.validUntil?.toISOString() ?? null,
   r.offer!.price, r.offer!.validFrom?.toISOString() ?? null, r.offer!.validUntil?.toISOString() ?? null,
 ];
+
+// ───────── Bulk remove ─────────
+export type BulkOfferRemoveInput = z.infer<typeof contracts.bulkOfferRemovePreview>;
+
+/** Plans a bulk remove from current data (preview and apply both call it): products, rules, offers, pricing. */
+export async function planOfferRemoval(data: TenantData, input: BulkOfferRemoveInput, now = new Date()) {
+  const ids = [...new Set(input.productIds)];
+  const [found, pricing] = await Promise.all([data.products.pricingProducts(ids), loadPricing(data)]);
+  const inputs = await productInputs(data, found);
+  const products = new Map(found.map((p): [string, BulkOfferProduct] => {
+    const { input: pricingInput, offers } = inputs.get(p.id)!;
+    return [p.id, { id: p.id, status: p.status, pricing: pricingInput, offers: offers.map(o => ({ price: o.price.toNumber(), validFrom: o.validFrom, validUntil: o.validUntil })) }];
+  }));
+  const plan = planBulkOfferRemoval(input.productIds, products, { settings: pricing.snapshot, categoryRules: pricing.categoryRules, now });
+  const labels = new Map(found.map(p => [p.id, { nameEn: p.nameEn, barcode: p.barcode }]));
+  return { plan, labels };
+}
+export type PlannedOfferRemoval = Awaited<ReturnType<typeof planOfferRemoval>>;
+
+export const removePreviewToken = (plan: BulkOfferRemovePlan) => createHash('sha256').update(bulkOfferRemoveSignature(plan.removes)).digest('hex');
+/** Ids deduplicated and sorted: the same set of products is the same request. */
+export const removeRequestHash = (input: BulkOfferRemoveInput) =>
+  createHash('sha256').update(canonical({ productIds: [...new Set(input.productIds)].sort() })).digest('hex');
+
+export function removeRow(r: BulkOfferRemoveRow, labels: PlannedOfferRemoval['labels']) {
+  const label = labels.get(r.productId);
+  return {
+    productId: r.productId, nameEn: label?.nameEn ?? null, barcode: label?.barcode ?? null,
+    outcome: r.outcome, reason: r.reason, message: r.message, currentOffer: r.currentOffer, normalPrice: r.normalPrice,
+  };
+}
+export function removalPreview({ plan, labels }: PlannedOfferRemoval) {
+  return { items: plan.rows.map(r => removeRow(r, labels)), totals: bulkOfferRemoveTotals(plan), limit: BULK_OFFER_ITEMS_MAX, previewToken: removePreviewToken(plan) };
+}
+export const REMOVE_CHANGE_COLUMNS = ['productId', 'oldPrice', 'oldFrom', 'oldUntil'] as const;
+export const removeChangeEntry = (r: BulkOfferRemoveRow) =>
+  [r.productId, r.previous!.price, r.previous!.validFrom?.toISOString() ?? null, r.previous!.validUntil?.toISOString() ?? null];

@@ -128,8 +128,50 @@ offer: OfferView | null;      // live: the product's offer in any state
 
 `catalogue.price` and `catalogue.priceSource` are still the stored comparison values. During an active offer they are the offer price and `'offer'`.
 
-## Not yet
+## `POST /api/pricing/offers/bulk-remove/preview` and `/apply`
 
-- **Bulk remove** comes next: `POST /api/pricing/offers/bulk-remove/preview|apply` with `{ productIds }`.
+Permission `pricing.bulk`. The ticked products lose their offer, whatever its state (scheduled, active or ended).
+
+```ts
+// preview request
+{ productIds: string[] }              // 1..500 uuids; duplicates counted once
+// apply request
+{ productIds: string[], idempotencyKey: string, previewToken?: string }
+
+// preview response data
+{
+  items: Array<{
+    productId: string; nameEn: string | null; barcode: string | null;
+    outcome: 'remove' | 'skipped';
+    reason: null | 'not_found' | 'no_offer';
+    message: string | null;
+    currentOffer: OfferView | null;   // the offer that is removed
+    normalPrice: number | null;       // the price after removal (no per-marketplace step); null when not_found
+  }>;
+  totals: { products: number; remove: number; skipped: number; skippedReasons: Array<{ reason; count; message }> };
+  limit: 500;
+  previewToken: string;
+}
+
+// apply response data
+{
+  operationId: string;                // the 'pricing.offers_bulk_removed' audit event
+  replayed: boolean;
+  appliedAt: string;
+  totals: { ...same as preview };
+  skipped: Array<{ productId: string; reason: 'not_found' | 'no_offer'; message: string }>;
+}
+```
+
+Apply follows the same pattern as the bulk offer apply:
+
+- one transaction and one `DELETE`;
+- one audit event, and one recompute (only when something was removed);
+- `409` when an offer changed since the preview;
+- the same key with the same ids, in any order, returns the first result with `replayed: true`; the same key with other ids is a `409`.
+
+In a product's history this shows as "Product offer removed by a bulk operation".
+
+## Not yet
 - **Step 1:** a recompute exactly when an offer starts or ends, and the ERP reference comparing against the offer price. Until then, an offer that starts later changes the comparison only at the next recompute.
 - **Step 2:** the migration (one offer per product enforced by the database, `source = 'bulk'`), after the owner approves it.

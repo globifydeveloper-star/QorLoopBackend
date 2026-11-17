@@ -174,6 +174,11 @@ export class PricingRepository {
       data: offers.map(o => ({ tenantId: this.tenantId, productId: o.productId, price: o.price.toFixed(3), validFrom: o.validFrom, validUntil: o.validUntil })),
     })).count;
   }
+  /** Removes every offer of these products in one statement (bulk remove). */
+  async deleteOffersOf(productIds: string[]) {
+    if (!productIds.length) return 0;
+    return (await this.tx.productOffer.deleteMany({ where: { tenantId: this.tenantId, productId: { in: productIds } } })).count;
+  }
   /** Products with a pending price export value (pinned or not) on these marketplaces: it outranks an offer there. */
   async pendingExportPrices(productIds: string[], marketplaceIds: readonly string[]) {
     if (!productIds.length || !marketplaceIds.length) return new Map<string, string[]>();

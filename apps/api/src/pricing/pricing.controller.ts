@@ -14,7 +14,7 @@ import { PricingService } from './pricing.service.js';
 import { BulkPricingService } from './bulk-pricing.service.js';
 import { BulkOffersService } from './bulk-offers.service.js';
 import {
-  BULK_OFFER_ITEMS_MAX, BULK_OFFER_OUTCOMES, BULK_OFFER_REJECT_REASONS, BULK_OFFER_WARNINGS, OFFER_VIEW_STATES,
+  BULK_OFFER_ITEMS_MAX, BULK_OFFER_OUTCOMES, BULK_OFFER_REJECT_REASONS, BULK_OFFER_REMOVE_SKIP_REASONS, BULK_OFFER_WARNINGS, OFFER_VIEW_STATES,
 } from '../../../../packages/core/src/bulk-offers.js';
 
 const rule = { mode: { type: 'string', enum: ['percent', 'amount', 'fixed', 'same'] }, value: { type: 'number', description: 'Absent for same' } };
@@ -179,6 +179,30 @@ const offerApplySchema = {
     rejected: { type: 'array', description: 'Reported, not written', items: { type: 'object', properties: { index: count, productId: { type: 'string' }, reason: { type: 'string', enum: [...BULK_OFFER_REJECT_REASONS] }, message: { type: 'string' } } } },
   },
 };
+const removeTotals = {
+  type: 'object', properties: {
+    products: { ...count, description: 'Distinct ids: remove + skipped' }, remove: count, skipped: count,
+    skippedReasons: { type: 'array', items: { type: 'object', properties: { reason: { type: 'string', enum: [...BULK_OFFER_REMOVE_SKIP_REASONS] }, count, message: { type: 'string' } } } },
+  },
+};
+const removePreviewSchema = {
+  type: 'object', properties: {
+    items: { type: 'array', items: { type: 'object', properties: {
+      productId: { type: 'string', format: 'uuid' }, nameEn: { type: ['string', 'null'] }, barcode: { type: ['string', 'null'] },
+      outcome: { type: 'string', enum: ['remove', 'skipped'] }, reason: { type: ['string', 'null'], enum: [...BULK_OFFER_REMOVE_SKIP_REASONS, null] },
+      message: { type: ['string', 'null'] }, currentOffer: { ...offerViewSchema, type: ['object', 'null'], description: 'The offer removed' },
+      normalPrice: { type: ['number', 'null'], description: 'The price after removal (no per-marketplace step); null when not_found' },
+    } } },
+    totals: removeTotals, limit: count, previewToken: { type: 'string', description: 'Send it with apply: 409 if the offers changed' },
+  },
+};
+const removeApplySchema = {
+  type: 'object', properties: {
+    operationId: { type: 'string', format: 'uuid', description: "The 'pricing.offers_bulk_removed' audit event" },
+    replayed: { type: 'boolean' }, appliedAt: { type: 'string', format: 'date-time' }, totals: removeTotals,
+    skipped: { type: 'array', items: { type: 'object', properties: { productId: { type: 'string' }, reason: { type: 'string', enum: [...BULK_OFFER_REMOVE_SKIP_REASONS] }, message: { type: 'string' } } } },
+  },
+};
 const offerDates = 'Dates are ISO instants with an offset: the UI sends a Qatar start day D as D T00:00:00.000+03:00 and an end day E as E T23:59:59.999+03:00';
 
 @ApiTags('Pricing')
@@ -202,6 +226,18 @@ export class PricingController {
   @Contract(`Apply a bulk offer, re-planned from current data: the valid rows are written in one transaction with one audit event and one recompute, rejected rows are reported and not written; the same idempotencyKey and body answers the first result again (replayed: true), another body 409; a stale previewToken 409. ${offerDates}`, dto.bulkOfferApply, offerApplySchema)
   offersBulkApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferApply)) input: z.infer<typeof dto.bulkOfferApply>) {
     return this.bulkOffers.apply(context(req, this.config), input);
+  }
+
+  @Post('pricing/offers/bulk-remove/preview') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
+  @Contract(`What removing the offers of the ticked products would do (1 to ${BULK_OFFER_ITEMS_MAX} ids, duplicates counted once): per product remove or skipped (not_found, no_offer), the offer removed, the price after removal, totals and a preview token. Writes nothing`, dto.bulkOfferRemovePreview, removePreviewSchema)
+  offersBulkRemovePreview(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferRemovePreview)) input: z.infer<typeof dto.bulkOfferRemovePreview>) {
+    return this.bulkOffers.removePreview(context(req, this.config), input);
+  }
+
+  @Post('pricing/offers/bulk-remove/apply') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
+  @Contract('Remove the offers of the ticked products (any state), re-planned from current data, in one transaction with one audit event and one recompute; skipped products are reported; the same idempotencyKey and ids answers the first result again (replayed: true), other ids 409; a stale previewToken 409', dto.bulkOfferRemoveApply, removeApplySchema)
+  offersBulkRemoveApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferRemoveApply)) input: z.infer<typeof dto.bulkOfferRemoveApply>) {
+    return this.bulkOffers.removeApply(context(req, this.config), input);
   }
 
   @Post('pricing/bulk/preview') @HttpCode(200) @Access({ permission: 'pricing.bulk' })

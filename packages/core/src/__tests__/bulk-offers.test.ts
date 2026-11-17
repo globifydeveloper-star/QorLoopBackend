@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
 import type { PricingSettingsSnapshot } from '../pricing.js';
 import {
-  BULK_OFFER_REJECT_REASONS, bulkOfferRejectMessage, bulkOfferSignature, bulkOfferTotals, normalPrices, offerViewState, planBulkOffers,
+  BULK_OFFER_REJECT_REASONS, bulkOfferRejectMessage, bulkOfferRemoveSignature, bulkOfferRemoveTotals, bulkOfferSignature, bulkOfferTotals,
+  normalPrices, offerViewState, planBulkOfferRemoval, planBulkOffers,
   type BulkOfferContext, type BulkOfferItem, type BulkOfferProduct, type StoredOffer,
 } from '../bulk-offers.js';
 
@@ -141,5 +142,27 @@ describe('offerViewState', () => {
     expect(offerViewState({ validFrom: null, validUntil: new Date(end) }, now)).toBe('active');
     expect(offerViewState({ validFrom: null, validUntil: new Date('2026-11-01T00:00:00Z') }, now)).toBe('ended');
     expect(offerViewState({ validFrom: null, validUntil: null }, now)).toBe('active');
+  });
+});
+
+describe('planBulkOfferRemoval', () => {
+  it('removes any offer state, skips products without one or not found, counts duplicate ids once', () => {
+    const ended: StoredOffer = { price: 5, validFrom: null, validUntil: new Date('2026-11-01T00:00:00Z') };
+    const scheduled: StoredOffer = { price: 6, validFrom: new Date(start), validUntil: new Date(end) };
+    const ps = products(product('p1', 10, { offers: [ended] }), product('p2', 10, { offers: [scheduled], status: 'inactive' }), product('p3', 8));
+    const plan = planBulkOfferRemoval(['p1', 'p2', 'p3', 'nope', 'p1'], ps, ctx());
+    expect(plan.rows.map(r => [r.productId, r.outcome, r.reason])).toEqual([
+      ['p1', 'remove', null], ['p2', 'remove', null], ['p3', 'skipped', 'no_offer'], ['nope', 'skipped', 'not_found'],
+    ]);
+    expect(plan.rows[0]).toEqual(expect.objectContaining({ normalPrice: 10, currentOffer: expect.objectContaining({ state: 'ended' }), previous: ended }));
+    expect(plan.rows[2]!.normalPrice).toBe(8);
+    expect(bulkOfferRemoveTotals(plan)).toEqual({
+      products: 4, remove: 2, skipped: 2,
+      skippedReasons: [{ reason: 'not_found', count: 1, message: 'No product with this id in this store' }, { reason: 'no_offer', count: 1, message: 'This product has no offer' }],
+    });
+    // the signature follows the offers being removed
+    const moved = products(product('p1', 10, { offers: [{ ...ended, price: 4 }] }));
+    expect(bulkOfferRemoveSignature(planBulkOfferRemoval(['p1'], moved, ctx()).removes))
+      .not.toBe(bulkOfferRemoveSignature(planBulkOfferRemoval(['p1'], ps, ctx()).removes));
   });
 });

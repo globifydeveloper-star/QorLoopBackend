@@ -265,6 +265,14 @@ export const bulkOfferApply = z.object({
   /** previewToken from the preview: when the re-planned writes differ, 409 instead of applying something else. */
   previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict();
+/** Bulk remove: the ticked products lose their offer. Duplicate ids are counted once. */
+const bulkOfferRemoveShape = { productIds: z.array(z.uuid()).min(1).max(BULK_OFFER_ITEMS_MAX) };
+export const bulkOfferRemovePreview = z.object(bulkOfferRemoveShape).strict();
+export const bulkOfferRemoveApply = z.object({
+  ...bulkOfferRemoveShape,
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/, 'Use 8-100 letters, digits, - or _ (a UUID works)'),
+  previewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict();
 /** Without a reference, the tenant's compareReferenceDefault (pricing settings) applies. */
 export const reconSummaryQuery = z.object({ reference: reconReference.optional() }).strict();
 export const activityQuery = z.object({

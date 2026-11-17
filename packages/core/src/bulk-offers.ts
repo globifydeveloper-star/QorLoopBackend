@@ -183,3 +183,50 @@ export function bulkOfferSignature(sets: readonly BulkOfferRow[]): string {
   return sets.map(r => `${r.productId}|${toFils(r.offer!.price)}|${r.offer!.validFrom?.getTime() ?? ''}|${r.offer!.validUntil?.getTime() ?? ''}`)
     .sort().join('\n');
 }
+
+// ───────── Bulk remove: the ticked products lose their offer (any state) ─────────
+export const BULK_OFFER_REMOVE_SKIP_REASONS = ['not_found', 'no_offer'] as const;
+export type BulkOfferRemoveSkipReason = (typeof BULK_OFFER_REMOVE_SKIP_REASONS)[number];
+export const bulkOfferRemoveSkipMessage = (reason: BulkOfferRemoveSkipReason) =>
+  reason === 'not_found' ? 'No product with this id in this store' : 'This product has no offer';
+
+export interface BulkOfferRemoveRow {
+  productId: string;
+  outcome: 'remove' | 'skipped';
+  reason: BulkOfferRemoveSkipReason | null;
+  message: string | null;
+  /** The offer that is removed (the last one when legacy duplicates exist; all of them are removed). */
+  currentOffer: OfferView | null;
+  previous: StoredOffer | null;
+  /** The price without the offer, i.e. the price after removal (no per-marketplace step); null when not found. */
+  normalPrice: number | null;
+}
+export interface BulkOfferRemovePlan { rows: BulkOfferRemoveRow[]; removes: BulkOfferRemoveRow[] }
+
+/**
+ * Plans a bulk remove: ids are deduplicated (first occurrence kept). A product of any status loses its offer, whatever
+ * the offer's state (scheduled, active or ended); a product without one, or not in this store, is skipped.
+ */
+export function planBulkOfferRemoval(productIds: readonly string[], products: ReadonlyMap<string, BulkOfferProduct>, ctx: Pick<BulkOfferContext, 'settings' | 'categoryRules' | 'now'>): BulkOfferRemovePlan {
+  const rows = [...new Set(productIds)].map((productId): BulkOfferRemoveRow => {
+    const product = products.get(productId);
+    if (!product) return { productId, outcome: 'skipped', reason: 'not_found', message: bulkOfferRemoveSkipMessage('not_found'), currentOffer: null, previous: null, normalPrice: null };
+    const normalPrice = resolveMarketplacePrice({ ...product.pricing, offers: [] }, ctx.settings, ctx.categoryRules, { now: ctx.now }).price;
+    const latest = product.offers.at(-1) ?? null;
+    if (!latest) return { productId, outcome: 'skipped', reason: 'no_offer', message: bulkOfferRemoveSkipMessage('no_offer'), currentOffer: null, previous: null, normalPrice };
+    return { productId, outcome: 'remove', reason: null, message: null, currentOffer: offerView(latest, ctx.now), previous: latest, normalPrice };
+  });
+  return { rows, removes: rows.filter(r => r.outcome === 'remove') };
+}
+
+export function bulkOfferRemoveTotals(plan: BulkOfferRemovePlan) {
+  const skippedReasons = BULK_OFFER_REMOVE_SKIP_REASONS.map(reason => ({ reason, count: plan.rows.filter(r => r.reason === reason).length, message: bulkOfferRemoveSkipMessage(reason) }))
+    .filter(r => r.count > 0);
+  return { products: plan.rows.length, remove: plan.removes.length, skipped: plan.rows.length - plan.removes.length, skippedReasons };
+}
+
+/** The preview token of a remove hashes the offers that will be removed, so an offer changed since the preview is a 409. */
+export function bulkOfferRemoveSignature(removes: readonly BulkOfferRemoveRow[]): string {
+  return removes.map(r => `${r.productId}|${toFils(r.previous!.price)}|${r.previous!.validFrom?.getTime() ?? ''}|${r.previous!.validUntil?.getTime() ?? ''}`)
+    .sort().join('\n');
+}
