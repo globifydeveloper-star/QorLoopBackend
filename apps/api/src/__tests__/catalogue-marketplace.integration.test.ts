@@ -118,7 +118,7 @@ describe('GET /api/products with marketplaceId', () => {
     const d = await ok('');
     expect(d.items).toHaveLength(9);
     expect(d.items.some(i => 'marketplace' in i)).toBe(false);
-    expect(d.counts).toEqual({ all: 9, active: 8, inactive: 0, new: 1, missing: 0 });
+    expect(d.counts).toEqual({ all: 9, active: 8, inactive: 0, new: 1, missing: 0, blocked: 0 });
   });
 
   it('adds the exact marketplace shape to every item', async () => {
@@ -152,7 +152,7 @@ describe('GET /api/products with marketplaceId', () => {
     const sync = await ok('?marketplaceId=talabat&marketplaceStatus=in_sync');
     expect(keysOf(sync.items)).toEqual(['sync', 'legacy', 'dup']);
     expect(sync.items.every(i => i.marketplace!.comparison === 'in_sync')).toBe(true);
-    expect(sync.counts).toEqual({ all: 3, active: 3, inactive: 0, new: 0, missing: 0 });
+    expect(sync.counts).toEqual({ all: 3, active: 3, inactive: 0, new: 0, missing: 0, blocked: 0 });
 
     const mismatch = await ok('?marketplaceId=talabat&marketplaceStatus=mismatch');
     expect(keysOf(mismatch.items)).toEqual(['stock', 'price', 'gone']);

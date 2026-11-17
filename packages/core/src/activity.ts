@@ -15,7 +15,7 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
     'catalogue.stock_bulk_set', 'catalogue.stock_conflicts_resolved',
     // per-marketplace export values (migration 202611100001)
     'product.marketplace_values_set', 'product.marketplace_values_cleared', 'marketplace.values_bulk_applied', 'marketplace.values_upload_cleared'],
-  catalogue: ['products.activated', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
+  catalogue: ['products.activated', 'product.blocked', 'product.unblocked', 'products.blocked', 'products.unblocked', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
   team_security: ['settings.changed', 'store.provisioned', 'store.data_reset', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
     'auth.password_reset', 'auth.mfa_setup_started', 'auth.mfa_failed', 'auth.mfa_enrolled', 'auth.mfa_verified', 'auth.recovery_failed', 'auth.recovery_used'],
@@ -39,6 +39,7 @@ function rule(v: unknown): SafeValue {
   return ['percent', 'amount', 'fixed'].includes(String(r.mode)) && number(r.value) !== null ? { mode: String(r.mode), value: number(r.value) } : null;
 }
 const role = (v: unknown) => ['owner', 'admin', 'catalogue_manager', 'analyst'].includes(String(v)) ? String(v) : null;
+const BLOCK_REASON_LABELS: Record<string, string> = { old: 'old product', seasonal: 'seasonal', other: 'other' };
 const MAPPING_FIELDS: ReadonlySet<string> = new Set([...ERP_FIELDS, ...MARKETPLACE_FIELDS].map(f => f.key));
 const fields: Record<string, string> = {
   nameAr: 'Arabic name', nameEn: 'English name', sku: 'SKU', brand: 'Brand', size: 'Size', erpCategory: 'ERP category',
@@ -103,6 +104,19 @@ export function presentActivity(action: string, details: unknown, options: { pro
         change('offerEnd', text(row[3]), null);
       }
     }
+  } else if (action === 'product.blocked' || action === 'product.unblocked') {
+    const reason = BLOCK_REASON_LABELS[String(d.reason)] ?? null;
+    const ended = Array.isArray(d.offersEnded) ? d.offersEnded.length : 0;
+    summary = action === 'product.blocked'
+      ? `Product blocked${reason ? ` (${reason})` : ''}${ended ? '; its active offer was ended' : ''}`
+      : 'Product unblocked (ended offers are not restored)';
+    change('blocked', action !== 'product.blocked', action === 'product.blocked');
+  } else if (action === 'products.blocked' || action === 'products.unblocked') {
+    const n = number(action === 'products.blocked' ? d.blocked : d.unblocked);
+    const ended = number(d.offersEnded);
+    summary = action === 'products.blocked'
+      ? (n === null ? 'Products blocked' : `${n} products blocked${ended ? `, ${ended} active offers ended` : ''}`)
+      : (n === null ? 'Products unblocked' : `${n} products unblocked`);
   } else if (action === 'product.stock_set' || action === 'product.stock_reset') {
     summary = action === 'product.stock_set' ? 'Catalogue stock set'
       : d.reason === 'erp_matches' ? 'Catalogue stock follows the ERP again (the ERP reached the edited value)' : 'Catalogue stock back to the ERP stock';

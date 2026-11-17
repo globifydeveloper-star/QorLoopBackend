@@ -24,6 +24,7 @@ import { UploadsController } from './uploads/uploads.controller.js';
 import { UploadsService } from './uploads/uploads.service.js';
 import { ProductsController } from './products/products.controller.js';
 import { ProductsService } from './products/products.service.js';
+import { ProductBlocksService } from './products/product-blocks.service.js';
 import { CategoriesController } from './products/categories.controller.js';
 import { CategoriesService } from './products/categories.service.js';
 import { S3Storage, type ObjectStorage } from '../../../packages/shared/src/storage.js';
@@ -107,7 +108,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
         if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
         return queueRedis.ping();
       }), () => storage.check()) },
-      AuthService, TeamService, UploadsService, ProductsService, CategoriesService, PricingService, BulkPricingService, BulkOffersService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
+      AuthService, TeamService, UploadsService, ProductsService, ProductBlocksService, CategoriesService, PricingService, BulkPricingService, BulkOffersService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },

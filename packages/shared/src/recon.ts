@@ -14,6 +14,8 @@ export type ReconReason =
   | 'product.category'
   | 'product.status'
   | 'product.activated'
+  | 'product.blocked'
+  | 'product.unblocked'
   | 'upload.applied'
   | 'marketplace.values'
   | 'manual'

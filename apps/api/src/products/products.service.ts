@@ -33,7 +33,10 @@ function baseItem(p: ProductRow, showCost: boolean) {
     id: p.id, barcode: p.barcode, sku: p.sku, nameEn: p.nameEn, nameAr: p.nameAr, brand: p.brand, erpCategory: p.erpCategory,
     categoryId: p.categoryId, subcategoryId: p.subcategoryId, erpPrice: p.erpPrice.toNumber(),
     ...(showCost ? { costPrice: p.costPrice?.toNumber() ?? null } : {}),
-    erpStock: p.erpStock, status: p.status, inLatestErpFile: p.inLatestErpFile, updatedAt: p.updatedAt,
+    erpStock: p.erpStock, status: p.status, inLatestErpFile: p.inLatestErpFile,
+    // separate from status (migration 202611170001); names stay clear of the Marketplace values "blocked" state
+    isBlocked: p.blockedAt !== null, blockedAt: p.blockedAt, blockedReason: p.blockedReason,
+    updatedAt: p.updatedAt,
   };
 }
 
@@ -70,7 +73,7 @@ type MarketplaceContext = { marketplaceId: MarketplaceId; reference: ReconRefere
  * The marketplace of a list request: it must be one the store reconciles (core enabledMarketplaces, as the recon and
  * bulk pricing use), else 400. The comparison uses the tenant's default reference, as the recon reports do.
  */
-async function marketplaceContext(data: TenantData, marketplaceId: MarketplaceId): Promise<MarketplaceContext> {
+export async function marketplaceContext(data: TenantData, marketplaceId: MarketplaceId): Promise<MarketplaceContext> {
   const [switches, applied, settings] = await Promise.all([data.recon.marketplaceSwitches(), data.recon.lastApplied(), data.pricing.settings()]);
   const enabled = enabledMarketplaces(MARKETPLACES, switches, new Set(applied.keys())).find(m => m.marketplaceId === marketplaceId);
   if (!enabled) {
@@ -101,7 +104,7 @@ export class ProductsService {
 
   list(ctx: RequestContext, query: z.infer<typeof contracts.productListQuery>) {
     const after = query.cursor ? decodeCursor(query.cursor) : null;
-    const search = searchFilter(query);
+    const search: ProductFilter = { ...searchFilter(query), blocked: query.blocked };
     return this.auth.authenticated(ctx, { permission: 'products.view' }, async (data, p) => {
       const market = query.marketplaceId ? await marketplaceContext(data, query.marketplaceId) : null;
       // A second marketplace next to the first ("Compare with Talabat and Snoonu"); enabled-checked the same way.
