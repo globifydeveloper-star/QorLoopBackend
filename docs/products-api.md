@@ -18,6 +18,7 @@ Query (strict, unknown keys give a 400):
 | `marketplaceStatus` | `mismatch` \| `in_sync` \| `not_in_file` | **new.** Only with `marketplaceId`, else 400 `details[].path = 'marketplaceStatus'` |
 | `compareMarketplaceId` | `talabat` \| `snoonu` \| `rafeeq` \| `keeta` | **new.** A second marketplace next to `marketplaceId`: adds `compareMarketplace`. Only with `marketplaceId` and another marketplace, and it must be enabled; else 400 `details[].path = 'compareMarketplaceId'` |
 | `marketplacesDiffer` | `any` \| `price` \| `availability` | **new.** Only with `compareMarketplaceId`, else 400. See "Two marketplaces side by side" |
+| `blocked` | `exclude` \| `only` \| `include` | **new (blocked products).** Default `exclude`: blocked products are left out of the items and the tab counts. `only` is the Blocked tab; `include` shows both. See "Blocked products" |
 
 "Enabled" is the rule the recon uses: a switch row in Settings decides; without one, an applied upload of that
 marketplace enables it.
@@ -118,3 +119,85 @@ GET /api/products?marketplaceId=talabat&marketplaceStatus=mismatch&limit=1
 - Timings at 25,000 products: `products.performance.test.ts`, real PostgreSQL only.
 
 Read-only check: `scripts/dev/catalogue-marketplace-check.ps1`.
+
+## Blocked products (migration `202611170001_blocked_products`)
+
+A product can be **blocked** (old, seasonal or other). A blocked product is ignored by every check and change.
+Blocking is separate from `status`: unblocking restores the product exactly as it was, except that the offers ended by
+the block stay ended. Names stay clear of the existing "blocked" meanings (the Marketplace values field state and the
+bulk price `blocked` counts are unchanged): a product says `isBlocked`, `blockedAt`, `blockedReason`.
+
+Permission `products.block`: Owner, Admin and Catalogue Manager (not the Analyst). Each request selects **either**
+`productIds` (1..500 uuids; ids of another store count as `notFound`) **or** `filter`, the catalogue list filters
+`{ q?, tab? (default all), categoryId?, subcategoryId?, marketplaceId?, marketplaceStatus? }` (`marketplaceStatus` needs
+`marketplaceId`; the marketplace must be enabled). A filter matching more than 10,000 products is refused:
+400 `details: [{ path: 'filter', message: 'This filter matches 12,345 products; at most 10,000 can be changed at once. Narrow the filter.' }]`.
+
+### List, detail and counts
+
+- Every product item (list and `GET /api/products/:id`) has `isBlocked: boolean`, `blockedAt: string | null`,
+  `blockedReason: 'old' | 'seasonal' | 'other' | null`.
+- `counts` gains `blocked`: the blocked products of the same search, category and marketplace filters, **whatever**
+  `blocked` says, so the Blocked tab always shows its number. The other tab counts follow `blocked`.
+
+```ts
+// GET /api/products?blocked=only  (the Blocked tab)
+counts = { all: 2, active: 1, inactive: 0, new: 1, missing: 0, blocked: 2 }
+```
+
+### `POST /api/products/block/preview`
+
+```ts
+body = { productIds: string[] } | { filter: {...} }  &  { reason: 'old' | 'seasonal' | 'other' }
+data = {
+  reason, reasonLabel: 'Old product' | 'Seasonal' | 'Other',
+  selected: number,           // toBlock + alreadyBlocked
+  toBlock: number, alreadyBlocked: number, notFound: number,
+  activeOffersToEnd: number,  // active offers (dates include now) on the products to block
+  offersNote: string | null,  // "Active offers on these products end now; unblocking does not bring them back"
+  previewToken: string,       // 64 hex characters
+}
+```
+
+Writes nothing.
+
+### `POST /api/products/block`
+
+Body: the preview's body plus the required `previewToken`. 409 "The products or their offers changed since the
+preview; preview again before blocking" when the selection, its blocked state or its active offers changed. Then, in
+one transaction: the products get `blocked_at`, `blocked_reason`, `blocked_by` (status and every other field kept);
+their active offers end (`valid_until = now`; the rows stay, so the product shows the ended offer); their
+reconciliation rows are deleted; Activity gets one `product.blocked` event per product (with the ended offers) and one
+`products.blocked` summary. After commit one recompute is queued (reason `product.blocked`).
+
+```ts
+data = { reason, reasonLabel, blocked: number, alreadyBlocked: number, notFound: number,
+         offersEnded: number, offersNote: string | null, blockedAt: string }
+```
+
+### `POST /api/products/unblock`
+
+Body: `{ productIds }` or `{ filter }` (the filter selects among the blocked products only). Clears the three blocked
+columns. **Ended offers are not restored**; the response says so. One `product.unblocked` event per product, one
+`products.unblocked` summary, and one recompute (reason `product.unblocked`).
+
+```ts
+data = { unblocked: number, notBlocked: number, notFound: number, offersRestored: 0,
+         offersNote: 'Offers that were ended when the product was blocked are not restored; set a new offer if needed' }
+```
+
+### What skips a blocked product
+
+| Area | Behaviour |
+| --- | --- |
+| Reconciliation and recompute | Not read (`ReconRepository.products()`), so its rows are removed; no stock or price mismatch |
+| Dashboard summary, Review lists and counts, stock-conflict badge | Not counted (conflicts stay stored and show again after unblocking) |
+| Generated marketplace files | Never written |
+| Bulk price | Ids: counted under the new reason `product_blocked` (selected = willChange + unchanged + blocked). Filter: not selected |
+| Bulk offers (set and remove) | Ids: `product_blocked` (rejected / skipped). Single `PUT/DELETE /api/products/:id/offer` and `/price-rule`, inline price: 409 "This product is blocked; unblock it first" |
+| Price adoption, Active offers list | Not read / not listed |
+| `GET /api/products/marketplace-listings` | A row matched to a blocked product has `isBlocked: true`, `product.isBlocked: true` and `availabilityAdjustment: null`; it is not a mismatch and not "Missing from ERP" |
+| ERP upload | Still updates the product's ERP fields, but the review shows its row as no change (`changeType: none`, `summary.blockedProducts`), it is never "missing from the file", and the apply writes no change rows and counts none of its changes or conflicts |
+| Marketplace upload | The listing is still stored; the review shows the row as no change and never as missing |
+| Activate | "Activate all new" skips it; by id it is skipped with "This product is blocked; unblock it first" |
+| Catalogue export, offers sweep | Not built yet; they must exclude blocked products when built (open gap G38) |
