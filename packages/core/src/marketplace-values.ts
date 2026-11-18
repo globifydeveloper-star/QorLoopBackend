@@ -259,12 +259,100 @@ export function planMarketplaceValues(targets: PlanTarget[], notFound: number, a
   return plan;
 }
 
+// ───────── Copy from another marketplace (owner decisions of 12 November 2026) ─────────
+
+/** B's listing of a product, as the comparison picks it (newest, then marketplace product id), and the file it came from. */
+export interface SourceListing { available: boolean; price: number; uploadId: string | null; fileName: string | null }
+export const NOT_ON_SOURCE_REASONS = ['not_on_source', 'source_price_invalid'] as const;
+export type NotOnSourceReason = (typeof NOT_ON_SOURCE_REASONS)[number];
+
+export interface CopyAction {
+  type: 'copy_from_marketplace';
+  sourceMarketplaceId: string;
+  fields: MarketplaceValueField[];
+  /** New values: false (default) = fix once, true = pinned. */
+  persistent?: boolean;
+  /** false (default): a pinned field of the target is kept; true: it takes the source value and stays pinned. */
+  replacePins?: boolean;
+}
+/** A copy target also needs what the target's next file writes when it has no pending value: the catalogue value. */
+export interface CopyTarget extends PlanTarget {
+  catalogue: { available: boolean | null; price: number | null } | null;
+}
+export interface CopyPlan extends MarketplaceValuePlan {
+  copy: {
+    sourceMarketplaceId: string;
+    /** B's latest applied file: a new one between preview and apply changes the token. */
+    sourceLatestUploadId: string;
+    notOnSource: Record<NotOnSourceReason, number>;
+    /** Products left unchanged only because every differing copied field is pinned on the target. */
+    pinnedKept: number;
+    /** Changed products whose copied value comes from a listing of an older B file than its latest applied one. */
+    fromOlderFile: number;
+  };
+}
+
+const sameValue = (field: MarketplaceValueField, a: boolean | number | null | undefined, b: boolean | number) =>
+  a !== null && a !== undefined && (field === 'price' ? toFils(a as number) === toFils(b as number) : a === b);
+
+/**
+ * Plans "copy from marketplace": per selected product of the target A, the requested fields take the value of B's current
+ * listing. Blocked on A exactly as bulk set (not listed, inactive, ERP-inactive, missing from the ERP; availability "No"
+ * included). Not on B (or B's price outside the allowed range) writes nothing. A field is unchanged when A's next file
+ * already writes B's value (its pending value, else the catalogue value). A pinned field is kept unless replacePins.
+ */
+export function planCopyFromMarketplace(
+  targets: CopyTarget[], notFound: number, source: Map<string, SourceListing>, sourceLatestUploadId: string,
+  action: CopyAction, reason: string | null,
+): CopyPlan {
+  const plan: CopyPlan = {
+    changes: [], unchanged: 0, blocked: { not_listed: 0, inactive: 0, erp_inactive: 0, missing_from_erp: 0, not_found: notFound },
+    copy: { sourceMarketplaceId: action.sourceMarketplaceId, sourceLatestUploadId, notOnSource: { not_on_source: 0, source_price_invalid: 0 }, pinnedKept: 0, fromOlderFile: 0 },
+  };
+  const fields = MARKETPLACE_VALUE_FIELDS.filter(f => action.fields.includes(f));
+  for (const t of targets) {
+    const block = setBlockReason(t);
+    if (block) { plan.blocked[block]++; continue; }
+    const s = source.get(t.productId);
+    if (!s) { plan.copy.notOnSource.not_on_source++; continue; }
+    const out: FieldChange[] = [];
+    let pinned = false;
+    let invalid = false;
+    for (const field of fields) {
+      const value = field === 'price' ? s.price : s.available;
+      if (field === 'price' && !(s.price > 0 && s.price <= MARKETPLACE_PRICE_MAX)) { invalid = true; continue; }
+      const o = t.override?.[field];
+      const pending = o?.state === 'pending' ? o : null;
+      const writes = pending ? pending.value : (field === 'price' ? t.catalogue?.price : t.catalogue?.available);
+      if (sameValue(field, writes, value)) continue;
+      if (pending?.persistent && !action.replacePins) { pinned = true; continue; }
+      out.push({
+        field, op: 'set',
+        before: o ? { value: o.value, state: o.state, persistent: o.persistent, reason: o.reason } : null,
+        after: { value, state: 'pending', persistent: pending?.persistent ? true : (action.persistent ?? false), reason },
+      });
+    }
+    if (out.length) {
+      plan.changes.push({ productId: t.productId, overrideId: t.override?.id ?? null, version: t.override?.version ?? null, fields: out });
+      if (s.uploadId !== sourceLatestUploadId) plan.copy.fromOlderFile++;
+    } else if (pinned) plan.copy.pinnedKept++;
+    else if (invalid) plan.copy.notOnSource.source_price_invalid++;
+    else plan.unchanged++;
+  }
+  return plan;
+}
+
 const v = (x: boolean | number) => (typeof x === 'number' ? String(toFils(x)) : x ? 'y' : 'n');
 /** Everything a bulk apply would write, in order, with the versions it read: the preview token hashes this. */
-export function marketplaceValuesPlanSignature(plan: MarketplaceValuePlan): string {
+export function marketplaceValuesPlanSignature(plan: MarketplaceValuePlan | CopyPlan): string {
   const changes = plan.changes.map(c => `${c.productId}@${c.overrideId ?? '-'}:${c.version ?? 0}=`
     + c.fields.map(f => `${f.field}.${f.op}.${v(f.after.value)}.${f.after.persistent ? 'p' : 'o'}.${f.after.reason ?? ''}`).join(','));
-  return [changes.join(';'), `u${plan.unchanged}`, ...Object.entries(plan.blocked).map(([k, n]) => `${k}${n}`)].join('|');
+  const parts = [changes.join(';'), `u${plan.unchanged}`, ...Object.entries(plan.blocked).map(([k, n]) => `${k}${n}`)];
+  if ('copy' in plan) {
+    const c = plan.copy;
+    parts.push(`src${c.sourceMarketplaceId}:${c.sourceLatestUploadId}`, ...Object.entries(c.notOnSource).map(([k, n]) => `${k}${n}`), `k${c.pinnedKept}`, `o${c.fromOlderFile}`);
+  }
+  return parts.join('|');
 }
 
 // ───────── Acknowledgement by a later marketplace upload (fix-once fields only) ─────────
