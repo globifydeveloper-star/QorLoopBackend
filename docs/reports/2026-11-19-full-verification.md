@@ -117,3 +117,122 @@ ages are relative to the run time, so the stored answers do not depend on the da
 
 `datasets.test.ts` also asserts that each case in the brief is present in the expected outputs (for example, all five
 price sources and every recon status in `presence`).
+
+## Step 4: Accuracy harness
+
+`verification/accuracy.integration.test.ts` and `pipeline.ts` run each dataset through the real product:
+`POST /api/uploads` → stored bytes → `complete` → `mapping` → review → `apply` (the real worker functions behind the
+inline queues) → block and status edits through the API → pricing rows → marketplace uploads → `recomputeRecon` →
+`GET /api/recon/summary` → for each marketplace, kind (`price`, `stock`, `stock_price`) and scope (`mismatches`, `all`):
+`POST /api/generated-files/preview` and `POST /api/generated-files`, then the stored `.xlsx` is parsed with ExcelJS.
+Each tenant is new; the database is the embedded PGlite one. Rules, offers, categories and upload ages are written with
+Prisma. An offer that already ended cannot be created through the API, so the setup writes the rows the product reads.
+
+**How each number is computed** (`verification/metrics.ts`). Every comparison is one *case*.
+- **found**: the reference expects a problem and the product flags it.
+- **missed**: expected, not flagged.
+- **false alarm**: flagged, not expected.
+- **wrong value**: the compared value differs (price, status, cell row, and so on), whether or not the flag agreed.
+- **exact**: flag and value both agree.
+- **precision** = found / (found + false alarms); **recall** = found / (found + missed). "n/a" means there is no
+  problem/flag notion, or the denominator is 0.
+- Generated files: a *file-rows* case is one identifier, expected in the file or not. A *file-values* case is all cells
+  of that identifier's rows, compared exactly, so any changed non-price/availability cell counts as a wrong value.
+- *Round trip*: the generated `stock_price`/`mismatches` cells are put back into the source file, which is uploaded as a
+  fresh full snapshot and reconciled again. A case is one product the file fixed, and it must have no price or stock
+  problem left.
+
+**Attribution.** Each disagreement is re-judged once per finding below. The reference is rerun with that single
+observed behaviour switched on (`REF_CONFIG`, clearly labelled attribution-only). A disagreement that disappears is
+attributed to that finding. The 23 per-feature tests fail on any disagreement that no finding explains. All headline
+numbers use the documented rules.
+
+### Golden datasets (9 datasets and 2 rejection files, PGlite)
+
+| Feature | Cases | Exact | Not exact | Found | Missed | False alarms | Wrong values | Exact-match | Precision | Recall |
+|---|---|---|---|---|---|---|---|---|---|---|
+| erp-row-validation | 184 | 182 | 2 | 9 | 0 | 2 | 2 | 98.91% | 81.82% | 100.00% |
+| barcode-normalisation | 154 | 151 | 3 | 4 | 0 | 1 | 3 | 98.05% | 80.00% | 100.00% |
+| catalogue-fields | 151 | 139 | 12 | 0 | 0 | 1 | 12 | 92.05% | 0.00% (1 false alarm, no expected problems) | n/a |
+| names (EN, AR) | 150 | 147 | 3 | 0 | 0 | 0 | 3 | 98.00% | n/a | n/a |
+| marketplace-row-validation | 119 | 119 | 0 | 2 | 0 | 0 | 0 | 100.00% | 100.00% | 100.00% |
+| matching (barcode 1-3, GTIN-14, SKU fallback) | 117 | 116 | 1 | 5 | 0 | 1 | 1 | 99.15% | 83.33% | 100.00% |
+| recon-row-present | 247 | 242 | 5 | 242 | 4 | 1 | 5 | 97.98% | 99.59% | 98.37% |
+| recon-status | 242 | 240 | 2 | 173 | 2 | 0 | 2 | 99.17% | 100.00% | 98.86% |
+| expected-price (value and source) | 242 | 225 | 17 | 0 | 0 | 0 | 17 | 92.98% | n/a | n/a |
+| availability (should be available) | 233 | 233 | 0 | 0 | 0 | 0 | 0 | 100.00% | n/a | n/a |
+| stock-issue | 233 | 233 | 0 | 20 | 0 | 0 | 0 | 100.00% | 100.00% | 100.00% |
+| price-mismatch | 100 | 95 | 5 | 41 | 2 | 0 | 5 | 95.00% | 100.00% | 95.35% |
+| blocked-ignored (no row, not in files) | 28 | 28 | 0 | 0 | 0 | 0 | 0 | 100.00% | n/a | n/a |
+| stale | 16 | 16 | 0 | 1 | 0 | 0 | 0 | 100.00% | 100.00% | 100.00% |
+| summary-counts (stock, price, total, not listed, missing, new) | 16 | 13 | 3 | 0 | 0 | 0 | 3 | 81.25% | n/a | n/a |
+| file-blocking (file / blocked / nothing to update) | 96 | 96 | 0 | 25 | 0 | 0 | 0 | 100.00% | 100.00% | 100.00% |
+| file-header | 71 | 71 | 0 | 0 | 0 | 0 | 0 | 100.00% | n/a | n/a |
+| file-row-order | 71 | 66 | 5 | 0 | 0 | 0 | 5 | 92.96% | n/a | n/a |
+| file-rows (right rows, unchanged rows excluded) | 401 | 394 | 7 | 394 | 7 | 0 | 7 | 98.25% | 100.00% | 98.25% |
+| file-values (every cell) | 394 | 348 | 46 | 0 | 0 | 0 | 46 | 88.32% | n/a | n/a |
+| round-trip | 56 | 56 | 0 | 0 | 0 | 0 | 0 | 100.00% | n/a | n/a |
+| upload-rejection (>20%, exactly 20%, message, no partial data) | 4 | 4 | 0 | 1 | 0 | 0 | 0 | 100.00% | 100.00% | 100.00% |
+| tenant-isolation (twin tenant) | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 100.00% | n/a | n/a |
+| **All** | **3,327** | **3,216** | **111** | | | | | **96.66%** | | |
+
+Not exact, by cause: BUG-1 84, GAP-1 14, BUG-2 12, GAP-2 1. **Unexplained: 0.** Without the two documentation gaps
+(GAP-1/GAP-2, where the documents are silent) the product is exact on 3,231 of 3,327 cases (97.11%).
+The 96 disagreements from the two bugs are concentrated in `prices`, `rules` and `barcodes`. The other six datasets
+(`stock`, `names`, `presence`, `stale`, `formats`, `presence-twin`) have no disagreement except GAP-2 (one stored stock).
+
+### Generated large store (5,000 products, PGlite)
+
+91,775 of 91,775 cases exact (100%), including 15,945 file rows, 660 price mismatches, 420 stock issues and 1,020
+round-trip products. Its prices have at most 2 decimals, so BUG-1 cannot show here. 50,000 products: see Step 6.
+
+### Findings from step 4
+
+Each finding has a failing test in `accuracy.integration.test.ts` ("Findings"). These are written with `it.failing`: they
+pass while the bug is present, so CI stays green, and they will report a failure once the bug is fixed (then change
+them to `it`).
+
+- **BUG-1 (medium): every price is kept to 2 decimals, while the documents specify whole fils.**
+  - **Cause:** `round2()` runs on every ERP and marketplace price in `packages/core/src/upload/validate.ts:108,134`, and
+    `roundFils(…,'exact')` means "nearest 0.01 QAR" (`packages/core/src/money.ts:13`).
+  - **What the documents say:** money is `numeric(12,3)` because "some marketplaces use 3" (DM). Rounding `none` "keeps
+    whole fils" (ADR 013). The tolerance allows 3 decimals, and recon compares "in integer fils" (ADR 009).
+  - **Effects seen:**
+    - Talabat 10.051 is stored as 10.05, so with a 0.050 tolerance a mismatch 1 fils outside it is reported **in sync**
+      (2 missed mismatches: 10.051 and 9.949).
+    - ERP 99,999.999 is stored as 100,000.000, and a `same`-rule price file writes `100000.000`.
+    - 5.500 × 1.05 is stored and written as 5.78, not 5.775. ERP 3.333 becomes 3.33.
+    - Two values that differ by less than 0.005 compare equal even at tolerance 0.
+  - **Not fixed:** this is not a small, obviously correct change. It changes stored values, the review and recon
+    signatures, the core money tests, and every generated file with 3-decimal prices. Whether QAR is used to 2 or 3
+    decimals is a business decision; note that QAR's legal minor unit is the dirham (0.01).
+  - **Tests:** "BUG-1: …" (4 tests).
+- **BUG-2 (medium, already listed as open gap G11): barcodes in date-formatted cells.**
+  - **Effects seen:**
+    - The number 45000 in a date cell becomes product `20230315000000000` (the date's digits). It is not listed on
+      Talabat and the ERP row is not reported as an error.
+    - A real 13-digit barcode in a date cell is rejected as "Barcode is empty".
+  - **Not fixed:** the right rule (read the cell's number, or reject date-formatted barcode cells) needs a decision
+    (G11).
+  - **Tests:** "BUG-2: …" (2 tests).
+- **GAP-1 (documentation gap): an ERP price of 0 is a row error** ("Price must be a number above 0"). BR 5.6 only
+  rejects non-numeric prices. The product's rule is reasonable, but it is not documented.
+- **GAP-2 (documentation gap): a negative ERP stock is stored as 0** and counted (`negativeStockClamped`). It does
+  not change availability. Not documented.
+- **GAP-3 (documentation gap, no effect on values): the price source vocabulary.** The product reports `subcategory`
+  as a sixth source; BR 5.1 lists five (`offer | product | category | marketplace | default`). The comparison treats
+  `subcategory` as `category`.
+- **GAP-4 (documentation gap): an empty selection gives a 409**, "There is nothing to update for this selection.",
+  rather than an empty file. ADR 011 does not say what happens. This happened in 19 of 96 file requests (no
+  mismatches of that kind). The other 6 non-file outcomes are the documented quantity-availability block (Snoonu
+  quantities in `stock`).
+- **Agrees with the documents** (no disagreement at all):
+  - GTIN-14/EAN-13 and leading-zero matching, SKU fallback, barcode 3 matching, unmatched rows
+  - duplicate ERP barcodes (first row wins, the others are errors) and duplicate marketplace ids
+  - stock at, above and below the threshold; ERP-inactive and inactive products; missing from the full ERP file; `new`
+    in a second ERP file
+  - Arabic names (ERP fills only an empty one); blocked products (never a row, never in a file); stale at 13 h / 11 h
+  - Talabat booleans and the Snoonu branch columns; text decimals and `True`/`TRUE`/`Yes` spellings kept
+  - formula-like names and categories neutralised with `'`; quantity availability blocking generation
+  - the 20% rejection (21 of 100 rejected with "21 of 100 rows are invalid", nothing written; exactly 20 accepted)
+  - the round trip

@@ -50,6 +50,27 @@ export const RULES = {
 // ───────────────────────────── primitives ─────────────────────────────
 export type Fils = number;
 
+/**
+ * ATTRIBUTION VARIANT ONLY. The documented money unit is the whole fils (moneyStepFils = 1, the default, used for every
+ * accuracy number). The harness re-runs the comparison once with 10 (0.01 QAR) to tell which disagreements are explained
+ * by prices being kept to 2 decimals; nothing else changes. It is never used to compute a headline figure.
+ */
+export const REF_CONFIG = {
+  moneyStepFils: 1,
+  /** observed: an ERP price of 0 is a row error */
+  zeroPriceIsError: false,
+  /** observed: a negative ERP stock is stored as 0 */
+  negativeStockClamped: false,
+  /** observed (open gap G11): a number in a date-formatted cell is read as the date's digits; too large for a date = empty */
+  dateCellsAsDates: false,
+};
+export const DOCUMENTED_CONFIG = { ...REF_CONFIG };
+/** Half-up to the money step (prices read from files, and calculated prices with rounding 'exact'). */
+export function refMoneyStep(fils: Fils): Fils {
+  const step = REF_CONFIG.moneyStepFils;
+  return step === 1 ? fils : Math.floor((fils * 2 + step) / (2 * step)) * step;
+}
+
 /** R01. Returns '' when nothing is left (R02 decides that is an error). */
 export function refBarcode(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -126,7 +147,9 @@ export function refValidateErp(rows: ErpInput[]): ErpValidation {
     const price = blank(r.price) ? undefined : refFils(r.price);
     if (price === undefined) rowErrors.push({ row, field: 'price', reason: 'missing' });
     else if (price === null) rowErrors.push({ row, field: 'price', reason: 'not_numeric' });
-    const stockFils = blank(r.stock) ? undefined : refFils(r.stock);
+    else if (REF_CONFIG.zeroPriceIsError && price <= 0) rowErrors.push({ row, field: 'price', reason: 'not_numeric' });
+    let stockFils = blank(r.stock) ? undefined : refFils(r.stock);
+    if (REF_CONFIG.negativeStockClamped && typeof stockFils === 'number' && stockFils < 0) stockFils = 0;
     if (stockFils === undefined) rowErrors.push({ row, field: 'stock', reason: 'missing' });
     else if (stockFils === null) rowErrors.push({ row, field: 'stock', reason: 'not_numeric' });
     if (!rowErrors.length && seen.has(barcode)) rowErrors.push({ row, field: 'barcode', reason: 'duplicate' }); // R07
@@ -134,7 +157,7 @@ export function refValidateErp(rows: ErpInput[]): ErpValidation {
     seen.add(barcode);
     products.push({
       row, barcode, nameEn: String(r.nameEn).trim(), nameAr: blank(r.nameAr) ? null : String(r.nameAr).trim(),
-      priceFils: price as Fils, stock: Math.trunc((stockFils as Fils) / 1000), erpActive: refActive(r.active),
+      priceFils: refMoneyStep(price as Fils), stock: Math.trunc((stockFils as Fils) / 1000), erpActive: refActive(r.active),
       category: blank(r.category) ? null : String(r.category).trim(), sku: blank(r.sku) ? null : String(r.sku).trim(),
     });
   });
@@ -168,7 +191,7 @@ export function refValidateMarket(rows: MarketInput[], idRequired: boolean): Mar
     if (!rowErrors.length && seen.has(key)) rowErrors.push({ row, field: 'marketplaceProductId', reason: 'duplicate' }); // R27
     if (rowErrors.length) { errors.push(...rowErrors); return; }
     seen.add(key);
-    listings.push({ row, id, barcodes, priceFils: price as Fils, available: available as boolean });
+    listings.push({ row, id, barcodes, priceFils: refMoneyStep(price as Fils), available: available as boolean });
   });
   const invalidRows = new Set(errors.map(e => e.row)).size;
   return { listings, errors, rowsRead: rows.length, rejected: rows.length > 0 && invalidRows * 5 > rows.length };
@@ -206,7 +229,7 @@ export type PriceSource = 'offer' | 'product' | 'category' | 'marketplace' | 'de
 
 /** R13: round fils to a step, halves up. */
 function roundStep(fils: bigint, rounding: Rounding): bigint {
-  if (rounding === 'exact') return fils;
+  if (rounding === 'exact') return BigInt(refMoneyStep(Number(fils)));
   const step = BigInt(Math.round(Number(rounding) * 1000));
   return ((fils * 2n + step) / (2n * step)) * step; // half-up for non-negative prices
 }

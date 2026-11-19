@@ -535,6 +535,7 @@
  "files": {
   "talabat/price/mismatches": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -573,6 +574,7 @@
   },
   "talabat/price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -675,6 +677,7 @@
   },
   "talabat/stock/mismatches": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -729,6 +732,7 @@
   },
   "talabat/stock/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -831,6 +835,7 @@
   },
   "talabat/stock_price/mismatches": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -901,6 +906,7 @@
   },
   "talabat/stock_price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -1003,6 +1009,7 @@
   },
   "snoonu/price/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",
@@ -1014,6 +1021,7 @@
   },
   "snoonu/price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",
@@ -1034,6 +1042,7 @@
   },
   "snoonu/stock/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",
@@ -1045,6 +1054,7 @@
   },
   "snoonu/stock/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",
@@ -1065,6 +1075,7 @@
   },
   "snoonu/stock_price/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",
@@ -1076,6 +1087,7 @@
   },
   "snoonu/stock_price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "Barcode(UniqueIdentifier)",
     "Product Name (En)(Update)",

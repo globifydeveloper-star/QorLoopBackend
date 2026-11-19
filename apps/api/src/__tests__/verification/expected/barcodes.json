@@ -1015,6 +1015,7 @@
  "files": {
   "talabat/price/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "sku",
     "name",
@@ -1035,6 +1036,7 @@
   },
   "talabat/price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -1248,6 +1250,7 @@
   },
   "talabat/stock/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "sku",
     "name",
@@ -1268,6 +1271,7 @@
   },
   "talabat/stock/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",
@@ -1481,6 +1485,7 @@
   },
   "talabat/stock_price/mismatches": {
    "blocked": false,
+   "empty": true,
    "header": [
     "sku",
     "name",
@@ -1501,6 +1506,7 @@
   },
   "talabat/stock_price/all": {
    "blocked": false,
+   "empty": false,
    "header": [
     "sku",
     "name",

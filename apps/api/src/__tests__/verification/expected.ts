@@ -15,8 +15,14 @@ export const MARKETPLACES: MarketplaceId[] = ['talabat', 'snoonu'];
 /** The value a cell carries (a date-formatted number is still that number). */
 export const cellValue = (c: Cell): unknown => (c !== null && typeof c === 'object' ? c.date : c);
 
+/** Attribution variant only (REF_CONFIG.dateCellsAsDates): the digits of the ISO date an Excel serial shows, or '' when too large. */
+function dateDigits(serial: number): string {
+  const d = new Date(Date.UTC(1899, 11, 30) + serial * 86_400_000);
+  return Number.isNaN(d.getTime()) || d.getUTCFullYear() > 9999 ? '' : d.toISOString().replace(/\D/g, '');
+}
 export function erpInputs(rows: ErpRow[]): ref.ErpInput[] {
-  return rows.map(r => ({ barcode: cellValue(r[0]), nameEn: r[1], nameAr: r[2], price: r[3], stock: r[4], active: r[5], category: r[6], sku: r[7] }));
+  const barcode = (c: Cell) => (c !== null && typeof c === 'object' && ref.REF_CONFIG.dateCellsAsDates ? dateDigits(c.date) : cellValue(c));
+  return rows.map(r => ({ barcode: barcode(r[0]), nameEn: r[1], nameAr: r[2], price: r[3], stock: r[4], active: r[5], category: r[6], sku: r[7] }));
 }
 export const ERP_FIELD_HEADER: Record<string, string> = ERP_MAPPING;
 export const MARKET_FIELD_HEADER: Record<MarketplaceId, Record<string, string>> = {
@@ -138,7 +144,8 @@ export function computeExpected(ds: Dataset, now: Date, enabledWithoutFile: Mark
 }
 
 // ───────────────── generated files ─────────────────
-export type ExpectedFile = { blocked: boolean; header: unknown[]; rows: unknown[][]; selectedKeys: string[] };
+/** empty: nothing selected. ASSUMPTION (the documents are silent): no file is written for an empty selection. */
+export type ExpectedFile = { blocked: boolean; empty: boolean; header: unknown[]; rows: unknown[][]; selectedKeys: string[] };
 
 const isNumberCell = (c: Cell) => typeof c === 'number' || (c !== null && typeof c === 'object');
 
@@ -167,7 +174,7 @@ export function expectedFile(e: ExpectedDataset, mp: MarketplaceId, kind: ref.Fi
       return typeof v === 'string' ? ref.refSafeCell(v) : v;
     }));
   });
-  return { blocked, header: headerCells, rows: out, selectedKeys: [...new Set(rows.map(r => r.productKey))] };
+  return { blocked, empty: out.length === 0, header: headerCells, rows: out, selectedKeys: [...new Set(rows.map(r => r.productKey))] };
 }
 
 export { ERP_HEADERS };
