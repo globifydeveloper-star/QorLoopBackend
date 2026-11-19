@@ -1,0 +1,388 @@
+{
+ "name": "stale",
+ "settings": {
+  "tolerance": 0,
+  "threshold": 0,
+  "staleHours": 12
+ },
+ "erp1": {
+  "rowsRead": 2,
+  "rejected": false,
+  "errors": [],
+  "accepted": [
+   "6281000000701",
+   "6281000000702"
+  ]
+ },
+ "products": [
+  {
+   "barcode": "6281000000701",
+   "nameEn": "Stale check",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 2000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000702",
+   "nameEn": "Stale check 2",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 2000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  }
+ ],
+ "market": {
+  "talabat": {
+   "rejected": false,
+   "errors": [],
+   "listings": [
+    {
+     "row": 2,
+     "id": "A701",
+     "priceFils": 2000,
+     "available": true,
+     "match": "6281000000701"
+    }
+   ]
+  },
+  "snoonu": {
+   "rejected": false,
+   "errors": [],
+   "listings": [
+    {
+     "row": 2,
+     "id": "6281000000702",
+     "priceFils": 2000,
+     "available": true,
+     "match": "6281000000702"
+    }
+   ]
+  }
+ },
+ "recon": [
+  {
+   "product": "6281000000701",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 2000,
+   "source": "default",
+   "actualFils": 2000,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000702",
+   "marketplace": "talabat",
+   "status": "not_listed",
+   "expectedFils": 2000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000701",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 2000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000702",
+   "marketplace": "snoonu",
+   "status": "in_sync",
+   "expectedFils": 2000,
+   "source": "default",
+   "actualFils": 2000,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  }
+ ],
+ "stale": {
+  "talabat": true,
+  "snoonu": false
+ },
+ "files": {
+  "talabat/price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "talabat/price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "A701",
+     "n",
+     "2.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000701",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000701"
+   ]
+  },
+  "talabat/stock/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "talabat/stock/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "A701",
+     "n",
+     "2.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000701",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000701"
+   ]
+  },
+  "talabat/stock_price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "talabat/stock_price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "A701",
+     "n",
+     "2.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000701",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000701"
+   ]
+  },
+  "snoonu/price/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "snoonu/price/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000702",
+     "n",
+     "True",
+     "2.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000702"
+   ]
+  },
+  "snoonu/stock/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "snoonu/stock/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000702",
+     "n",
+     "True",
+     "2.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000702"
+   ]
+  },
+  "snoonu/stock_price/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "snoonu/stock_price/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000702",
+     "n",
+     "True",
+     "2.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000702"
+   ]
+  }
+ }
+}

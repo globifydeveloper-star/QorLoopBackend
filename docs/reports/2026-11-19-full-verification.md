@@ -90,3 +90,30 @@ documentation gap, not a bug.
 | R26 | The Arabic name comes from the ERP only when Qorloop's is empty | BR 5.6, DM |
 | R27 | A duplicate marketplace identifier keeps the first row; the others are row errors | ADR 011 |
 | R28 | A tenant sees only its own rows | ADR 007, ADR 008 |
+
+## Step 3: Golden datasets
+
+Definitions: `apps/api/src/__tests__/verification/datasets.ts`. Rows are written as real `.xlsx` files with ExcelJS. A
+"date cell" is a number stored with a `dd/mm/yyyy` format, the way Excel keeps a barcode typed into a date column.
+Expected outputs: `expected.ts` simulates the documented pipeline (ERP import(s), Qorloop edits, marketplace uploads,
+recon, files) with the reference calculator only. The answers are stored in `verification/expected/*.json`, and
+`datasets.test.ts` fails if a fresh computation differs (`UPDATE_GOLDEN=1` rewrites them). Offer windows and upload
+ages are relative to the run time, so the stored answers do not depend on the date.
+
+| Dataset | What it covers |
+|---|---|
+| `barcodes` | leading zeros (ERP and GTIN-14), numeric cell, trailing `.0`, spaces, missing and empty barcode, duplicate and duplicate-after-normalisation, SKU fallback, barcode 3 match, unmatched marketplace row, duplicate marketplace id, barcodes in date-formatted cells (small number and 13-digit) |
+| `stock` | threshold 5: stock −3, 0, 5 (= threshold), 4, 6, 100; ERP-inactive (`No`, `false`); stock as text; non-numeric stock and price; missing price, name and stock; Snoonu `Yes`/`no`/`1`/`0`/`12`/unreadable availability |
+| `prices` | tolerance 0.050: exactly at ±tolerance, 1 fils inside, 1 fils outside; 99,999.999 and 12,345.678; 4-decimal ERP price (half-fils); float noise `0.1+0.2`; numeric cells; zero price |
+| `rules` | each rule source: active, expired, future and open-ended offers; product fixed/same/amount; subcategory over category; per-marketplace (Talabat only, 0.25 rounding) over default; half-fils percent; large percent |
+| `names` | Arabic, empty Arabic, 460-character name, `Café "Crème" & <Co> ½` and RTL mark, names starting `=` `@` `+` `-`; a second ERP file (Arabic name kept, empty one filled, a new product) |
+| `presence` | ERP only, marketplace only, both, blocked (listed and not), inactive (listed available/unavailable, not listed), ERP-inactive, dropped from the second full ERP file (listed available/unavailable), new in the second file |
+| `stale` | Talabat file 13 h old, Snoonu file 11 h old, `stale_hours` 12 |
+| `formats` | Talabat `active` booleans with numeric/text prices; Snoonu `Availability for <branch>(Update)` and `Price For Branch <branch>(Update)`, `TRUE`/`false`/`Yes`, 3-decimal and numeric prices |
+| `presence-twin` | second tenant: same barcodes, different names (marker `ZZ-OTHER-TENANT`), prices and stock |
+| `invalid-21-percent` | 100 rows, 21 invalid: must be rejected |
+| `invalid-20-percent` | 100 rows, exactly 20 invalid: accepted, 20 errors listed |
+| `large-50000` | generated: 50,000 products. The stored answer is the counts only (3,847 not listed, 6,593 price, 4,196 stock, 35,964 in sync) |
+
+`datasets.test.ts` also asserts that each case in the brief is present in the expected outputs (for example, all five
+price sources and every recon status in `presence`).

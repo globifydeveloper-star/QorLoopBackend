@@ -1,0 +1,1575 @@
+{
+ "name": "prices",
+ "settings": {
+  "tolerance": 50,
+  "threshold": 0,
+  "staleHours": 12
+ },
+ "erp1": {
+  "rowsRead": 14,
+  "rejected": false,
+  "errors": [],
+  "accepted": [
+   "6281000000201",
+   "6281000000202",
+   "6281000000203",
+   "6281000000204",
+   "6281000000205",
+   "6281000000206",
+   "6281000000207",
+   "6281000000208",
+   "6281000000209",
+   "6281000000210",
+   "6281000000211",
+   "6281000000212",
+   "6281000000213",
+   "6281000000214"
+  ]
+ },
+ "products": [
+  {
+   "barcode": "6281000000201",
+   "nameEn": "At +tolerance",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000202",
+   "nameEn": "Inside +tolerance",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000203",
+   "nameEn": "Outside +tolerance",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000204",
+   "nameEn": "At -tolerance",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000205",
+   "nameEn": "Outside -tolerance",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000206",
+   "nameEn": "Exact",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 10000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000207",
+   "nameEn": "Large exact",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 99999999,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000208",
+   "nameEn": "Large outside",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 12345678,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000209",
+   "nameEn": "Four decimals in ERP",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 2001,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000210",
+   "nameEn": "Float noise 0.1+0.2",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 300,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000211",
+   "nameEn": "Price as number",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 5500,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000212",
+   "nameEn": "Zero price",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 0,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000213",
+   "nameEn": "Snoonu numeric price",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 4250,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000214",
+   "nameEn": "Snoonu 3 decimals",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 4255,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  }
+ ],
+ "market": {
+  "talabat": {
+   "rejected": false,
+   "errors": [],
+   "listings": [
+    {
+     "row": 2,
+     "id": "P201",
+     "priceFils": 10050,
+     "available": true,
+     "match": "6281000000201"
+    },
+    {
+     "row": 3,
+     "id": "P202",
+     "priceFils": 10049,
+     "available": true,
+     "match": "6281000000202"
+    },
+    {
+     "row": 4,
+     "id": "P203",
+     "priceFils": 10051,
+     "available": true,
+     "match": "6281000000203"
+    },
+    {
+     "row": 5,
+     "id": "P204",
+     "priceFils": 9950,
+     "available": true,
+     "match": "6281000000204"
+    },
+    {
+     "row": 6,
+     "id": "P205",
+     "priceFils": 9949,
+     "available": true,
+     "match": "6281000000205"
+    },
+    {
+     "row": 7,
+     "id": "P206",
+     "priceFils": 10000,
+     "available": true,
+     "match": "6281000000206"
+    },
+    {
+     "row": 8,
+     "id": "P207",
+     "priceFils": 99999999,
+     "available": true,
+     "match": "6281000000207"
+    },
+    {
+     "row": 9,
+     "id": "P208",
+     "priceFils": 12345600,
+     "available": true,
+     "match": "6281000000208"
+    },
+    {
+     "row": 10,
+     "id": "P209",
+     "priceFils": 2001,
+     "available": true,
+     "match": "6281000000209"
+    },
+    {
+     "row": 11,
+     "id": "P210",
+     "priceFils": 300,
+     "available": true,
+     "match": "6281000000210"
+    },
+    {
+     "row": 12,
+     "id": "P211",
+     "priceFils": 5500,
+     "available": true,
+     "match": "6281000000211"
+    },
+    {
+     "row": 13,
+     "id": "P212",
+     "priceFils": 0,
+     "available": true,
+     "match": "6281000000212"
+    }
+   ]
+  },
+  "snoonu": {
+   "rejected": false,
+   "errors": [],
+   "listings": [
+    {
+     "row": 2,
+     "id": "6281000000213",
+     "priceFils": 4200,
+     "available": true,
+     "match": "6281000000213"
+    },
+    {
+     "row": 3,
+     "id": "6281000000214",
+     "priceFils": 4300,
+     "available": true,
+     "match": "6281000000214"
+    },
+    {
+     "row": 4,
+     "id": "6281000000206",
+     "priceFils": 10100,
+     "available": true,
+     "match": "6281000000206"
+    }
+   ]
+  }
+ },
+ "recon": [
+  {
+   "product": "6281000000201",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 10050,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000202",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 10049,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000203",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 10051,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000204",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 9950,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000205",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 9949,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000206",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 10000,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000207",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 99999999,
+   "source": "default",
+   "actualFils": 99999999,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000208",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 12345678,
+   "source": "default",
+   "actualFils": 12345600,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000209",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 2001,
+   "source": "default",
+   "actualFils": 2001,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000210",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 300,
+   "source": "default",
+   "actualFils": 300,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000211",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 5500,
+   "source": "default",
+   "actualFils": 5500,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000212",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 0,
+   "source": "default",
+   "actualFils": 0,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000213",
+   "marketplace": "talabat",
+   "status": "not_listed",
+   "expectedFils": 4250,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000214",
+   "marketplace": "talabat",
+   "status": "not_listed",
+   "expectedFils": 4255,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000201",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000202",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000203",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000204",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000205",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000206",
+   "marketplace": "snoonu",
+   "status": "mismatch",
+   "expectedFils": 10000,
+   "source": "default",
+   "actualFils": 10100,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000207",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 99999999,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000208",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 12345678,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000209",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 2001,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000210",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 300,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000211",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 5500,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000212",
+   "marketplace": "snoonu",
+   "status": "not_listed",
+   "expectedFils": 0,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000213",
+   "marketplace": "snoonu",
+   "status": "in_sync",
+   "expectedFils": 4250,
+   "source": "default",
+   "actualFils": 4200,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000214",
+   "marketplace": "snoonu",
+   "status": "in_sync",
+   "expectedFils": 4255,
+   "source": "default",
+   "actualFils": 4300,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  }
+ ],
+ "stale": {
+  "talabat": false,
+  "snoonu": false
+ },
+ "files": {
+  "talabat/price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "P203",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000203",
+     null,
+     null,
+     null
+    ],
+    [
+     "P205",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000205",
+     null,
+     null,
+     null
+    ],
+    [
+     "P208",
+     "n",
+     "12345.678",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000208",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000203",
+    "6281000000205",
+    "6281000000208"
+   ]
+  },
+  "talabat/price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "P201",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000201",
+     null,
+     null,
+     null
+    ],
+    [
+     "P202",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000202",
+     null,
+     null,
+     null
+    ],
+    [
+     "P203",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000203",
+     null,
+     null,
+     null
+    ],
+    [
+     "P204",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000204",
+     null,
+     null,
+     null
+    ],
+    [
+     "P205",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000205",
+     null,
+     null,
+     null
+    ],
+    [
+     "P206",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000206",
+     null,
+     null,
+     null
+    ],
+    [
+     "P207",
+     "n",
+     "99999.999",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000207",
+     null,
+     null,
+     null
+    ],
+    [
+     "P208",
+     "n",
+     "12345.678",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000208",
+     null,
+     null,
+     null
+    ],
+    [
+     "P209",
+     "n",
+     "2.001",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000209",
+     null,
+     null,
+     null
+    ],
+    [
+     "P210",
+     "n",
+     "0.30",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000210",
+     null,
+     null,
+     null
+    ],
+    [
+     "P211",
+     "n",
+     5.5,
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000211",
+     null,
+     null,
+     null
+    ],
+    [
+     "P212",
+     "n",
+     "0.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000212",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000201",
+    "6281000000202",
+    "6281000000203",
+    "6281000000204",
+    "6281000000205",
+    "6281000000206",
+    "6281000000207",
+    "6281000000208",
+    "6281000000209",
+    "6281000000210",
+    "6281000000211",
+    "6281000000212"
+   ]
+  },
+  "talabat/stock/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "talabat/stock/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "P201",
+     "n",
+     "10.05",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000201",
+     null,
+     null,
+     null
+    ],
+    [
+     "P202",
+     "n",
+     "10.049",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000202",
+     null,
+     null,
+     null
+    ],
+    [
+     "P203",
+     "n",
+     "10.051",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000203",
+     null,
+     null,
+     null
+    ],
+    [
+     "P204",
+     "n",
+     "9.95",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000204",
+     null,
+     null,
+     null
+    ],
+    [
+     "P205",
+     "n",
+     "9.949",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000205",
+     null,
+     null,
+     null
+    ],
+    [
+     "P206",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000206",
+     null,
+     null,
+     null
+    ],
+    [
+     "P207",
+     "n",
+     "99999.999",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000207",
+     null,
+     null,
+     null
+    ],
+    [
+     "P208",
+     "n",
+     "12345.60",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000208",
+     null,
+     null,
+     null
+    ],
+    [
+     "P209",
+     "n",
+     "2.001",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000209",
+     null,
+     null,
+     null
+    ],
+    [
+     "P210",
+     "n",
+     "0.30",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000210",
+     null,
+     null,
+     null
+    ],
+    [
+     "P211",
+     "n",
+     5.5,
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000211",
+     null,
+     null,
+     null
+    ],
+    [
+     "P212",
+     "n",
+     "0.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000212",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000201",
+    "6281000000202",
+    "6281000000203",
+    "6281000000204",
+    "6281000000205",
+    "6281000000206",
+    "6281000000207",
+    "6281000000208",
+    "6281000000209",
+    "6281000000210",
+    "6281000000211",
+    "6281000000212"
+   ]
+  },
+  "talabat/stock_price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "P203",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000203",
+     null,
+     null,
+     null
+    ],
+    [
+     "P205",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000205",
+     null,
+     null,
+     null
+    ],
+    [
+     "P208",
+     "n",
+     "12345.678",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000208",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000203",
+    "6281000000205",
+    "6281000000208"
+   ]
+  },
+  "talabat/stock_price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "P201",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000201",
+     null,
+     null,
+     null
+    ],
+    [
+     "P202",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000202",
+     null,
+     null,
+     null
+    ],
+    [
+     "P203",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000203",
+     null,
+     null,
+     null
+    ],
+    [
+     "P204",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000204",
+     null,
+     null,
+     null
+    ],
+    [
+     "P205",
+     "n",
+     "10.000",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000205",
+     null,
+     null,
+     null
+    ],
+    [
+     "P206",
+     "n",
+     "10.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000206",
+     null,
+     null,
+     null
+    ],
+    [
+     "P207",
+     "n",
+     "99999.999",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000207",
+     null,
+     null,
+     null
+    ],
+    [
+     "P208",
+     "n",
+     "12345.678",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000208",
+     null,
+     null,
+     null
+    ],
+    [
+     "P209",
+     "n",
+     "2.001",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000209",
+     null,
+     null,
+     null
+    ],
+    [
+     "P210",
+     "n",
+     "0.30",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000210",
+     null,
+     null,
+     null
+    ],
+    [
+     "P211",
+     "n",
+     5.5,
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000211",
+     null,
+     null,
+     null
+    ],
+    [
+     "P212",
+     "n",
+     "0.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000212",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000201",
+    "6281000000202",
+    "6281000000203",
+    "6281000000204",
+    "6281000000205",
+    "6281000000206",
+    "6281000000207",
+    "6281000000208",
+    "6281000000209",
+    "6281000000210",
+    "6281000000211",
+    "6281000000212"
+   ]
+  },
+  "snoonu/price/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000206",
+     "n",
+     "True",
+     "10.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000206"
+   ]
+  },
+  "snoonu/price/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000213",
+     "n",
+     "True",
+     4.25
+    ],
+    [
+     "6281000000214",
+     "n",
+     "True",
+     "4.255"
+    ],
+    [
+     "6281000000206",
+     "n",
+     "True",
+     "10.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000206",
+    "6281000000213",
+    "6281000000214"
+   ]
+  },
+  "snoonu/stock/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "snoonu/stock/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000213",
+     "n",
+     "True",
+     4.2
+    ],
+    [
+     "6281000000214",
+     "n",
+     "True",
+     "4.30"
+    ],
+    [
+     "6281000000206",
+     "n",
+     "True",
+     "10.10"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000206",
+    "6281000000213",
+    "6281000000214"
+   ]
+  },
+  "snoonu/stock_price/mismatches": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000206",
+     "n",
+     "True",
+     "10.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000206"
+   ]
+  },
+  "snoonu/stock_price/all": {
+   "blocked": false,
+   "header": [
+    "Barcode(UniqueIdentifier)",
+    "Product Name (En)(Update)",
+    "Availability for Verification Branch Al Sadd(Update)",
+    "Price For Branch Verification Branch Al Sadd(Update)"
+   ],
+   "rows": [
+    [
+     "6281000000213",
+     "n",
+     "True",
+     4.25
+    ],
+    [
+     "6281000000214",
+     "n",
+     "True",
+     "4.255"
+    ],
+    [
+     "6281000000206",
+     "n",
+     "True",
+     "10.00"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000206",
+    "6281000000213",
+    "6281000000214"
+   ]
+  }
+ }
+}

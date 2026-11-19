@@ -1,0 +1,818 @@
+{
+ "name": "names",
+ "settings": {
+  "tolerance": 0,
+  "threshold": 0,
+  "staleHours": 12
+ },
+ "erp1": {
+  "rowsRead": 7,
+  "rejected": false,
+  "errors": [],
+  "accepted": [
+   "6281000000401",
+   "6281000000402",
+   "6281000000403",
+   "6281000000404",
+   "6281000000405",
+   "6281000000406",
+   "6281000000407"
+  ]
+ },
+ "erp2": {
+  "rowsRead": 8,
+  "rejected": false,
+  "errors": [],
+  "accepted": [
+   "6281000000401",
+   "6281000000402",
+   "6281000000403",
+   "6281000000404",
+   "6281000000405",
+   "6281000000406",
+   "6281000000407",
+   "6281000000408"
+  ]
+ },
+ "products": [
+  {
+   "barcode": "6281000000401",
+   "nameEn": "Fresh Milk 1L",
+   "nameAr": "حليب طازج ١ لتر",
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000402",
+   "nameEn": "No Arabic",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000403",
+   "nameEn": "Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name",
+   "nameAr": "اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل اسم طويل",
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000404",
+   "nameEn": "Café \"Crème\" & <Co> ½ 100% ‏",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000405",
+   "nameEn": "=1+2",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000406",
+   "nameEn": "@SUM(A1)",
+   "nameAr": null,
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000407",
+   "nameEn": "Arabic later",
+   "nameAr": "عربي لاحقا",
+   "status": "active",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  },
+  {
+   "barcode": "6281000000408",
+   "nameEn": "Second file new product",
+   "nameAr": "منتج جديد",
+   "status": "new",
+   "blocked": false,
+   "priceFils": 6000,
+   "stock": 10,
+   "erpActive": true,
+   "inLatestErpFile": true
+  }
+ ],
+ "market": {
+  "talabat": {
+   "rejected": false,
+   "errors": [],
+   "listings": [
+    {
+     "row": 2,
+     "id": "N401",
+     "priceFils": 6500,
+     "available": true,
+     "match": "6281000000401"
+    },
+    {
+     "row": 3,
+     "id": "N403",
+     "priceFils": 6000,
+     "available": true,
+     "match": "6281000000403"
+    },
+    {
+     "row": 4,
+     "id": "N404",
+     "priceFils": 6500,
+     "available": true,
+     "match": "6281000000404"
+    },
+    {
+     "row": 5,
+     "id": "N405",
+     "priceFils": 6500,
+     "available": true,
+     "match": "6281000000405"
+    },
+    {
+     "row": 6,
+     "id": "N406",
+     "priceFils": 6500,
+     "available": true,
+     "match": "6281000000406"
+    },
+    {
+     "row": 7,
+     "id": "N408",
+     "priceFils": 6500,
+     "available": true,
+     "match": "6281000000408"
+    }
+   ]
+  }
+ },
+ "recon": [
+  {
+   "product": "6281000000401",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6500,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000402",
+   "marketplace": "talabat",
+   "status": "not_listed",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000403",
+   "marketplace": "talabat",
+   "status": "in_sync",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6000,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000404",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6500,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000405",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6500,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000406",
+   "marketplace": "talabat",
+   "status": "mismatch",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6500,
+   "shouldBeAvailable": true,
+   "priceMismatch": true,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000407",
+   "marketplace": "talabat",
+   "status": "not_listed",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": null,
+   "shouldBeAvailable": true,
+   "priceMismatch": false,
+   "stockIssue": null
+  },
+  {
+   "product": "6281000000408",
+   "marketplace": "talabat",
+   "status": "new",
+   "expectedFils": 6000,
+   "source": "default",
+   "actualFils": 6500,
+   "shouldBeAvailable": false,
+   "priceMismatch": false,
+   "stockIssue": null
+  }
+ ],
+ "stale": {
+  "talabat": false
+ },
+ "files": {
+  "talabat/price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "N401",
+     "حليب",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000401",
+     null,
+     null,
+     null
+    ],
+    [
+     "N404",
+     "Café \"Crème\" & <Co>",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000404",
+     null,
+     null,
+     null
+    ],
+    [
+     "N405",
+     "'=1+2",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000405",
+     null,
+     null,
+     null
+    ],
+    [
+     "N406",
+     "'+cmd|calc",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000406",
+     null,
+     null,
+     "'-2+3"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000401",
+    "6281000000404",
+    "6281000000405",
+    "6281000000406"
+   ]
+  },
+  "talabat/price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "N401",
+     "حليب",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000401",
+     null,
+     null,
+     null
+    ],
+    [
+     "N403",
+     "Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000403",
+     null,
+     null,
+     null
+    ],
+    [
+     "N404",
+     "Café \"Crème\" & <Co>",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000404",
+     null,
+     null,
+     null
+    ],
+    [
+     "N405",
+     "'=1+2",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000405",
+     null,
+     null,
+     null
+    ],
+    [
+     "N406",
+     "'+cmd|calc",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000406",
+     null,
+     null,
+     "'-2+3"
+    ],
+    [
+     "N408",
+     "New",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000408",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000401",
+    "6281000000403",
+    "6281000000404",
+    "6281000000405",
+    "6281000000406",
+    "6281000000408"
+   ]
+  },
+  "talabat/stock/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [],
+   "selectedKeys": []
+  },
+  "talabat/stock/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "N401",
+     "حليب",
+     "6.50",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000401",
+     null,
+     null,
+     null
+    ],
+    [
+     "N403",
+     "Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000403",
+     null,
+     null,
+     null
+    ],
+    [
+     "N404",
+     "Café \"Crème\" & <Co>",
+     "6.50",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000404",
+     null,
+     null,
+     null
+    ],
+    [
+     "N405",
+     "'=1+2",
+     "6.50",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000405",
+     null,
+     null,
+     null
+    ],
+    [
+     "N406",
+     "'+cmd|calc",
+     "6.50",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000406",
+     null,
+     null,
+     "'-2+3"
+    ],
+    [
+     "N408",
+     "New",
+     "6.50",
+     false,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000408",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000401",
+    "6281000000403",
+    "6281000000404",
+    "6281000000405",
+    "6281000000406",
+    "6281000000408"
+   ]
+  },
+  "talabat/stock_price/mismatches": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "N401",
+     "حليب",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000401",
+     null,
+     null,
+     null
+    ],
+    [
+     "N404",
+     "Café \"Crème\" & <Co>",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000404",
+     null,
+     null,
+     null
+    ],
+    [
+     "N405",
+     "'=1+2",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000405",
+     null,
+     null,
+     null
+    ],
+    [
+     "N406",
+     "'+cmd|calc",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000406",
+     null,
+     null,
+     "'-2+3"
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000401",
+    "6281000000404",
+    "6281000000405",
+    "6281000000406"
+   ]
+  },
+  "talabat/stock_price/all": {
+   "blocked": false,
+   "header": [
+    "sku",
+    "name",
+    "price",
+    "active",
+    "maximumSalesQuantity",
+    "isWeighted",
+    "baseWeight",
+    "baseWeightUnit",
+    "pricePerBaseUnit",
+    "barcode 1",
+    "barcode 2",
+    "barcode 3",
+    "category 1"
+   ],
+   "rows": [
+    [
+     "N401",
+     "حليب",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000401",
+     null,
+     null,
+     null
+    ],
+    [
+     "N403",
+     "Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name Very long product name",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000403",
+     null,
+     null,
+     null
+    ],
+    [
+     "N404",
+     "Café \"Crème\" & <Co>",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000404",
+     null,
+     null,
+     null
+    ],
+    [
+     "N405",
+     "'=1+2",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000405",
+     null,
+     null,
+     null
+    ],
+    [
+     "N406",
+     "'+cmd|calc",
+     "6.00",
+     true,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000406",
+     null,
+     null,
+     "'-2+3"
+    ],
+    [
+     "N408",
+     "New",
+     "6.00",
+     false,
+     null,
+     false,
+     null,
+     null,
+     null,
+     "06281000000408",
+     null,
+     null,
+     null
+    ]
+   ],
+   "selectedKeys": [
+    "6281000000401",
+    "6281000000403",
+    "6281000000404",
+    "6281000000405",
+    "6281000000406",
+    "6281000000408"
+   ]
+  }
+ }
+}
