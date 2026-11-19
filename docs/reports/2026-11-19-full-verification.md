@@ -74,7 +74,7 @@ documentation gap, not a bug.
 | R10 | Order: offer > product > subcategory > category > per-marketplace (only when enabled) > default | BR 5.1 |
 | R11 | An offer applies when `valid_from <= now` (or null) and `now <= valid_until` (or null) | offers contract (OfferState) |
 | R12 | percent ERP×(1+v/100), amount ERP+v, fixed v, same ERP. Rounding applies to percent/amount only | BR 5.1 |
-| R13 | Rounding steps exact/0.05/0.25/0.50, applied once, halves up. **ASSUMPTION:** a percent result is first rounded half-up to whole fils | BR 5.1, ADR 013, OQ Q13 |
+| R13 | Rounding steps exact/0.05/0.25/0.50, applied once to the exact value, halves up; exact = whole fils. (A first draft rounded to fils, then to the step; ADR 013 says once, so it was corrected in step 5. No golden value changed.) | BR 5.1, ADR 013, OQ Q13 |
 | R14 | Reference `marketplace` uses the resolved Marketplace price; `erp` uses the ERP price | BR 5.2 |
 | R15 | Should be available ⇔ status active ∧ ERP-active ∧ in latest full ERP file ∧ stock > threshold | BR 5.3, ADR 017 D3/D4 |
 | R16 | Marketplace availability accepts True/False, Yes/No, 1/0, or a quantity (> 0 = available) | BR 5.3 |
@@ -236,3 +236,113 @@ them to `it`).
   - formula-like names and categories neutralised with `'`; quantity availability blocking generation
   - the 20% rejection (21 of 100 rejected with "21 of 100 rows are invalid", nothing written; exactly 20 accepted)
   - the round trip
+
+## Step 5: Behaviour checks beyond accuracy
+
+The suite is `verification/behaviour.integration.test.ts`: 24 tests, all passing; BUG-3 is an `it.failing` test.
+Raw results are written to `.cache/verification/behaviour.json`.
+
+**Limitation:** the embedded PGlite database is one backend. "Concurrent" requests here interleave at await points, but
+their transactions run one after another. Truly parallel transactions are covered only by the 10 real-PostgreSQL tests
+in `tenant-lock.integration.test.ts` (skipped in Step 1).
+
+### Idempotency
+
+| Check | Result |
+|---|---|
+| `POST /api/uploads/:id/apply` again on an applied upload | 200, and products, listings, recon rows, change rows and audit count are byte-for-byte unchanged |
+| The identical ERP file uploaded and applied again | applied; 0 change rows; products and recon unchanged. 7 audit events are added, all upload lifecycle events (`upload.created` … `upload.applied`); no product event |
+| `recomputeRecon` twice | the 22 rows are identical, including `last_updated` |
+
+### Concurrency (interleaved)
+
+| Check | Result |
+|---|---|
+| Talabat and Snoonu uploads at once | both applied; recon has rows for both |
+| Two different ERP files applied at once | both 200; every product carries the values of one file (22.22 / 9), never a mix |
+| Recompute during an upload apply | converged: one more recompute changes nothing |
+| Burst of 6 price-rule changes | 6 triggers, 2 recompute runs (coalesced). This is the inline queue model; the real BullMQ dedup test needs `TEST_REDIS_URL` |
+
+### Permissions (94 endpoints × owner, admin, catalogue_manager, analyst, unauthenticated)
+
+Every endpoint in the OpenAPI document was called with each role, with random ids and `{}` bodies. The guard runs
+before validation, so 403 and 400 are distinguishable. The roles a route allowed (status not 401/403):
+
+| Allowed | Endpoints |
+|---|---|
+| everyone, also unauthenticated | `GET /health`, `GET /health/ready` |
+| unauthenticated (public auth) | `POST /api/auth/invitations/accept`, `login`, `password/forgot`, `password/reset` |
+| Owner, Admin, Catalogue Manager, Analyst | 31 `GET` endpoints (lists, reads, downloads, `errors.xlsx`) |
+| Owner, Admin, Catalogue Manager | 47 endpoints: every upload, product, category, pricing, offer, stock, export-value, recompute and file-generation mutation, and `GET /api/categories/erp-suggestions` |
+| Owner, Admin | 8 endpoints: team invitations (list, create, resend, revoke), role change, member removal, `PUT /api/settings`, `PUT /api/templates/:source` |
+
+Compared with the documents (G1: Analyst read-only; Catalogue Manager no team or settings edits; Admin all but the
+security policy):
+
+- **No endpoint is more permissive than the documents say, at endpoint level.** No Analyst mutation, no Catalogue Manager
+  team or settings edit, and no unauthenticated business call succeeded.
+- Admin changing `security.mfaRequiredForAll` gets 403 (Owner only), as documented.
+- **BUG-3 (low/medium): `analystCanExport` has no effect.** It gates only the `reports.export` permission
+  (`packages/core/src/roles.ts:85`), and no endpoint checks that permission. With the switch off, the Analyst still
+  downloads generated files (200) and error reports. `01-product-overview.md` says the Analyst may "export only if the
+  Owner allows it". ADR 011 states the Analyst has `files.download`, so which permission the switch should gate
+  (`files.download`, `errors.xlsx`, both) is a decision. **Not fixed.** Test: "BUG-3: …" (`it.failing`).
+
+### Tenant isolation
+
+- **Reads:** all 35 `GET /api/*` endpoints were called as tenant A's Owner. The needles were tenant B's id, its product,
+  upload, generated-file, listing and user ids, an invitation, a category, and the marker `ZZ-OTHER-TENANT`. **No
+  response contained any of them.** Every read by a B id (`/uploads/{id}`, `/review`, `/errors`, `/errors.xlsx`,
+  `/changes`, `/products/{id}`, `/history`, `/stock`, `/generated-files/{id}/download`, `/jobs/{jobId}`,
+  `/marketplace-values/…/{productId}`) returned **404**.
+- **Writes:** 12 by-id writes on B's rows, with valid bodies (product PATCH, price rule, offer, stock, export value,
+  upload apply and discard, invitation revoke, role change, member removal, category PATCH and DELETE), all returned
+  **404**, and B's products, listings, recon, change rows, audit count and category were unchanged.
+- **Cookies and origins:** a B session cookie on A's host gets 401. A's session with B's Origin gets 403.
+
+### Security
+
+| Check | Result |
+|---|---|
+| CSRF: no token / wrong token / right token | 403 / 403 / 200 |
+| Origin: foreign / missing / other tenant's origin on a POST; foreign origin on a GET | 403 / 403 / 403 / 403 |
+| Rate limit (default app settings): `POST /api/auth/login` | 20 × 401, then the 21st is 429 `RATE_LIMITED` |
+| Owner before MFA | `GET /api/products`, `/recon/summary`, `/settings`, `/uploads` all 403; wrong TOTP 401; after TOTP 200; the pending session is 401 after MFA |
+| Session idle 31 min / past `expires_at` | 401 / 401 |
+| Upload size | 25 MB + 1 byte 400; exactly 25 MB 200; 0 bytes 400 |
+| File type | `.exe`, `.pdf`, `.xlsm`, no extension: 400; `.xlsx`, `.xls`, `.csv`: 200 |
+| Rows | 50,001 data rows rejected: "The file has more than 50,000 rows" |
+| Malicious names | `../../../etc/passwd.xlsx`, `..\..\windows\win.ini.xlsx`, a 300-character name and a NUL byte: 400. `<img src=x onerror=alert(1)>.xlsx`, `%2e%2e%2fsecret.xlsx`, `CON.xlsx` and an RTL-override name: accepted, but the storage key is always `tenants/{tenant}/uploads/{uuid}/original.{ext}`. The name is stored as given: the frontend must escape it, and an RTL override can make a name display misleadingly (observation, not a bug) |
+| Formula injection | generated file cells `=1+2`, `+cmd\|calc` and `-2+3` written as `'=1+2`, `'+cmd\|calc`, `'-2+3`; the error report writes `'=HYPERLINK(…)`; no formula cells |
+
+### Data integrity
+
+- **Money storage:** all 12 money columns are `numeric(12,3)` (exact decimal, as DM specifies), and the schema has no
+  `real` or `double precision` column. Money is **not stored as integer fils**; it is stored as an exact 3-decimal
+  numeric. That is what the documents ask for, so it is not a bug. The values written are 2-decimal because of BUG-1.
+- **Floating point:** a differential test of 200,000 seeded random cases (2-decimal ERP prices, percent −50…150 and
+  amount −5…15 with 3 decimals, all four rounding steps) ran `priceFromRule` against the BigInt reference at the
+  product's 0.01 step. **0 disagreements, so no floating-point noise.** The engine uses JS numbers with `Math.round` to
+  fils, so this is evidence, not proof.
+- **Audit:** 11 kinds of change through the API (product edit, price rule, offer set and delete, catalogue stock, export
+  value, settings, pricing settings, invitation, generated file, upload apply). Each wrote at least one audit event in
+  the same tenant, with the expected action: `product.field_changed`, `product.price_rule_set`, `product.offer_set`,
+  `product.offer_deleted`, `product.stock_set`, `product.marketplace_values_set`, `settings.changed`,
+  `pricing.settings_changed`, `invitation.created`, `file.generated`, `upload.applied`.
+
+### Error handling (bad files)
+
+Every file below ended `rejected` with a plain message. None created a product or a staged row, and no message contains
+a stack, `Error:` or internal names.
+
+| File | Message |
+|---|---|
+| truncated `.xlsx` | The workbook is corrupt |
+| random bytes `.xlsx` | This does not look like a real .xlsx workbook |
+| header row only | The file has a header row but no data rows |
+| PDF named `.xlsx` | This does not look like a real .xlsx workbook |
+| PNG named `.csv` | This is not a text CSV file |
+| password-protected (OLE `EncryptedPackage`) | Password-protected files are not accepted |
+| macro workbook named `.xlsx` | Files with macros are not accepted |
+| garbage `.xls` | This does not look like a real .xls workbook |
+| CSV with one space | No header row was found in the first 10 rows |

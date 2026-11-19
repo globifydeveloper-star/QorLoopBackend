@@ -29,7 +29,7 @@ export const RULES = {
   R10: 'Marketplace Price: the first rule that applies — offer > product > subcategory > category > per-marketplace (only when enabled) > default (BR 5.1)',
   R11: 'Offer applies when valid_from <= now (or null) and now <= valid_until (or null); expired or future offers do not apply (pricing-offers-bulk-api OfferState)',
   R12: 'Rule modes: percent ERP*(1+v/100), amount ERP+v, fixed v, same ERP; rounding only for percent/amount; fixed, same and offers exact (BR 5.1)',
-  R13: 'Rounding step exact|0.05|0.25|0.50, halves up, once (BR 5.1, A013). ASSUMPTION: a percent result is first rounded half-up to whole fils',
+  R13: 'Rounding step exact|0.05|0.25|0.50, rounded once from the exact value, halves up; exact = whole fils (BR 5.1, A013 none keeps whole fils)',
   R14: 'Reference "marketplace": expected price = resolved Marketplace Price; "erp": expected = ERP price (BR 5.2)',
   R15: 'Should be available when status active AND erp_active AND in latest full ERP file AND stock > threshold (BR 5.3; A017 D3/D4)',
   R16: 'Marketplace availability: True/False, Yes/No, 1/0 or a quantity (> 0 = available) (BR 5.3)',
@@ -227,11 +227,10 @@ export type PricingInput = {
 };
 export type PriceSource = 'offer' | 'product' | 'category' | 'marketplace' | 'default';
 
-/** R13: round fils to a step, halves up. */
-function roundStep(fils: bigint, rounding: Rounding): bigint {
-  if (rounding === 'exact') return BigInt(refMoneyStep(Number(fils)));
-  const step = BigInt(Math.round(Number(rounding) * 1000));
-  return ((fils * 2n + step) / (2n * step)) * step; // half-up for non-negative prices
+/** R13: the exact value num/den fils, rounded ONCE to the step (in fils), halves up (non-negative prices). */
+function roundOnce(num: bigint, den: bigint, rounding: Rounding): bigint {
+  const step = BigInt(rounding === 'exact' ? REF_CONFIG.moneyStepFils : Math.round(Number(rounding) * 1000));
+  return ((num * 2n + den * step) / (2n * den * step)) * step;
 }
 
 /** R12/R13. value is decimal text (<= 3 decimals). */
@@ -240,14 +239,9 @@ export function refApplyRule(erpFils: Fils, rule: Rule, rounding: Rounding): Fil
   const v = refFils(rule.value)!;
   if (rule.mode === 'fixed') return v;
   const erp = BigInt(erpFils);
-  let result: bigint;
-  if (rule.mode === 'amount') result = erp + BigInt(v);
-  else {
-    // ERP * (1 + p/100) = ERP * (100000 + p*1000) / 100000; v already holds p*1000 (the percent read as fils).
-    const num = erp * (100_000n + BigInt(v));
-    result = (num * 2n + 100_000n) / 200_000n; // half-up to whole fils
-  }
-  return Number(roundStep(result, rounding));
+  if (rule.mode === 'amount') return Number(roundOnce(erp + BigInt(v), 1n, rounding));
+  // ERP * (1 + p/100) = ERP * (100000 + p*1000) / 100000; v already holds p*1000 (the percent read as fils).
+  return Number(roundOnce(erp * (100_000n + BigInt(v)), 100_000n, rounding));
 }
 
 export function refOfferActive(offer: Offer | undefined, now: Date): boolean {
