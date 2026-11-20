@@ -16,7 +16,7 @@ Thresholds use existing storage and consumers: price tolerance (0..100000 QAR, a
 
 General settings edits write `settings.changed` per changed field, with old/new values and actor/request ID. Pricing edits reuse the existing transactional writer and its `pricing.*` events. Price tolerance, stock threshold and pricing changes enqueue reconciliation after commit. Staleness is already recalculated on summary reads, so changing only stale hours needs no background recompute.
 
-`GET /api/settings/marketplaces` lists enabled marketplaces with last applied upload time and age. It preserves existing semantics: an explicit tenant switch wins; otherwise an applied upload enables the marketplace. No marketplace switches are changed by this API.
+`GET /api/settings/marketplaces` lists enabled marketplaces with last applied upload time and age. It preserves existing semantics: an explicit tenant switch wins; otherwise an applied upload enables the marketplace. No marketplace switches are changed by this API. *(Superseded 20 Nov 2026 by [ADR 020](020-onboarding-checklist.md): GET lists all four marketplaces with `enabled`/`explicit`, and `PUT /api/settings/marketplaces` sets the switches.)*
 
 ## Activity and product history
 

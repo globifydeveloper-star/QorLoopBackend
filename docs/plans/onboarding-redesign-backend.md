@@ -503,6 +503,17 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 
 ---
 
+## Implementation status (branch `feature/onboarding-redesign`)
+
+Steps 1–12 are built and tested. Steps 13–25 wait for the owner to confirm the frontend contract. Changes from the plan:
+
+- **Step 3:** creating the `pricing_settings` row at provisioning was dropped. Existing tests insert that row themselves after provisioning, and every pricing write already upserts. The migration therefore does not insert missing rows either, except for backfilled stores.
+- **Steps 2–3 and 8–9** were each committed together, because they share one service and one endpoint.
+- **Marketplace changes** are audited as `settings.changed` with `field: 'marketplaces'`, not `marketplaces.changed`. This keeps them in Activity's Team & security group and in the store reset's kept events.
+- **The price-source CHECK** uses `CASE`. The drafted `OR` form passes when `price_source` is NULL; the test caught it.
+- **The price source** has its own `GET /api/pricing/price-source` and is not part of the settings view, so the settings revision behaves as before.
+- **Owner question raised by the build:** should the store reset (ADR 018) clear `price_source*`, now that it keeps the choice while deleting the adopted rules? Recommendation: yes. See [ADR 020](../decisions/020-onboarding-checklist.md).
+
 ## Implementation steps (dependency order, one commit each)
 
 **A. Foundations (no behaviour change for production)**
