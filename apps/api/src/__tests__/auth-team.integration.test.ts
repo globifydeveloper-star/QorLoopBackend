@@ -7,6 +7,7 @@ import { loadConfig } from '../../../../packages/shared/src/config.js';
 import { digest, unseal } from '../../../../packages/shared/src/security.js';
 import { testDatabase } from './database.js';
 import { testServices } from './harness.js';
+import { SecurityGuard, tenantPin } from '../http/security.guard.js';
 
 const password = 'Correct horse battery staple!';
 type Session = { cookie: string; csrf: string; recoveryCodes?: string[] };
@@ -97,11 +98,27 @@ describe('Foundation and tenant routing', () => {
     const sameEmail = await fixture.prisma.user.findMany({ where: { email: 'owner@example.test' } });
     expect(sameEmail).toHaveLength(2);
   });
-  it('enforces configured instance pins as well as host resolution', async () => {
+  it('ignores TENANT_ID outside production, so every local store resolves by its host', async () => {
     const pinned = await buildApp({ ...config, TENANT_ID: a.id }, { database: fixture.database, logger: false, ...testServices() });
-    const response = await pinned.server.inject({ url: '/api/auth/me', headers: { host: b.hostname } });
-    expect(response.statusCode).toBe(404);
+    for (const store of [a, b]) {
+      const response = await pinned.server.inject({ url: '/api/auth/session', headers: { host: store.hostname + ':4000' } });
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error.code).toBe('UNAUTHENTICATED');
+    }
+    expect((await pinned.server.inject({ url: '/api/auth/session', headers: { host: 'unknown.localhost:4000' } })).statusCode).toBe(404);
     await pinned.app.close();
+  });
+  it('enforces the configured instance pin in production', async () => {
+    const calls: [string, string | undefined][] = [];
+    const db = { resolve: async (host: string, pin?: string) => { calls.push([host, pin]); return pin === a.id && host === a.hostname ? { id: a.id } : null; } };
+    const guard = new SecurityGuard({ getAllAndOverride: () => ({ public: true }) } as never, db as never, {} as never, { ...config, NODE_ENV: 'production', TENANT_ID: a.id });
+    const execution = (host: string) => ({ getHandler: () => null, getClass: () => null, switchToHttp: () => ({ getRequest: () => ({ headers: { host } }) }) }) as never;
+    await expect(guard.canActivate(execution(a.hostname + ':443'))).resolves.toBe(true);
+    await expect(guard.canActivate(execution(b.hostname + ':443'))).rejects.toThrow('Store not found');
+    expect(calls).toEqual([[a.hostname, a.id], [b.hostname, a.id]]);
+    expect(tenantPin({ NODE_ENV: 'production', TENANT_ID: a.id })).toBe(a.id);
+    expect(tenantPin({ NODE_ENV: 'development', TENANT_ID: a.id })).toBeUndefined();
+    expect(tenantPin({ NODE_ENV: 'test', TENANT_ID: a.id })).toBeUndefined();
   });
   it('uses tenant foreign keys to reject a cross-tenant membership', async () => {
     const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, email: 'owner@example.test' } });

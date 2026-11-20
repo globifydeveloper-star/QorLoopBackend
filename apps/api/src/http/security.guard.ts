@@ -15,6 +15,14 @@ export function cookieName(config: Config) { return config.NODE_ENV === 'product
 export function context(req: AppRequest, config: Config): RequestContext {
   return { tenantId: req.tenantId, requestId: req.id, token: req.cookies[cookieName(config)], csrf: typeof req.headers['x-csrf-token'] === 'string' ? req.headers['x-csrf-token'] : undefined };
 }
+/**
+ * The configured instance pin, applied only in production: each production stack serves one pinned store (ADR 005).
+ * Development and test resolve every active store by its exact hostname, so a second local store works without
+ * editing TENANT_ID.
+ */
+export function tenantPin(config: Pick<Config, 'NODE_ENV' | 'TENANT_ID'>): string | undefined {
+  return config.NODE_ENV === 'production' ? config.TENANT_ID : undefined;
+}
 export function hostname(host?: string): string {
   if (!host || !/^[a-z0-9][a-z0-9.-]*(?::\d{1,5})?$/i.test(host)) return '';
   return host.split(':')[0]!.toLowerCase();
@@ -38,7 +46,7 @@ export class SecurityGuard implements CanActivate {
     const policy = this.reflector.getAllAndOverride<Policy>('access', [execution.getHandler(), execution.getClass()]) ?? {};
     if (policy.skipTenant) return true;
     const req = execution.switchToHttp().getRequest<AppRequest>();
-    const tenant = await this.db.resolve(hostname(req.headers.host), this.config.TENANT_ID);
+    const tenant = await this.db.resolve(hostname(req.headers.host), tenantPin(this.config));
     if (!tenant) throw new NotFoundException('Store not found');
     req.tenantId = tenant.id;
     if (!policy.public) {
