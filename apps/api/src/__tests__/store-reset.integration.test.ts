@@ -44,7 +44,9 @@ async function seedStore(prisma: Prisma, slug: string) {
   const analyst = await prisma.user.create({ data: { tenantId: id, email: `analyst@${slug}.test`, name: 'Analyst', passwordHash: 'hash', emailVerifiedAt: new Date() } });
   await prisma.membership.createMany({ data: [{ tenantId: id, userId: owner.id, role: 'owner' }, { tenantId: id, userId: analyst.id, role: 'analyst' }] });
   await prisma.invitation.create({ data: { tenantId: id, email: `new@${slug}.test`, pendingEmail: `new@${slug}.test`, role: 'analyst', tokenHash: randomUUID(), invitedBy: owner.id, expiresAt: future } });
-  await prisma.session.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), csrfHash: 'csrf', assurance: 'full', expiresAt: future } });
+  const device = await prisma.trustedDevice.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), expiresAt: future } });
+  await prisma.session.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), csrfHash: 'csrf', assurance: 'full', expiresAt: future, deviceId: device.id } });
+  await prisma.loginChallenge.create({ data: { tenantId: id, userId: analyst.id, purpose: 'login', method: 'email', challengeHash: randomUUID(), expiresAt: future } });
   await prisma.passwordReset.create({ data: { tenantId: id, userId: analyst.id, tokenHash: randomUUID(), expiresAt: future } });
   await prisma.recoveryCode.create({ data: { tenantId: id, userId: owner.id, codeHash: 'code-hash' } });
   await prisma.pricingSettings.create({ data: { tenantId: id, rounding: '0.05' } });
@@ -363,7 +365,8 @@ describe('store data reset: checks, queues and storage without a database', () =
   it('uses the same queue names, recon deduplication id and recon lock key as the app', async () => {
     expect(plan.TENANT_QUEUES).toEqual([QUEUES.uploads, QUEUES.uploadApply, RECON_QUEUE_NAME, 'generated-files']);
     expect(await readFile('packages/shared/src/generated-files.ts', 'utf8')).toContain("export const GENERATED_FILES_QUEUE = 'generated-files';");
-    expect(await readFile('apps/worker/src/main.ts', 'utf8')).toContain("new Queue('email-outbox'");
+    expect(await readFile('packages/shared/src/mail.ts', 'utf8')).toContain("MAIL_QUEUE_NAME = 'email-outbox'");
+    expect(await readFile('apps/worker/src/main.ts', 'utf8')).toContain('new Queue(MAIL_QUEUE_NAME');
     expect(plan.reconDeduplicationId(A)).toBe(reconJobKey(A));
     expect(await readFile('apps/worker/src/recompute-recon.ts', 'utf8')).toContain("runSnapshot(tenantId, 'recon'");
     expect(await readFile('packages/db/src/database.ts', 'utf8')).toContain("hashtextextended(${job + ':' + tenantId}, 0)");

@@ -38,7 +38,7 @@ export function onboardingProgress(facts: OnboardingFacts): OnboardingProgress {
   });
   const marketplaceDates = marketplaces.flatMap(m => m.doneAt ? [m.doneAt] : []).sort();
   const definitions: { id: OnboardingStepId; title: string; description: string; required: boolean; target: string; evidence: OnboardingEvidence }[] = [
-    { id: 'owner_mfa', title: 'Secure your account', description: 'Enable two-step verification for an active Owner account.', required: true, target: 'settings.security', evidence: facts.ownerMfa },
+    { id: 'owner_mfa', title: 'Secure your account', description: 'An active Owner signs in with two-step verification (an emailed code or an authenticator app).', required: true, target: 'settings.security', evidence: facts.ownerMfa },
     { id: 'erp_upload', title: 'Upload your ERP file', description: 'Upload and apply your ERP file to bring your products into Qorloop.', required: true, target: 'uploads.erp', evidence: facts.erpUpload },
     { id: 'marketplace_upload', title: 'Upload at least one marketplace file', description: 'Upload and apply a file from Talabat, Snoonu, Rafeeq or Keeta.', required: true, target: 'uploads.marketplace', evidence: { done: marketplaceDates.length > 0, doneAt: marketplaceDates[0] ?? null } },
     { id: 'first_comparison', title: 'Review the first comparison', description: 'Open Dashboard when a computed comparison contains matched marketplace data.', required: true, target: 'dashboard', evidence: facts.comparison },

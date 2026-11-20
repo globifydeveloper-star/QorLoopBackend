@@ -12,13 +12,18 @@ const schema = z.object({
   TENANT_ID: z.string().uuid().optional(),
   APP_ORIGIN: z.string().url().default('http://dohafresh.localhost:3000'),
   CORS_ORIGIN: z.string().url().optional(),
-  SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(12),
-  SESSION_IDLE_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
+  // Owner decision 2: at most 20 days from sign-in and 7 days without use. Lower values are for tests and staging;
+  // nothing can raise them. They replace SESSION_HOURS and SESSION_IDLE_MINUTES (ADR 021).
+  SESSION_MAX_DAYS: z.coerce.number().int().min(1).max(20).default(20),
+  SESSION_IDLE_DAYS: z.coerce.number().int().min(1).max(7).default(7),
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1025),
+  /** Implicit TLS. Default: on for port 465 only; other ports use STARTTLS, required in production. */
+  SMTP_SECURE: z.enum(['true', 'false']).optional().transform(v => v === undefined ? undefined : v === 'true'),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   MAIL_FROM: z.string().email().default('noreply@qorloop.globify.ae'),
+  MAIL_FROM_NAME: z.string().trim().min(1).max(100).regex(/^[^"<>\r\n]+$/).default('Qorloop'),
   S3_BUCKET: z.string().default('qorloop-private'),
   S3_REGION: z.string().default('me-central-1'),
   S3_ENDPOINT: z.string().url().optional(),
@@ -33,6 +38,9 @@ const schema = z.object({
   if (v.NODE_ENV === 'production') {
     if (!v.APP_ORIGIN.startsWith('https://')) ctx.addIssue({ code: 'custom', path: ['APP_ORIGIN'], message: 'HTTPS required' });
     if (/development|super-secret|change.me|example/i.test(v.AUTH_SECRET)) ctx.addIssue({ code: 'custom', path: ['AUTH_SECRET'], message: 'Use a generated production secret' });
+    // Sign-in codes travel by email: production needs a real mail service with a login (ADR 021).
+    if (/^(localhost|127\.0\.0\.1|::1|mailpit)$/i.test(v.SMTP_HOST)) ctx.addIssue({ code: 'custom', path: ['SMTP_HOST'], message: 'Use the production mail service' });
+    if (!v.SMTP_USER || !v.SMTP_PASSWORD) ctx.addIssue({ code: 'custom', path: ['SMTP_USER'], message: 'SMTP_USER and SMTP_PASSWORD are required in production' });
   }
   for (const origin of [v.APP_ORIGIN, v.CORS_ORIGIN].filter(Boolean) as string[]) {
     const u = new URL(origin);

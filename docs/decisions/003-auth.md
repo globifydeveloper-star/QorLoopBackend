@@ -1,5 +1,7 @@
 # Architecture Decision Record (ADR) 003: Authentication & Security Library
 
+> **Out of date.** The code never used Better Auth or Drizzle: authentication is the custom `AuthService` on Prisma with argon2 and otplib ([ADR 007](007-foundation-auth-milestone.md)). Sign-in, sessions and two-step verification are now defined by [ADR 021](021-email-otp-device-sessions.md): email codes, device-bound sessions, step-up, and the authenticator app as an optional stronger factor.
+
 - **Status:** Approved
 - **Date:** 2026-10-26
 - **Context:** User Authentication, Sessions & Two-Factor Authentication

@@ -30,8 +30,12 @@ export class SettingsService {
     @Inject(RECON_QUEUE) private readonly recon: ReconQueue) {}
   get(ctx: RequestContext) { return this.auth.authenticated(ctx, { permission: 'settings.view' }, data => view(data)); }
   async put(ctx: RequestContext, input: z.infer<typeof updateTenantSettings>) {
-    const { result, recompute } = await this.auth.authenticated(ctx, { permission: 'settings.edit', mutation: true }, async (data, p) => {
+    // Security settings need the 10-minute window, store-wide pricing the 30-minute one; the profile and thresholds none.
+    const stepUp = input.security ? 'security' as const : input.pricing ? 'work' as const : undefined;
+    const { result, recompute } = await this.auth.authenticated(ctx, { permission: 'settings.edit', mutation: true, stepUp }, async (data, p) => {
       if (input.security?.mfaRequiredForAll !== undefined && p.member.role !== 'owner') throw new ForbiddenException('Only Owners can change MFA policy');
+      // Requiring the authenticator app for everyone would lock out an Owner who has none: set up your own app first.
+      if (input.security?.mfaRequiredForAll === true && !p.user.mfaSecret) throw new ConflictException('Set up your own authenticator app before requiring one for everyone');
       const before = await view(data);
       if (before.revision !== input.expectedRevision) throw new ConflictException('Settings changed; reload them and try again');
       let changed = false, recompute = false;

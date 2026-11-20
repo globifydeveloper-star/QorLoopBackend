@@ -3,10 +3,11 @@
  * never exposed over HTTP: it talks to the database directly, the way the provisioning CLI does.
  *
  *   tsx scripts/e2e-support.ts provision --slug dohafresh --owner-email owner@example.test
- *   tsx scripts/e2e-support.ts token --slug dohafresh --email someone@example.test [--kind invitation|reset]
+ *   tsx scripts/e2e-support.ts token --slug dohafresh --email someone@example.test [--kind invitation|reset|email-change|otp]
  *
- * Prints the single-use token from the newest matching message in the email outbox. In a real deployment
- * that token only ever travels by email.
+ * Prints the single-use token (or, for --kind otp, the six-digit sign-in or step-up code) from the newest matching message
+ * in the email outbox. In a real deployment these only ever travel by email. It refuses to run in production or against a
+ * mail service other than a local one (Mailpit), so it can never read a real store's codes.
  */
 import { parseArgs } from 'node:util';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -17,9 +18,11 @@ import { AuthService } from '../apps/api/src/auth/auth.service.js';
 
 const config = loadConfig(process.env, { requireTenantPin: false });
 if (config.NODE_ENV === 'production') throw new Error('e2e-support must never run in production');
+if (!/^(localhost|127\.0\.0\.1|::1|mailpit)$/i.test(config.SMTP_HOST)) throw new Error('e2e-support runs only with a local mail catcher (SMTP_HOST localhost or mailpit)');
 
 const [command, ...rest] = process.argv.slice(2);
 const { values } = parseArgs({ args: rest, options: { slug: { type: 'string' }, 'owner-email': { type: 'string' }, email: { type: 'string' }, kind: { type: 'string', default: 'invitation' } }, strict: true });
+if (!['invitation', 'reset', 'email-change', 'otp'].includes(values.kind!)) throw new Error('--kind must be invitation, reset, email-change or otp');
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL, options: '-c timezone=UTC' }) });
 const database = new Database(config.DATABASE_URL, prisma);
 
@@ -28,7 +31,8 @@ async function tokenFor(slug: string, email: string, kind: string) {
   const rows = await prisma.emailOutbox.findMany({ where: { tenantId: tenant.id, dedupeKey: { startsWith: kind + ':' } }, orderBy: { createdAt: 'desc' }, take: 50 });
   for (const row of rows) {
     const message = await unseal<{ to: string; text: string }>(row.sealedMessage, config.AUTH_SECRET).catch(() => null);
-    if (message?.to === email.toLowerCase()) return message.text.match(/#token=([A-Za-z0-9_-]+)/)?.[1] ?? null;
+    if (message?.to !== email.toLowerCase()) continue;
+    return (kind === 'otp' ? /Your code is (\d{6})/ : /#token=([A-Za-z0-9_-]+)/).exec(message.text)?.[1] ?? null;
   }
   return null;
 }

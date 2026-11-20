@@ -26,6 +26,8 @@ model Tenant {
   users              User[]
   memberships        Membership[]
   sessions           Session[]
+  trustedDevices     TrustedDevice[]
+  loginChallenges    LoginChallenge[]
   invitations        Invitation[]
   resetTokens        PasswordReset[]
   recoveryCodes      RecoveryCode[]
@@ -75,6 +77,8 @@ model User {
   updatedAt           DateTime        @updatedAt @map("updated_at") @db.Timestamptz
   memberships         Membership[]
   sessions            Session[]
+  trustedDevices      TrustedDevice[]
+  loginChallenges     LoginChallenge[]
   resetTokens         PasswordReset[]
   recoveryCodes       RecoveryCode[]
   uploads             Upload[]
@@ -134,13 +138,68 @@ model Session {
   user       User     @relation(fields: [tenantId, userId], references: [tenantId, id])
   tokenHash  String   @unique @map("token_hash")
   csrfHash   String   @map("csrf_hash")
+  /// Always 'full' since migration 202611210001 (second factors are checked before a session exists); kept for compatibility.
   assurance  String
+  /// The 20-day hard limit from sign-in (12 hours on a shared computer); never extended.
   expiresAt  DateTime @map("expires_at") @db.Timestamptz
   lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  /// The trusted device this session is bound to; null on a shared computer.
+  deviceId   String?        @map("device_id") @db.Uuid
+  device     TrustedDevice? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  /// The last fresh second factor inside this session (step-up windows: security 10 min, work 30 min).
+  stepUpAt   DateTime?      @map("step_up_at") @db.Timestamptz
+  userAgent  String?        @map("user_agent") @db.VarChar(200)
 
   @@index([tenantId, userId])
+  @@index([deviceId])
   @@map("sessions")
+}
+
+model TrustedDevice {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  userId     String    @map("user_id") @db.Uuid
+  user       User      @relation(fields: [tenantId, userId], references: [tenantId, id])
+  tokenHash  String    @unique @map("token_hash")
+  label      String?   @db.VarChar(200)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  lastUsedAt DateTime  @default(now()) @map("last_used_at") @db.Timestamptz
+  /// The 90-day trust; revoking deletes the row (and its sessions, by cascade).
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  sessions   Session[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, userId])
+  @@map("trusted_devices")
+}
+
+model LoginChallenge {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  userId        String    @map("user_id") @db.Uuid
+  user          User      @relation(fields: [tenantId, userId], references: [tenantId, id])
+  /// login | step_up | email_change
+  purpose       String
+  /// email | totp | link
+  method        String
+  challengeHash String    @unique @map("challenge_hash")
+  sessionId     String?   @map("session_id") @db.Uuid
+  trustDevice   Boolean   @default(true) @map("trust_device")
+  pendingEmail  String?   @map("pending_email")
+  codeHash      String?   @map("code_hash")
+  attempts      Int       @default(0)
+  sends         Int       @default(0)
+  lastSentAt    DateTime? @map("last_sent_at") @db.Timestamptz
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt    DateTime? @map("consumed_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([tenantId, userId, createdAt(sort: Desc)], map: "login_challenges_tenant_user_created_idx")
+  @@index([tenantId, lastSentAt], map: "login_challenges_tenant_sent_idx")
+  @@map("login_challenges")
 }
 
 model PasswordReset {
@@ -222,6 +281,12 @@ model EmailOutbox {
   availableAt   DateTime  @default(now()) @map("available_at") @db.Timestamptz
   deliveredAt   DateTime? @map("delivered_at") @db.Timestamptz
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  /// 1 = one-time code mail, delivered first and retried after 20 s instead of 5 minutes.
+  priority      Int       @default(0) @db.SmallInt
+  /// Never delivered after this moment (a one-time code's expiry); the worker then marks it failed.
+  discardAfter  DateTime? @map("discard_after") @db.Timestamptz
+  /// Set when the mail is given up (expired code, or ten failed attempts); the sealed body is cleared.
+  failedAt      DateTime? @map("failed_at") @db.Timestamptz
 
   @@unique([tenantId, dedupeKey])
   @@index([deliveredAt, availableAt])

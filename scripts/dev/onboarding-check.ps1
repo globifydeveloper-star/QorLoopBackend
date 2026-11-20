@@ -1,5 +1,5 @@
 # Logs in with a web session, then checks onboarding with GET only; never writes demo business data.
-# Enter credentials only into the local prompts. Password and authenticator code are hidden.
+# Enter credentials only into the local prompts. Password and the sign-in code (email or authenticator app) are hidden.
 param([ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo')
 $ErrorActionPreference = 'Stop'
 $qorloopApi = "http://$Store.localhost:4000"
@@ -27,11 +27,11 @@ try {
         $qorloopPassword = $null
         $qorloopLoginBody = $null
     }
-    if ($qorloopLogin.data.state -eq 'mfa_required') {
+    if ($qorloopLogin.data.state -in @('otp_required', 'totp_required')) {
         try {
-            $qorloopCode = Read-HiddenText 'Authenticator code (6 digits)'
+            $qorloopCode = Read-HiddenText 'Code from your email or authenticator app (6 digits)'
             $qorloopVerifyBody = @{ code = $qorloopCode } | ConvertTo-Json -Compress
-            $qorloopLogin = Invoke-RestMethod -Method Post -Uri ($qorloopApi + '/api/auth/mfa/verify') `
+            $qorloopLogin = Invoke-RestMethod -Method Post -Uri ($qorloopApi + '/api/auth/otp/verify') `
                 -WebSession $qorloopSession -Headers @{ Origin = $qorloopOrigin; 'X-CSRF-Token' = $qorloopLogin.data.csrfToken } `
                 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($qorloopVerifyBody))
         } catch {

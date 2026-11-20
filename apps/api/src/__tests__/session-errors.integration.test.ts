@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, jest } from '@jest/globals';
-import { createHarness, password, testServices, type Harness, type Store } from './harness.js';
+import { createHarness, sessionToken, testServices, type Harness, type Store } from './harness.js';
 import { digest } from '../../../../packages/shared/src/security.js';
 import { buildApp } from '../app.js';
 import { AuthService } from '../auth/auth.service.js';
@@ -8,7 +8,8 @@ let h: Harness, a: Store;
 beforeAll(async () => { h = await createHarness(); a = await h.createOwner('session-status'); });
 afterAll(async () => { await h.close(); });
 const status = () => h.request('GET', '/api/auth/session', a, a.owner);
-const currentSession = () => h.fixture.prisma.session.findUniqueOrThrow({ where: { tokenHash: digest(a.owner.cookie.slice('qorloop='.length)) } });
+const currentSession = () => h.fixture.prisma.session.findUniqueOrThrow({ where: { tokenHash: digest(sessionToken(a.owner)) } });
+const DAY = 86_400_000;
 
 describe('session status without extending idle expiry', () => {
   it('reports a healthy session and leaves lastSeenAt unchanged across repeated polls', async () => {
@@ -17,7 +18,7 @@ describe('session status without extending idle expiry', () => {
     for (let i = 0; i < 2; i++) {
       const r = await status(); expect(r.statusCode).toBe(200);
       expect(r.json().data).toMatchObject({ state: 'authenticated', nextAction: 'none', expiresAt: s.expiresAt.toISOString(),
-        idleExpiresAt: new Date(at.getTime() + h.config.SESSION_IDLE_MINUTES * 60000).toISOString() });
+        idleExpiresAt: new Date(at.getTime() + h.config.SESSION_IDLE_DAYS * DAY).toISOString() });
       expect(r.body).not.toMatch(/csrf|hash|token|secret/i);
     }
     expect((await currentSession()).lastSeenAt).toEqual(at);
@@ -29,26 +30,21 @@ describe('session status without extending idle expiry', () => {
     }
     const s = await currentSession();
     try {
-      await h.fixture.prisma.session.update({ where: { id: s.id }, data: { lastSeenAt: new Date(Date.now() - 31 * 60000) } });
+      await h.fixture.prisma.session.update({ where: { id: s.id }, data: { lastSeenAt: new Date(Date.now() - 7 * DAY - 60000) } });
       expect((await status()).json().error.code).toBe('SESSION_EXPIRED');
       await h.fixture.prisma.session.update({ where: { id: s.id }, data: { createdAt: new Date(Date.now() - 3600000), lastSeenAt: new Date(), expiresAt: new Date(Date.now() - 1000) } });
       const r = await status(); expect(r.statusCode).toBe(401); expect(r.json().error.code).toBe('SESSION_EXPIRED');
     } finally { await h.fixture.prisma.session.update({ where: { id: s.id }, data: { createdAt: s.createdAt, lastSeenAt: new Date(), expiresAt: s.expiresAt } }); }
   });
-  it('reports restricted challenge and enrollment states and precise business-endpoint 403 codes', async () => {
-    const user = await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, name: 'Owner' } });
-    const login = async () => h.sessionFrom(await h.request('POST', '/api/auth/login', a, undefined, { email: user.email, password }));
-    const challenge = await login();
-    let r = await h.request('GET', '/api/auth/session', a, challenge);
-    expect(r.json().data).toMatchObject({ state: 'mfa_required', nextAction: 'verify_mfa' });
-    expect(Date.parse(r.json().data.expiresAt) - Date.now()).toBeLessThanOrEqual(600000);
-    expect((await h.request('GET', '/api/auth/me', a, challenge)).json().error.code).toBe('MFA_REQUIRED');
+  it('reports the authenticator setup state and a precise 403 when the store requires an app the user lacks', async () => {
     try {
-      await h.fixture.prisma.user.update({ where: { id: user.id }, data: { mfaSecret: null } });
-      const enrollment = await login(); r = await h.request('GET', '/api/auth/session', a, enrollment);
-      expect(r.json().data).toMatchObject({ state: 'mfa_setup_required', nextAction: 'setup_mfa' });
-      expect((await h.request('GET', '/api/auth/me', a, enrollment)).json().error.code).toBe('MFA_SETUP_REQUIRED');
-    } finally { await h.fixture.prisma.user.update({ where: { id: user.id }, data: { mfaSecret: user.mfaSecret } }); }
+      await h.fixture.prisma.tenantSettings.update({ where: { tenantId: a.id }, data: { mfaRequiredForAll: true } });
+      const r = await status();
+      expect(r.json().data).toMatchObject({ state: 'authenticator_setup_required', nextAction: 'setup_authenticator' });
+      expect((await h.request('GET', '/api/auth/me', a, a.owner)).json().error.code).toBe('AUTHENTICATOR_SETUP_REQUIRED');
+      expect((await h.request('GET', '/api/account/sessions', a, a.owner)).statusCode).toBe(200);
+    } finally { await h.fixture.prisma.tenantSettings.update({ where: { tenantId: a.id }, data: { mfaRequiredForAll: false } }); }
+    expect((await status()).json().data).toMatchObject({ state: 'authenticated', securityValidUntil: expect.any(String), workValidUntil: expect.any(String) });
   });
   it('does not accept a session issued to a different tenant', async () => {
     const b = await h.createOwner('session-other');

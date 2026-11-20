@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
-import { generate } from 'otplib';
 import { createHarness, password, type Harness, type Session, type Store } from './harness.js';
 import { AuthService } from '../auth/auth.service.js';
 import { hashPassword, unseal } from '../../../../packages/shared/src/security.js';
@@ -10,8 +9,8 @@ import { recomputeRecon } from '../../../worker/src/recompute-recon.js';
 import { generateFile } from '../../../worker/src/generate-file.js';
 import { barcodes, marketplaceWorkbook, talabatHeaders, talabatMapping, talabatRows, snoonuHeaders, snoonuMapping, snoonuRows } from '../../../../packages/core/src/__tests__/fixtures/marketplace-files.js';
 
-let h: Harness, a: Store, b: Store, admin: Session, pendingOwner: Session;
-let ownerId: string;
+let h: Harness, a: Store, b: Store, admin: Session;
+let ownerId: string, ownerToken: string;
 const get = async (store = a, session = admin) => {
   const response = await h.request('GET', '/api/onboarding', store, session);
   expect(response.statusCode).toBe(200);
@@ -47,39 +46,33 @@ beforeAll(async () => {
   h.generatedFiles.handler = job => generateFile(deps, job);
   const provision = await new AuthService(h.fixture.database, h.config).provision({ name: 'New shop', slug: 'onboarding-a', hostname: 'onboarding-a.localhost', ownerEmail: 'owner@onboarding-a.test' });
   a = { id: provision.tenantId, hostname: 'onboarding-a.localhost', owner: {} as Session };
-  // An admin observer lets us inspect a truly new shop before its Owner has enrolled MFA.
+  // An admin observer lets us inspect a truly new shop before its Owner has activated the account.
   // This fixture does not create an invitation and therefore cannot satisfy the team step.
   await h.fixture.database.run(a.id, async data => {
     const user = await data.createUser({ name: 'Admin', email: 'admin@onboarding-a.test', passwordHash: await hashPassword(password), emailVerifiedAt: new Date() });
     await data.createMembership(user.id, 'admin');
   });
-  admin = h.sessionFrom(await h.request('POST', '/api/auth/login', a, undefined, { email: 'admin@onboarding-a.test', password }));
-  const mail = await h.fixture.prisma.emailOutbox.findFirstOrThrow({ where: { tenantId: a.id } });
+  admin = await h.login(a, 'admin@onboarding-a.test');
+  const mail = await h.fixture.prisma.emailOutbox.findFirstOrThrow({ where: { tenantId: a.id, dedupeKey: { startsWith: 'invitation:' } } });
   const plaintext = await unseal<{ text: string }>(mail.sealedMessage, h.config.AUTH_SECRET);
-  const token = plaintext.text.match(/#token=([A-Za-z0-9_-]+)/)![1];
-  pendingOwner = h.sessionFrom(await h.request('POST', '/api/auth/invitations/accept', a, undefined, { token, name: 'Owner', password }));
-  ownerId = (await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, name: 'Owner' } })).id;
+  ownerToken = plaintext.text.match(/#token=([A-Za-z0-9_-]+)/)![1]!;
   b = await h.createOwner('onboarding-b');
 }, 120_000);
 afterAll(async () => { await h?.close(); });
 
 describe('GET /api/onboarding', () => {
-  it('starts with no evidence, initial Owner invitation excluded, and preserves the MFA gate', async () => {
+  it('starts with no evidence while the Owner has not activated the account, initial Owner invitation excluded', async () => {
     const p = await get();
     expect(p).toMatchObject({ percent: 0, complete: false, nextStepId: 'owner_mfa' });
     expect(p.steps.map(s => s.status)).toEqual(['next', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo']);
     expect(p.steps.every(s => s.doneAt === null)).toBe(true);
     expect(p.marketplaces.every(m => !m.applied && m.doneAt === null)).toBe(true);
-    expect((await h.request('GET', '/api/onboarding', a, pendingOwner)).statusCode).toBe(403);
     expect((await h.request('GET', '/api/onboarding', a)).statusCode).toBe(401);
   });
 
-  it('advances only after real MFA enrollment, ERP apply, marketplace apply and computed comparison', async () => {
-    const setup = await h.request('POST', '/api/auth/mfa/setup', a, pendingOwner, { password });
-    expect(setup.statusCode).toBe(200);
-    expect(status(await get(), 'owner_mfa').status).toBe('next');
-    const secret = new URL(setup.json().data.totpUri).searchParams.get('secret')!;
-    a.owner = h.sessionFrom(await h.request('POST', '/api/auth/mfa/verify', a, pendingOwner, { code: await generate({ secret }) }));
+  it('advances after the Owner activates (two-step sign-in), ERP apply, marketplace apply and computed comparison', async () => {
+    a.owner = await h.stepUp(h.sessionFrom(await h.request('POST', '/api/auth/invitations/accept', a, undefined, { token: ownerToken, name: 'Owner', password })));
+    ownerId = (await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, name: 'Owner' } })).id;
     let p = await get(a, a.owner);
     expect(p).toMatchObject({ percent: 25, nextStepId: 'erp_upload' });
     expect(status(p, 'owner_mfa')).toMatchObject({ status: 'done', doneAt: null });
@@ -162,7 +155,7 @@ describe('GET /api/onboarding', () => {
     expect(response.body).not.toMatch(/password|mfaSecret|pendingMfa|token|csrf|storageKey|sealedMessage|owner@|admin@/i);
     const owner = await h.fixture.prisma.user.findUniqueOrThrow({ where: { id: ownerId } });
     expect(response.body).not.toContain(owner.passwordHash);
-    expect(response.body).not.toContain(owner.mfaSecret!);
+    if (owner.mfaSecret) expect(response.body).not.toContain(owner.mfaSecret);
     expect(Object.keys(response.json())).toEqual(['data']);
     expect(Object.keys(response.json().data).sort()).toEqual(['checklist', 'complete', 'essentials', 'marketplaces', 'nextStepId', 'percent', 'steps']);
   });

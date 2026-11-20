@@ -1,14 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { performance } from 'node:perf_hooks';
 import ExcelJS from 'exceljs';
-import { generate } from 'otplib';
+import { generateSecret } from 'otplib';
 import pg from 'pg';
 import type { HTTPMethods } from 'fastify';
 import { buildApp } from '../app.js';
 import { createHarness, password, testServices, type Harness, type Session, type Store } from './harness.js';
 import { processUpload } from '../../../worker/src/process-upload.js';
 import { applyUpload } from '../../../worker/src/apply-upload.js';
-import { digest, opaqueToken, unseal } from '../../../../packages/shared/src/security.js';
+import { digest, opaqueToken, seal, unseal } from '../../../../packages/shared/src/security.js';
 import type { Database } from '../../../../packages/db/src/database.js';
 
 /**
@@ -46,15 +46,18 @@ async function invite(store: Store, role: string) {
   expect(r.statusCode).toBe(200);
   return { id: r.json().data.id as string, email, token: await invitationToken(r.json().data.id) };
 }
-/** A second Owner with a full (MFA-verified) session. */
+/** A second Owner with a session on a trusted device and a fresh step-up. */
 async function secondOwner(store: Store) {
   const invited = await invite(store, 'owner');
-  const pending = h.sessionFrom(await h.request('POST', '/api/auth/invitations/accept', store, undefined, { token: invited.token, name: 'Second owner', password }));
-  const setup = await h.request('POST', '/api/auth/mfa/setup', store, pending, { password });
-  const secret = new URL(setup.json().data.totpUri).searchParams.get('secret')!;
-  const session = h.sessionFrom(await h.request('POST', '/api/auth/mfa/verify', store, pending, { code: await generate({ secret }) }));
+  const session = await h.stepUp(h.sessionFrom(await h.request('POST', '/api/auth/invitations/accept', store, undefined, { token: invited.token, name: 'Second owner', password })));
   const membership = await h.fixture.prisma.membership.findFirstOrThrow({ where: { tenantId: store.id, user: { email: invited.email } } });
   return { session, membershipId: membership.id };
+}
+/** Password accepted on a new device: the challenge cookie of that sign-in. */
+async function challengeFor(store: Store, email: string) {
+  const r = await h.request('POST', '/api/auth/login', store, undefined, { email, password });
+  expect(r.statusCode).toBe(200);
+  return { cookie: 'qorloop.challenge=' + r.cookies.find(c => c.name === 'qorloop.challenge')!.value, csrf: '' };
 }
 const ownerOf = (store: Store) => h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: store.id, email: 'owner@' + store.hostname.replace(/\.localhost$/, '') + '.test' } });
 const activeOwners = (store: Store) => h.fixture.prisma.membership.count({ where: { tenantId: store.id, role: 'owner', active: true } });
@@ -214,30 +217,29 @@ realPostgres('tenant row lock FOR NO KEY UPDATE (real PostgreSQL)', () => {
       expect(await h.fixture.prisma.session.count({ where: { tenantId: s.id, userId: users[0]!.id } })).toBe(1);
     });
 
-    it('one TOTP code verifies only one of two simultaneous challenge sessions', async () => {
+    it('one emailed code completes a sign-in only once when sent twice at the same moment', async () => {
       const owner = await ownerOf(s);
-      const login = async () => h.sessionFrom(await h.request('POST', '/api/auth/login', s, undefined, { email: owner.email, password }));
-      const [first, second] = [await login(), await login()];
-      const secret = await unseal<string>(owner.mfaSecret!, h.config.AUTH_SECRET);
-      // allow the current step (enrolment used it), so the only thing refusing the second use is the replay check
-      await h.fixture.prisma.user.update({ where: { id: owner.id }, data: { lastTotpStep: Math.floor(Date.now() / 30_000) - 2 } });
-      const code = await generate({ secret });
-      const before = await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'auth.mfa_verified' } });
-      const verify = (session: Session) => () => concurrent('POST', '/api/auth/mfa/verify', s, session, { code });
-      expect(statuses(await gated(s.id, [verify(first), verify(second)]))).toEqual([200, 401]);
-      expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'auth.mfa_verified' } })).toBe(before + 1);
+      const challenge = await challengeFor(s, owner.email);
+      const code = await h.codeFor(s, owner.email);
+      const before = await h.fixture.prisma.session.count({ where: { tenantId: s.id, userId: owner.id } });
+      const verify = () => concurrent('POST', '/api/auth/otp/verify', s, challenge, { code });
+      expect(statuses(await gated(s.id, [verify, verify]))).toEqual([200, 401]);
+      expect(await h.fixture.prisma.session.count({ where: { tenantId: s.id, userId: owner.id } })).toBe(before + 1);
+      expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'auth.otp_verified', actorId: owner.id } })).toBe(1);
     });
 
-    it('one recovery code is consumed by only one of two simultaneous challenge sessions', async () => {
+    it('one recovery code completes an authenticator sign-in only once', async () => {
       const owner = await ownerOf(s);
       const code = opaqueToken();
-      await h.fixture.database.run(s.id, d => d.replaceRecoveryCodes(owner.id, [digest(code), digest(opaqueToken())]));
-      const login = async () => h.sessionFrom(await h.request('POST', '/api/auth/login', s, undefined, { email: owner.email, password }));
-      const [first, second] = [await login(), await login()];
-      const recover = (session: Session) => () => concurrent('POST', '/api/auth/mfa/recovery', s, session, { code });
-      expect(statuses(await gated(s.id, [recover(first), recover(second)]))).toEqual([200, 401]);
-      expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'auth.recovery_used', actorId: owner.id } })).toBe(1);
-      expect(await h.fixture.prisma.recoveryCode.count({ where: { tenantId: s.id, userId: owner.id, usedAt: { not: null } } })).toBe(1);
+      await h.fixture.prisma.user.update({ where: { id: owner.id }, data: { mfaSecret: await seal(generateSecret(), h.config.AUTH_SECRET) } });
+      try {
+        await h.fixture.database.run(s.id, d => d.replaceRecoveryCodes(owner.id, [digest(code), digest(opaqueToken())]));
+        const challenge = await challengeFor(s, owner.email);
+        const recover = () => concurrent('POST', '/api/auth/otp/recovery', s, challenge, { code });
+        expect(statuses(await gated(s.id, [recover, recover]))).toEqual([200, 401]);
+        expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'auth.recovery_used', actorId: owner.id } })).toBe(1);
+        expect(await h.fixture.prisma.recoveryCode.count({ where: { tenantId: s.id, userId: owner.id, usedAt: { not: null } } })).toBe(1);
+      } finally { await h.fixture.prisma.user.update({ where: { id: owner.id }, data: { mfaSecret: null } }); }
     });
 
     it('a role change and a removal racing between the last two Owners leave one active Owner', async () => {
