@@ -3,9 +3,13 @@
  *
  *   npm run provision:store -- --name "Doha Fresh" --slug dohafresh --owner-email owner@example.test [--hostname h] [--marketplaces talabat,snoonu]
  *   npm run provision:store -- resend-owner-invitation --slug dohafresh
+ *   npm run provision:store -- recover-owner --slug dohafresh --current-email old@example.test --new-email new@example.test --confirmed-identity
  *
  * The first form migrates the database and creates the store idempotently. The second resends the Owner invitation of a
- * store that has no active Owner yet (for example after the 48-hour link expired).
+ * store that has no active Owner yet (for example after the 48-hour link expired). The third moves an Owner who lost their
+ * mailbox to a new address (ADR 021): only after support has confirmed the person's identity outside Qorloop (the
+ * documented procedure); it signs the Owner out everywhere, removes the authenticator app and mails a 24-hour password
+ * link to the new address and a notice to the old one. No command prints a code, a token or a link.
  */
 import { parseArgs } from 'node:util';
 import { spawnSync } from 'node:child_process';
@@ -19,16 +23,23 @@ import { AuthService } from '../apps/api/src/auth/auth.service.js';
 const { values, positionals } = parseArgs({
   options: {
     name: { type: 'string' }, slug: { type: 'string' }, 'owner-email': { type: 'string' }, hostname: { type: 'string' }, marketplaces: { type: 'string' },
+    'current-email': { type: 'string' }, 'new-email': { type: 'string' }, 'confirmed-identity': { type: 'boolean' },
   },
   strict: true, allowPositionals: true,
 });
 const command = positionals[0] ?? 'create';
-if (!['create', 'resend-owner-invitation'].includes(command) || positionals.length > 1) throw new Error('Usage: provision:store [create | resend-owner-invitation] --slug ...');
+if (!['create', 'resend-owner-invitation', 'recover-owner'].includes(command) || positionals.length > 1) throw new Error('Usage: provision:store [create | resend-owner-invitation | recover-owner] --slug ...');
 const slug = z.string().regex(/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/);
 const config = loadConfig(process.env, { requireTenantPin: false });
 const db = new Database(config.DATABASE_URL);
 try {
-  if (command === 'resend-owner-invitation') {
+  if (command === 'recover-owner') {
+    if (!values['confirmed-identity']) throw new Error('Confirm the Owner\'s identity outside Qorloop first, then pass --confirmed-identity');
+    const tenant = await db.tenantBySlug(slug.parse(values.slug));
+    if (!tenant || tenant.status !== 'active') throw new Error('No active store with this slug');
+    const result = await new AuthService(db, config).recoverOwner(tenant.id, email.parse(values['current-email']), email.parse(values['new-email']));
+    console.log(JSON.stringify({ tenantId: tenant.id, ...result, emailDelivery: 'queued: password link to the new address, notice to the old one' }, null, 2));
+  } else if (command === 'resend-owner-invitation') {
     const tenant = await db.tenantBySlug(slug.parse(values.slug));
     if (!tenant || tenant.status !== 'active') throw new Error('No active store with this slug');
     const result = await new AuthService(db, config).resendOwnerInvitation(tenant.id);

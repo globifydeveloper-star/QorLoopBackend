@@ -86,3 +86,24 @@ describe('resend the Owner invitation (operations)', () => {
     expect(await h.fixture.database.tenantBySlug('no-such-store')).toBeNull();
   });
 });
+
+describe('owner recovery by support (recover-owner, ADR 021)', () => {
+  it('moves an Owner to a new address, signs them out everywhere and mails a password link there', async () => {
+    const s = await h.createOwner('prov-recover');
+    const owner = await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: s.id } });
+    await h.fixture.prisma.user.update({ where: { id: owner.id }, data: { mfaSecret: 'sealed-app-secret' } });
+    await expect(auth.recoverOwner(s.id, 'nobody@prov-recover.test', 'new@prov-recover.test')).rejects.toThrow('No active Owner');
+    const result = await auth.recoverOwner(s.id, owner.email, 'new@prov-recover.test');
+    expect(result).toEqual({ userId: owner.id, signedOut: 1 });
+    expect(JSON.stringify(result)).not.toMatch(/token|http/i);
+    expect((await h.request('GET', '/api/auth/me', s, s.owner)).statusCode).toBe(401);
+    expect(await h.fixture.prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).toMatchObject({ email: 'new@prov-recover.test', mfaSecret: null });
+    const mails = await h.fixture.prisma.emailOutbox.findMany({ where: { tenantId: s.id, OR: [{ dedupeKey: { startsWith: 'reset:' } }, { dedupeKey: { startsWith: 'recover-notice:' } }] } });
+    const plain = await Promise.all(mails.map(m => unseal<{ to: string; text: string }>(m.sealedMessage, h.config.AUTH_SECRET)));
+    expect(plain.map(m => m.to).sort()).toEqual([owner.email, 'new@prov-recover.test'].sort());
+    const link = plain.find(m => m.to === 'new@prov-recover.test')!.text.match(/#token=([A-Za-z0-9_-]+)/)![1]!;
+    expect((await h.request('POST', '/api/auth/password/reset', s, undefined, { token: link, password: 'A brand new owner password!' })).statusCode).toBe(200);
+    expect((await h.request('POST', '/api/auth/login', s, undefined, { email: 'new@prov-recover.test', password: 'A brand new owner password!' })).json().data.state).toBe('otp_required');
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'support.owner_email_changed', requestId: 'operations' } })).toBe(1);
+  });
+});
