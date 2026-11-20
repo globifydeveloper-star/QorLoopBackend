@@ -2,16 +2,42 @@ import { Controller, Get, Inject, Req } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import type { Config } from '../../../../packages/shared/src/config.js';
 import { MARKETPLACES } from '../../../../packages/core/src/constants.js';
-import { ONBOARDING_STEP_IDS } from '../../../../packages/core/src/onboarding.js';
+import { CHECKLIST_IDS, ESSENTIAL_IDS, ONBOARDING_STEP_IDS } from '../../../../packages/core/src/onboarding.js';
 import { Access, context, type AppRequest } from '../http/security.guard.js';
 import { Contract } from '../http/contracts.js';
 import { CONFIG } from '../tokens.js';
 import { OnboardingService } from './onboarding.service.js';
 
 const timestamp = { type: ['string', 'null'], format: 'date-time' };
+const pendingUpload = {
+  type: ['object', 'null'], additionalProperties: false, required: ['id', 'status', 'updatedAt'],
+  description: 'The newest upload of this source when it is not applied: in progress, or rejected/failed', properties: {
+    id: { type: 'string', format: 'uuid' }, status: { type: 'string' }, updatedAt: { type: 'string', format: 'date-time' },
+  },
+};
 export const onboardingSchema = {
-  type: 'object', additionalProperties: false, required: ['steps', 'percent', 'nextStepId', 'complete', 'marketplaces'],
+  type: 'object', additionalProperties: false, required: ['steps', 'percent', 'nextStepId', 'complete', 'marketplaces', 'checklist', 'essentials'],
   properties: {
+    checklist: { type: 'array', description: 'Guided checklist. Owner: all items; Admin: all but authenticator_app; Catalogue Manager: erp_upload and marketplace_uploads; Analyst: none', items: {
+      type: 'object', additionalProperties: false, required: ['id', 'required', 'status', 'doneAt', 'canAct', 'detail'], properties: {
+        id: { type: 'string', enum: [...CHECKLIST_IDS] }, required: { type: 'boolean' },
+        status: { type: 'string', enum: ['done', 'next', 'todo', 'waiting', 'failed', 'defaults', 'customised'] }, doneAt: timestamp,
+        canAct: { type: 'boolean', description: "The caller's role may do this step" },
+        detail: { type: 'object', description: 'store_details: enabledMarketplaces; erp_upload: pendingUpload; marketplace_uploads: items[{marketplaceId, status done|pending|todo, doneAt, pendingUpload}]; price_source: priceSource, marketplaceId, canAdoptFrom; first_comparison: reason; thresholds: priceTolerance, stockThreshold, staleHours', properties: {
+          enabledMarketplaces: { type: 'array', items: { type: 'string', enum: [...MARKETPLACES] } }, pendingUpload,
+          items: { type: 'array', items: { type: 'object', properties: { marketplaceId: { type: 'string', enum: [...MARKETPLACES] }, status: { type: 'string', enum: ['done', 'pending', 'todo'] }, doneAt: timestamp, pendingUpload } } },
+          priceSource: { type: ['string', 'null'], enum: ['erp_markup', 'adopt', null] }, marketplaceId: { type: ['string', 'null'] },
+          canAdoptFrom: { type: 'array', items: { type: 'string', enum: [...MARKETPLACES] } }, reason: { type: ['string', 'null'] },
+          priceTolerance: { type: 'number' }, stockThreshold: { type: 'integer' }, staleHours: { type: 'integer' },
+        } },
+      },
+    } },
+    essentials: { type: 'object', additionalProperties: false, required: ['complete', 'percent', 'missing'], description: 'The Dashboard opens when complete; every role receives it', properties: {
+      complete: { type: 'boolean' }, percent: { type: 'integer', enum: [0, 20, 40, 60, 80, 100] },
+      missing: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'message'], properties: {
+        id: { type: 'string', enum: [...ESSENTIAL_IDS] }, message: { type: 'string' },
+      } } },
+    } },
     steps: { type: 'array', items: {
       type: 'object', additionalProperties: false, required: ['id', 'title', 'description', 'required', 'status', 'doneAt', 'action'],
       properties: {
@@ -33,12 +59,36 @@ export const onboardingSchema = {
   },
 };
 
+const int = { type: 'integer', minimum: 0 };
+const summarySchema = {
+  type: 'object', required: ['reference', 'computedAt', 'products', 'marketplaces', 'uploads', 'problems'], properties: {
+    reference: { type: 'string', enum: ['marketplace', 'erp'] }, computedAt: timestamp,
+    products: { type: 'object', required: ['loaded', 'active', 'blocked'], properties: { loaded: int, active: { ...int, description: 'Active and not blocked' }, blocked: int } },
+    marketplaces: { type: 'array', description: 'Enabled marketplaces, canonical order', items: { type: 'object', properties: {
+      marketplaceId: { type: 'string', enum: [...MARKETPLACES] }, hasData: { type: 'boolean' }, lastUploadAt: timestamp, stale: { type: 'boolean' },
+      compared: int, matched: { ...int, description: 'Products listed on this marketplace' }, notListed: int, missingFromErp: int, newProducts: int,
+      priceMismatches: int, stockMismatches: int,
+    } } },
+    uploads: { type: 'array', description: 'The newest applied file of the ERP and of each enabled marketplace', items: { type: 'object', properties: {
+      source: { type: 'string', enum: ['erp', ...MARKETPLACES] }, uploadId: { type: ['string', 'null'], format: 'uuid' }, appliedAt: timestamp,
+      rowErrors: { ...int, description: 'Stored row errors of that file (capped at the stored maximum)' },
+    } } },
+    problems: { type: 'object', properties: {
+      priceMismatches: int, stockMismatches: int, notListed: int, missingFromErp: int, stockConflicts: int, uploadRowErrors: int,
+    } },
+  },
+};
+
 @ApiTags('Onboarding') @ApiCookieAuth()
 @Controller('api/onboarding')
 export class OnboardingController {
   constructor(@Inject(OnboardingService) private readonly onboarding: OnboardingService, @Inject(CONFIG) private readonly config: Config) {}
 
   @Get() @Access({ permission: 'settings.view' })
-  @Contract('Derived onboarding progress; Owner/Admin wizard, other roles empty; only four required steps count toward completion', undefined, onboardingSchema)
+  @Contract('Derived onboarding progress. steps/percent/nextStepId/complete/marketplaces: the ADR 015 wizard (Owner/Admin; other roles empty). checklist/essentials: the guided checklist filtered by role and the Dashboard gate (five essentials) for every role', undefined, onboardingSchema)
   get(@Req() req: AppRequest) { return this.onboarding.get(context(req, this.config)); }
+
+  @Get('summary') @Access({ permission: 'recon.view' })
+  @Contract('Setup summary, also later from Settings: products loaded, products matched per enabled marketplace, and problems found, from the stored comparison (the store\'s default reference)', undefined, summarySchema)
+  summary(@Req() req: AppRequest) { return this.onboarding.summary(context(req, this.config)); }
 }

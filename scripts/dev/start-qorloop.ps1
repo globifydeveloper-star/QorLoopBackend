@@ -2,6 +2,7 @@
 # Usage: right-click > Run with PowerShell, or: powershell -ExecutionPolicy Bypass -File start-qorloop.ps1
 # Optional: -SkipFrontend   (do not start Vite)
 param(
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
   [string]$Backend  = 'D:\Qorloop-backend',
   [string]$Frontend = 'D:\Qorloop',
   [string]$Weed     = 'C:\SeaweedFS\weed.exe',
@@ -69,13 +70,13 @@ Write-Host ''
 Write-Host 'Waiting for the API to answer (up to 90 seconds)...'
 $ok = $false
 for ($i = 0; $i -lt 30; $i++) {
-  $code = & curl.exe -s -o NUL -w '%{http_code}' 'http://qorloop-demo.localhost:4000/health/ready' 2>$null
+  $code = & curl.exe -s -o NUL -w '%{http_code}' "http://$Store.localhost:4000/health/ready" 2>$null
   if ($code -eq '200') { $ok = $true; break }
   Start-Sleep -Seconds 3
 }
 if ($ok) {
-  Write-Host 'READY: http://qorloop-demo.localhost:3000' -ForegroundColor Green
-  Start-Process 'http://qorloop-demo.localhost:3000'
+  Write-Host "READY: http://$Store.localhost:3000" -ForegroundColor Green
+  Start-Process "http://$Store.localhost:3000"
 } else {
   Write-Host 'The API did not answer. Look at the "Qorloop API" window for the error.' -ForegroundColor Yellow
 }

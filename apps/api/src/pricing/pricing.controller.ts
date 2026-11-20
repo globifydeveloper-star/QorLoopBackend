@@ -77,8 +77,16 @@ const adoptRow = {
     previousRule: { type: ['object', 'null'], properties: rule },
   },
 };
+const priceSourceSchema = {
+  type: 'object', required: ['source', 'marketplaceId', 'confirmedAt'], properties: {
+    source: { type: ['string', 'null'], enum: ['erp_markup', 'adopt', null], description: 'null until the store chooses (onboarding step d)' },
+    marketplaceId: { type: ['string', 'null'], enum: [...MARKETPLACES, null], description: 'adopt only: the source marketplace' },
+    confirmedAt: { type: ['string', 'null'], format: 'date-time' },
+  },
+};
 const adoptPreview = {
   type: 'object', properties: {
+    previewToken: { type: 'string', pattern: '^[a-f0-9]{64}$', description: 'Binds PUT /api/pricing/price-source (adopt, scope all) to this preview' },
     ...adoptCounts.properties, willAdopt: count,
     conflicts: {
       type: 'object', properties: {
@@ -312,6 +320,20 @@ export class PricingController {
   @Contract("Adopt a marketplace's current listing prices as product rules, in one transaction; a repeat adopts nothing", dto.adoptPrices, adoptCounts)
   adoptApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.adoptPrices)) input: z.infer<typeof dto.adoptPrices>) {
     return this.pricing.adoptApply(context(req, this.config), input);
+  }
+
+  @Get('pricing/price-source') @Access({ permission: 'pricing.view' })
+  @Contract('How the store sets its prices: erp_markup (the default rule on the ERP price) or adopt (one marketplace\'s prices as product rules); source null until chosen', undefined, priceSourceSchema)
+  priceSource(@Req() req: AppRequest) { return this.pricing.priceSource(context(req, this.config)); }
+
+  @Put('pricing/price-source') @Access({ permission: 'pricing.edit' })
+  @Contract('Choose how the store sets prices (Owner and Admin only). erp_markup writes the default rule; adopt applies exactly the previewed whole-catalogue adoption (previewToken from adopt/preview with scope all; 409 when the plan changed). One transaction', dto.setPriceSource, {
+    type: 'object', required: ['priceSource', 'pricing', 'adopted'], properties: {
+      priceSource: priceSourceSchema, pricing: settings, adopted: { ...adoptCounts, type: ['object', 'null'], description: 'adopt only' },
+    },
+  })
+  setPriceSource(@Req() req: AppRequest, @Body(new ZodPipe(dto.setPriceSource)) input: z.infer<typeof dto.setPriceSource>) {
+    return this.pricing.setPriceSource(context(req, this.config), input);
   }
 
   @Put('pricing/products/:id') @Access({ permission: 'pricing.edit' })

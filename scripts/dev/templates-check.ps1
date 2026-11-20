@@ -1,4 +1,5 @@
 param(
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
     [switch]$ReversibleEdit
 )
 
@@ -6,8 +7,8 @@ param(
 # No .env access and no credential, cookie or token output. The only write is the optional -ReversibleEdit: one optional
 # Talabat field is unmapped and then restored (two new layout versions, two template.updated events).
 $ErrorActionPreference = 'Stop'
-$qorloopApi = 'http://qorloop-demo.localhost:4000'
-$qorloopOrigin = 'http://qorloop-demo.localhost:3000'
+$qorloopApi = "http://$Store.localhost:4000"
+$qorloopOrigin = "http://$Store.localhost:3000"
 $qorloopSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $script:qorloopCsrf = $null
 

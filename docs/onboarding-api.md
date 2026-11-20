@@ -1,8 +1,69 @@
 # Onboarding API and read-only demo checks
 
-`GET /api/onboarding` is the only onboarding endpoint. It requires a fully authenticated session and `settings.view`. Owner/Admin receive the full list; other roles receive the exact empty result below. No request body or tenant ID is used. There are no skip/dismiss endpoints. See [ADR 015](decisions/015-onboarding.md) for evidence semantics.
+`GET /api/onboarding` requires a fully authenticated session and `settings.view`. It returns two things:
 
-## Committed response shape
+- the **ADR 015 wizard** (`steps`, `percent`, `nextStepId`, `complete`, `marketplaces`), unchanged: Owner/Admin get the full list, other roles the empty result below. It is kept until the frontend has moved to the checklist (owner decision D17), then removed in one commit.
+- the **guided checklist and the essentials gate** (`checklist`, `essentials`, added 20 November 2026, [ADR 020](decisions/020-onboarding-checklist.md)), for every role.
+
+`GET /api/onboarding/summary` (`recon.view`) is the setup summary. No request body or tenant ID is used. There are no skip/dismiss endpoints. See [ADR 015](decisions/015-onboarding.md) and [ADR 020](decisions/020-onboarding-checklist.md) for evidence semantics.
+
+## Checklist and essentials
+
+```ts
+type ChecklistId = 'store_details' | 'erp_upload' | 'marketplace_uploads' | 'price_source' | 'first_comparison'   // essentials, in order
+  | 'thresholds' | 'authenticator_app' | 'invite_team';                                                            // optional
+type PendingUpload = { id: string; status: string; updatedAt: string } | null;   // newest upload of that source when not applied
+type ChecklistResponse = {
+  checklist: Array<{
+    id: ChecklistId;
+    required: boolean;
+    status: 'done' | 'next' | 'todo' | 'waiting' | 'failed'   // essentials; waiting/failed: first_comparison only
+      | 'defaults' | 'customised';                           // thresholds
+    doneAt: string | null;
+    canAct: boolean;                                         // the caller's role may do the step; false for first_comparison
+    detail: {
+      enabledMarketplaces?: MarketplaceId[];                  // store_details
+      pendingUpload?: PendingUpload;                         // erp_upload
+      items?: Array<{ marketplaceId: MarketplaceId; status: 'done' | 'pending' | 'todo'; doneAt: string | null; pendingUpload: PendingUpload }>; // marketplace_uploads, enabled only
+      priceSource?: 'erp_markup' | 'adopt' | null; marketplaceId?: string | null; canAdoptFrom?: MarketplaceId[];                         // price_source
+      reason?: string | null;                                // first_comparison
+      priceTolerance?: number; stockThreshold?: number; staleHours?: number;                                                            // thresholds
+    };
+  }>;
+  essentials: { complete: boolean; percent: 0 | 20 | 40 | 60 | 80 | 100; missing: Array<{ id: ChecklistId; message: string }> };
+};
+```
+
+| Item | Done when | Who may act |
+|---|---|---|
+| store_details | an explicit switch row is on (`PUT /api/settings/marketplaces`); a store without any switch row: a marketplace with an applied file | Owner, Admin |
+| erp_upload | an ERP upload is applied | Owner, Admin, Catalogue Manager |
+| marketplace_uploads | every enabled marketplace has an applied file (switch unused ones off) | Owner, Admin, Catalogue Manager |
+| price_source | `pricing_settings.price_source` is set (`PUT /api/pricing/price-source`, or a whole-catalogue adoption by an Owner/Admin) | Owner, Admin |
+| first_comparison | a computed comparison with matched data exists. `waiting`: ERP and a marketplace file applied, not computed yet. `failed`: a `recon.failed` event newer than the last computation | nobody (the system) |
+| thresholds | optional; `defaults` or `customised` | Owner, Admin |
+| authenticator_app | optional; the caller's own app (Owner only) | the user |
+| invite_team | optional; an invitation sent by a user | Owner, Admin |
+
+At most one item is `next`: the first essential that is `todo`. `essentials.complete` opens the Dashboard (the gate is in the UI, D2). Visibility: Owner all items; Admin all but `authenticator_app`; Catalogue Manager `erp_upload` and `marketplace_uploads`; Analyst none. Every role gets `essentials`.
+
+Coming back halfway: everything is derived from stored data, so the response after a closed browser equals the one before. `pendingUpload` points at the upload to continue (mapping, review) or to replace (rejected, failed).
+
+## Setup summary
+
+`GET /api/onboarding/summary`, `recon.view`:
+
+```ts
+{ data: {
+  reference: 'marketplace' | 'erp'; computedAt: string | null;
+  products: { loaded: number; active: number; blocked: number };      // active = active and not blocked
+  marketplaces: Array<{ marketplaceId; hasData; lastUploadAt; stale; compared; matched; notListed; missingFromErp; newProducts; priceMismatches; stockMismatches }>; // enabled only
+  uploads: Array<{ source: 'erp' | MarketplaceId; uploadId: string | null; appliedAt: string | null; rowErrors: number }>;          // ERP + enabled
+  problems: { priceMismatches; stockMismatches; notListed; missingFromErp; stockConflicts; uploadRowErrors };
+} }
+```
+
+## ADR 015 wizard: committed response shape
 
 ```ts
 type RequiredStepId = 'owner_mfa' | 'erp_upload' | 'marketplace_upload' | 'first_comparison';
@@ -47,10 +108,10 @@ Action targets are stable frontend navigation keys, not HTTP endpoints or assump
 
 All evidence absent: percent 0, nextStepId owner_mfa, complete false, first step next and every other step todo. All required evidence present: percent 100, nextStepId null, complete true, first four steps done; optional steps reflect their evidence independently. Optional steps never acquire next. There is no profile or category step. No click changes this response.
 
-Other roles receive HTTP 200:
+Other roles receive HTTP 200 with these wizard fields (plus `checklist` and `essentials`, above):
 
 ```json
-{"data":{"steps":[],"percent":0,"nextStepId":null,"complete":false,"marketplaces":[]}}
+{"data":{"steps":[],"percent":0,"nextStepId":null,"complete":false,"marketplaces":[],"checklist":[...],"essentials":{...}}}
 ```
 
 Use list emptiness to hide the wizard for those roles. Use complete to hide it for Owner/Admin. MFA date being null does not mean enrollment is incomplete: use status.

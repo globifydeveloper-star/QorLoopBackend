@@ -30,6 +30,18 @@ export class PricingRepository {
       select: { defaultRuleMode: true, defaultRuleValue: true, rounding: true, perMarketplaceEnabled: true, compareReferenceDefault: true, updatedAt: true },
     });
   }
+  /** How the store sets its prices (null fields: not chosen yet, or no settings row). */
+  priceSource() {
+    return this.tx.pricingSettings.findUnique({
+      where: { tenantId: this.tenantId },
+      select: { priceSource: true, priceSourceMarketplaceId: true, priceSourceConfirmedAt: true },
+    });
+  }
+  /** Records the store's choice now; creates the settings row with defaults when there is none. */
+  setPriceSource(source: 'erp_markup' | 'adopt', marketplaceId: string | null) {
+    const data = { priceSource: source, priceSourceMarketplaceId: marketplaceId, priceSourceConfirmedAt: new Date() };
+    return this.tx.pricingSettings.upsert({ where: { tenantId: this.tenantId }, create: { ...data, tenantId: this.tenantId }, update: data });
+  }
   /** Settings and every tenant-level rule in the pricing engine's shape, read once; products are then priced without further queries. */
   async snapshot() {
     const [settings, marketplaceRules, categoryRules] = await Promise.all([this.settings(), this.marketplaceRules(), this.categoryRules()]);

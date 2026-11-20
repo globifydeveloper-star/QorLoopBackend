@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { TenantData } from '../../../../packages/db/src/database.js';
 import type * as contracts from '../../../../packages/shared/src/contracts.js';
@@ -27,6 +28,17 @@ export async function planAdoption(data: TenantData, input: AdoptInput, now = ne
   return { products: products.length, plan };
 }
 
+/**
+ * Binds an apply to the preview the user saw: the same store, input and planned rules (every product and rule). Any
+ * change in between (an upload, a rule edit, an offer that started or ended) gives a different token.
+ */
+export function adoptionToken(tenantId: string, input: AdoptInput, products: number, plan: AdoptionPlan) {
+  return createHash('sha256').update(JSON.stringify([
+    tenantId, input.sourceMarketplaceId, input.mode, input.onlyWithoutRule, input.scope, products, plan.skipped,
+    plan.adopt.map(r => [r.productId, r.rule.mode, r.rule.value]),
+  ])).digest('hex');
+}
+
 /** The counts both preview and apply report. */
 export function adoptionCounts(products: number, plan: AdoptionPlan) {
   const replaced = plan.adopt.filter(r => r.previousRule).length;
@@ -52,6 +64,7 @@ export async function adoptionPreview(data: TenantData, input: AdoptInput, produ
   const { adopted, ...counts } = adoptionCounts(products, plan);
   return {
     sourceMarketplaceId: input.sourceMarketplaceId, mode: input.mode, onlyWithoutRule: input.onlyWithoutRule, scope: input.scope,
+    previewToken: adoptionToken(data.tenantId, input, products, plan),
     ...counts, willAdopt: adopted,
     conflicts: { ...counts.conflicts, examples: plan.conflicts.examples.map(c => ({ ...c, ...label(c.productId) })) },
     largestDifferences: largest.map(row),

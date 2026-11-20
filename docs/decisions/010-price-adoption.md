@@ -46,3 +46,9 @@ adopt today's prices, the reconciliation shows ~13,000 price mismatches on day o
 
 Loading the inputs is ~0.9 s. Under jest's VM the planner itself takes ~0.9 s; the same code compiled and run on plain
 Node takes ~0.17 s for 25,000 products.
+
+## Later (20 November 2026, ADR 020)
+
+The preview returns `previewToken`. `PUT /api/pricing/price-source` with `source: 'adopt'` applies exactly that previewed
+whole-catalogue plan or answers 409. An Owner or Admin adopting the whole catalogue through `/apply` also records the
+store's price source when none is set. The adoption rules above are unchanged.

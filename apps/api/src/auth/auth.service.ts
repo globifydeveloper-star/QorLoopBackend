@@ -6,6 +6,7 @@ import type { Config } from '../../../../packages/shared/src/config.js';
 import * as contracts from '../../../../packages/shared/src/contracts.js';
 import { digest, opaqueToken, hashPassword, verifyPassword, matchesDigest, seal, unseal } from '../../../../packages/shared/src/security.js';
 import { hasPermission, type Permission } from '../../../../packages/core/src/roles.js';
+import type { MarketplaceId } from '../../../../packages/core/src/constants.js';
 import { CONFIG } from '../tokens.js';
 
 export interface RequestContext {
@@ -153,18 +154,58 @@ export class AuthService {
     await data.event('invitation.created', invitedBy, invitation.id, requestId, { role });
     return { id: invitation.id, email, role, expiresAt: invitation.expiresAt };
   }
-  async provision(input: {name: string; slug: string; hostname: string; ownerEmail: string}) {
+  /** A new single-use token and 48-hour expiry for an open invitation; the old token stops working at once. */
+  private async rotateInvitation(data: TenantData, invitation: {id: string; email: string}, actorId: string | null, requestId: string) {
+    const token = opaqueToken(), expiresAt = new Date(Date.now() + 48 * 3_600_000);
+    await data.updateInvitation(invitation.id, { tokenHash: digest(token), expiresAt });
+    await this.invitationEmail(data, invitation, token);
+    await data.event('invitation.resent', actorId, invitation.id, requestId);
+    return { id: invitation.id, expiresAt };
+  }
+  /**
+   * Operations only (provision-store CLI). `marketplaces` preselects the store's marketplaces (explicit switches, all four
+   * written) only while the store has no switches yet; afterwards they are changed in Settings, and a rerun leaves them.
+   */
+  async provision(input: {name: string; slug: string; hostname: string; ownerEmail: string; marketplaces?: readonly MarketplaceId[]}) {
     const tenant = await this.db.initialize({ name: input.name, slug: input.slug, hostname: input.hostname });
     return this.db.run(tenant.id, async data => {
+      let marketplaces: 'set' | 'unchanged' | 'not_given' = 'not_given';
+      if (input.marketplaces?.length) {
+        if ((await data.recon.marketplaceSwitches()).length) marketplaces = 'unchanged';
+        else {
+          await data.settings.setMarketplaces(input.marketplaces);
+          await data.event('settings.changed', null, null, 'operations', { field: 'marketplaces', old: [], new: [...input.marketplaces] });
+          marketplaces = 'set';
+        }
+      }
       const existing = await data.firstOwnerInvitation();
       if (existing) {
         if (existing.email !== input.ownerEmail) throw new ConflictException('The initial Owner email differs');
-        return { tenantId: tenant.id, invitationId: existing.id, created: false };
+        return { tenantId: tenant.id, invitationId: existing.id, created: false, marketplaces };
       }
       if (await data.ownerCount()) throw new ConflictException('Store already has an Owner');
       const invitation = await this.createInvitation(data, input.ownerEmail, 'owner', null, 'operations');
       await data.event('store.provisioned', null, tenant.id, 'operations');
-      return { tenantId: tenant.id, invitationId: invitation.id, created: true };
+      return { tenantId: tenant.id, invitationId: invitation.id, created: true, marketplaces };
+    });
+  }
+  /**
+   * Operations only (provision-store CLI): resend the Owner invitation of a store that has no active Owner yet, for
+   * example after the 48-hour link expired. An open invitation (expired or not) gets a new token; if every Owner
+   * invitation was revoked, a new one goes to the initial Owner email. Never returns the token.
+   */
+  async resendOwnerInvitation(tenantId: string) {
+    return this.db.run(tenantId, async data => {
+      if (await data.ownerCount()) throw new ConflictException('The store already has an active Owner; invitations are resent from Team');
+      const open = await data.openOwnerInvitation();
+      if (open) {
+        const { expiresAt } = await this.rotateInvitation(data, open, null, 'operations');
+        return { invitationId: open.id, expiresAt, created: false };
+      }
+      const first = await data.firstOwnerInvitation();
+      if (!first) throw new NotFoundException('The store has no Owner invitation; run provisioning first');
+      const invitation = await this.createInvitation(data, first.email, 'owner', null, 'operations');
+      return { invitationId: invitation.id, expiresAt: invitation.expiresAt, created: true };
     });
   }
   async forgot(ctx: RequestContext, email: string) {
@@ -255,11 +296,7 @@ export class AuthService {
       const invitation = await data.invitationById(id);
       if (!invitation || invitation.acceptedAt || invitation.revokedAt) throw new NotFoundException('Pending invitation not found');
       if (invitation.role === 'owner' && p.member.role !== 'owner') throw new ForbiddenException('Only Owners can manage Owner invitations');
-      const token = opaqueToken(), expiresAt = new Date(Date.now() + 48 * 3_600_000);
-      await data.updateInvitation(id, { tokenHash: digest(token), expiresAt });
-      await this.invitationEmail(data, invitation, token);
-      await data.event('invitation.resent', p.user.id, id, ctx.requestId);
-      return { id, expiresAt };
+      return this.rotateInvitation(data, invitation, p.user.id, ctx.requestId);
     });
   }
 }

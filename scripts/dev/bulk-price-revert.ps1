@@ -2,8 +2,9 @@
 # (PUT/DELETE /api/products/:id/price-rule, any rule mode); each change queues the coalesced recon recompute.
 #   powershell -ExecutionPolicy Bypass -File scripts\dev\bulk-price-revert.ps1 [-RevertFile D:\Qorloop-test\bulk-price-revert.json]
 param(
-    [string]$ApiBase = 'http://qorloop-demo.localhost:4000',
-    [string]$Origin = 'http://qorloop-demo.localhost:3000',
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
+    [string]$ApiBase = "http://$Store.localhost:4000",
+    [string]$Origin = "http://$Store.localhost:3000",
     [string]$RevertFile = 'D:\Qorloop-test\bulk-price-revert.json',
     # Only queue a recon recompute (POST /api/recon/recompute), e.g. after scripts\dev\db-backup.ps1 -RestoreRulesFrom.
     [switch]$RecomputeOnly

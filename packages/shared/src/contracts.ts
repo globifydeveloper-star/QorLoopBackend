@@ -183,6 +183,12 @@ export const updateTenantSettings = z.object({
   security: z.object({ mfaRequiredForAll: z.boolean().optional(), analystCanExport: z.boolean().optional() })
     .strict().refine(v => Object.keys(v).length > 0, 'Nothing to change').optional(),
 }).strict().refine(v => Object.keys(v).some(k => k !== 'expectedRevision'), 'Nothing to change');
+/** PUT /api/settings/marketplaces: the marketplaces the store uses (at least one); every other one is switched off. */
+export const updateMarketplaces = z.object({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  enabled: z.array(z.enum(MARKETPLACES)).min(1, 'Choose at least one marketplace').max(MARKETPLACES.length)
+    .refine(v => new Set(v).size === v.length, 'Each marketplace once'),
+}).strict();
 const categoryKey = { categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
 export const categoryPriceRule = ruleWith(categoryKey);
 export const categoryPriceRuleKey = z.object(categoryKey).strict();
@@ -202,6 +208,31 @@ export const adoptPrices = z.object({
     z.object({ categoryId: z.uuid(), subcategoryId: z.uuid().optional() }).strict(),
   ]),
 }).strict();
+
+/**
+ * PUT /api/pricing/price-source (onboarding step d): how the store sets its prices.
+ * erp_markup: the store-wide default rule on the ERP price ('same' = the ERP price as it is; 'fixed' is no markup).
+ * adopt: adopt the whole catalogue from one marketplace, exactly as previewed with POST /api/pricing/adopt/preview
+ * (scope {all: true}, the same mode and onlyWithoutRule); previewToken is that preview's token.
+ */
+export const setPriceSource = z.discriminatedUnion('source', [
+  z.object({
+    source: z.literal('erp_markup'),
+    rule: z.discriminatedUnion('mode', [
+      z.object({ mode: z.literal('percent'), value: threeDecimals(z.number().min(-90).max(1000)) }).strict(),
+      z.object({ mode: z.literal('amount'), value: threeDecimals(z.number().min(-100000).max(100000)) }).strict(),
+      z.object({ mode: z.literal('same') }).strict(),
+    ]),
+    rounding: roundingOption.optional(),
+  }).strict(),
+  z.object({
+    source: z.literal('adopt'),
+    sourceMarketplaceId: z.enum(MARKETPLACES),
+    mode: z.enum(ADOPT_MODES).default('fixed'),
+    onlyWithoutRule: z.boolean().default(true),
+    previewToken: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict(),
+]);
 
 /**
  * The version of the product rule the client last saw (pricing.productRule.updatedAt, or rule.updatedAt of an inline

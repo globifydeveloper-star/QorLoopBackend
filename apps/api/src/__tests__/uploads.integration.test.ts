@@ -72,6 +72,25 @@ describe('creating an upload', () => {
     expect((await h.request('POST', '/api/uploads', a, undefined, { source: 'erp', fileName: 'x.xlsx', size: 10 })).statusCode).toBe(401);
     expect((await h.request('GET', '/api/uploads', a)).statusCode).toBe(401);
   });
+  it('refuses files for a marketplace the store switched off; stores without switches keep uploading (plan step 7)', async () => {
+    const s = await h.createOwner('uploads-switched');
+    const revision = (await h.request('GET', '/api/settings', s, s.owner)).json().data.revision;
+    expect((await h.request('PUT', '/api/settings/marketplaces', s, s.owner, { expectedRevision: revision, enabled: ['talabat'] })).statusCode).toBe(200);
+    const create = (store: Store, source: string) => h.request('POST', '/api/uploads', store, store.owner, { source, fileName: source + '.xlsx', size: 10 });
+    const refused = await create(s, 'snoonu');
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error.details).toEqual([{ path: 'source', message: 'Snoonu is switched off for this store; switch it on in Settings > Marketplaces first' }]);
+    expect(await h.fixture.prisma.upload.count({ where: { tenantId: s.id } })).toBe(0);
+    expect((await create(s, 'talabat')).statusCode).toBe(200);
+    expect((await create(s, 'erp')).statusCode).toBe(200);
+
+    // A store from before the switch existed (no rows) and one with a single explicit row.
+    const legacy = await h.createOwner('uploads-legacy');
+    expect((await create(legacy, 'snoonu')).statusCode).toBe(200);
+    await h.fixture.prisma.tenantMarketplace.create({ data: { tenantId: legacy.id, marketplaceId: 'keeta', enabled: false } });
+    expect((await create(legacy, 'rafeeq')).statusCode).toBe(200);
+    expect((await create(legacy, 'keeta')).statusCode).toBe(400);
+  });
 });
 
 describe('role permissions', () => {

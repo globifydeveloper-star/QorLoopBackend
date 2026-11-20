@@ -76,18 +76,22 @@ The existing `GET/PUT /api/pricing/settings` remain supported with their existin
 ```ts
 {
   data: {
-    items: Array<{
+    items: Array<{                        // all four, canonical order (changed 20 Nov 2026: disabled ones are listed too)
       marketplaceId: MarketplaceId;
-      enabled: true;
+      enabled: boolean;                   // the effective switch
+      explicit: boolean;                  // the store has a switch row for it
       hasData: boolean;
       lastUploadAt: string | null;       // latest APPLIED marketplace upload, UTC ISO
       ageHours: number | null;          // fractional, nonnegative
     }>;
+    revision: string;                     // the general settings revision
   };
 }
 ```
 
-Only enabled marketplaces are listed, in the canonical marketplace order. Explicit switches win; without a switch an applied upload enables the marketplace. An explicitly enabled marketplace with no upload has `hasData: false` and null timestamp/age. This endpoint does not enable or disable marketplaces.
+Explicit switches win; without a switch row an applied upload enables the marketplace (stores from before the switch existed). An explicitly enabled marketplace with no upload has `hasData: false` and null timestamp/age.
+
+`PUT /api/settings/marketplaces`: requires `marketplaces.edit` (Owner, Admin), CSRF and a trusted Origin. Body `{ expectedRevision, enabled: MarketplaceId[] }` (at least one, each once; strict). Writes explicit switches for all four marketplaces (the listed ones on). Returns the GET shape with the new revision. 400 on validation, 409 on a stale revision. Data of a switched-off marketplace is kept and returns when it is switched on again. One `settings.changed` event (`field: 'marketplaces'`, old and new lists) and a recon recompute (`settings.marketplaces`) only when the effective set changed. Afterwards `POST /api/uploads` refuses a file for a switched-off marketplace (400, `details[0].path = 'source'`).
 
 ## S2: activity and product history
 
