@@ -12,6 +12,7 @@ import { fieldsFor } from '../../../../packages/core/src/upload/fields.js';
 import { RETENTION_DAYS, UPLOAD_LIMITS } from '../../../../packages/core/src/upload/constants.js';
 import { buildErrorWorkbook, errorReportFileName, MAX_STORED_ERRORS } from '../../../../packages/core/src/upload/error-report.js';
 import type { StoredReviewSummary } from '../../../../packages/core/src/upload/review.js';
+import { MARKETPLACE_LABELS } from '../../../../packages/core/src/price-change.js';
 import { CONFIG, STORAGE, UPLOAD_QUEUE } from '../tokens.js';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -62,6 +63,12 @@ export class UploadsService {
     if (input.size > UPLOAD_LIMITS.maxBytes) throw new BadRequestException('The file is larger than 25 MB');
     const ext = extensionOf(input.fileName);
     return this.auth.authenticated(ctx, { permission: 'uploads.upload', mutation: true }, async (data, p) => {
+      // A marketplace the store explicitly switched off takes no files (Settings > Marketplaces). Without a switch row
+      // (stores from before the switch existed) uploads stay allowed and an applied one enables the marketplace.
+      if (input.source !== 'erp' && (await data.recon.marketplaceSwitches()).some(s => s.marketplaceId === input.source && !s.enabled)) {
+        throw new BadRequestException({ message: 'Validation failed', details: [{ path: 'source',
+          message: `${MARKETPLACE_LABELS[input.source]} is switched off for this store; switch it on in Settings > Marketplaces first` }] });
+      }
       const id = randomUUID();
       const contentType = CONTENT_TYPES[ext]!;
       const storageKey = storageKeys.upload(data.tenantId, id, ext);
