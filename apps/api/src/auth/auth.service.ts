@@ -55,11 +55,13 @@ export class AuthService {
     return Boolean(tenant.settings?.mfaRequiredForAll) && !user.mfaSecret;
   }
   /** A session bound to `deviceId` (null: shared computer, 12 hours), 20 days from now at most. */
+  /** `freshFactor`: the second factor was checked just now (a sign-in with a code), which counts as a step-up. */
   private async issue(data: TenantData, user: { id: string; mfaSecret: string | null }, deviceId: string | null, ctx: RequestContext,
-    device: SessionIssue['device'] = null): Promise<SessionIssue> {
+    device: SessionIssue['device'] = null, freshFactor = false): Promise<SessionIssue> {
     const token = opaqueToken(), csrfToken = opaqueToken();
     const expiresAt = new Date(Date.now() + (deviceId ? this.config.SESSION_MAX_DAYS * DAY : SESSION_LIMITS.sharedHours * 3_600_000));
-    await data.createSession({ userId: user.id, tokenHash: digest(token), csrfHash: digest(csrfToken), assurance: 'full', expiresAt, deviceId, userAgent: deviceLabel(ctx.userAgent) });
+    await data.createSession({ userId: user.id, tokenHash: digest(token), csrfHash: digest(csrfToken), assurance: 'full', expiresAt, deviceId,
+      userAgent: deviceLabel(ctx.userAgent), stepUpAt: freshFactor ? new Date() : null });
     return { kind: 'session', token, csrfToken, expiresAt, state: this.needsAuthenticator(await data.tenant(), user) ? 'authenticator_setup_required' : 'authenticated', device };
   }
   /** This browser's trusted device for the user, or null (unknown, another user's, or expired). */
@@ -249,7 +251,7 @@ export class AuthService {
         else ({ id: deviceId, cookie } = await this.trustDevice(data, challenge.userId, ctx, ctx.requestId));
       }
       await data.event('auth.login_succeeded', challenge.userId, challenge.userId, ctx.requestId, { newDevice: cookie !== null });
-      return this.issue(data, challenge.user, deviceId, ctx, cookie);
+      return this.issue(data, challenge.user, deviceId, ctx, cookie, true);
     });
     if (result.kind === 'expired') throw fail(401, 'CHALLENGE_EXPIRED', 'This sign-in expired; enter your password again');
     if (result.kind === 'wrong') throw this.wrongAnswer(result);

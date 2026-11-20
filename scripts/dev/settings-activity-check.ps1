@@ -46,9 +46,9 @@ $qorloopPassword = Read-QorloopSecret 'Password (hidden; do not paste into chat)
 try { $login = Invoke-Qorloop 'POST' '/api/auth/login' @{ email = $qorloopEmail; password = $qorloopPassword } }
 finally { $qorloopPassword = $null }
 $script:qorloopCsrf = $login.csrfToken
-if ($login.state -eq 'mfa_required') {
-    $qorloopCode = Read-QorloopSecret 'Authenticator code (hidden; do not paste into chat)'
-    try { $login = Invoke-Qorloop 'POST' '/api/auth/mfa/verify' @{ code = $qorloopCode } }
+if ($login.state -in @('otp_required', 'totp_required')) {
+    $qorloopCode = Read-QorloopSecret 'Code from your email or authenticator app (hidden; do not paste into chat)'
+    try { $login = Invoke-Qorloop 'POST' '/api/auth/otp/verify' @{ code = $qorloopCode } }
     finally { $qorloopCode = $null }
     $script:qorloopCsrf = $login.csrfToken
 }

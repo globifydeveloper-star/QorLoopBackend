@@ -516,6 +516,18 @@ Steps 1–12 are built and tested. Steps 13–25 wait for the owner to confirm t
 - **The price source** has its own `GET /api/pricing/price-source` and is not part of the settings view, so the settings revision behaves as before.
 - **Owner question raised by the build:** should the store reset (ADR 018) clear `price_source*`, now that it keeps the choice while deleting the adopted rules? Recommendation: yes. See [ADR 020](../decisions/020-onboarding-checklist.md).
 
+### Steps 13–25 (branch `feature/auth-redesign`, not merged)
+
+Steps 13–25 are built and tested, see [ADR 021](../decisions/021-email-otp-device-sessions.md). The branch is pushed for CI and **not merged**: the owner chose to keep it on a branch until the frontend matches. Changes from the plan:
+
+- **Revoking a device deletes its row**, and its sessions go with it by cascade. Sessions are deleted on sign-out, as before. The planned `revoked_at`/`revoke_reason` columns were dropped, and the sessions screen lists live sessions only.
+- **The "deliver now" trigger** is a BullMQ job on the existing outbox queue (`BullMailTrigger`). The 10-second poll stays as a fallback.
+- **A sign-in completed with a code counts as a step-up** (both windows open), so a user is not asked twice in a row. A password-only sign-in on a trusted device does not count.
+- **"Require an authenticator app for everyone"** can be turned on only by an Owner who has an app, to prevent self-lockout.
+- **The ADR 015 wizard's `owner_mfa` step** is done when an active Owner exists, because every sign-in is now two-step.
+- **Steps 15–19 and 22 were one commit**, because they depend on each other (the harness and every test changed together).
+- **Not built:** a mail component in `/health/ready` (open gap G20); a nightly purge of old challenges.
+
 ## Implementation steps (dependency order, one commit each)
 
 **A. Foundations (no behaviour change for production)**

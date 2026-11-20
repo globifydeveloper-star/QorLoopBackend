@@ -150,15 +150,19 @@ The API never returns raw `details`. Bulk history includes only the selected pro
 
 ## S3: session status
 
-`GET /api/auth/session` is tenant-bound. A valid full/restricted cookie is inspected without updating `lastSeenAt` or extending expiry.
+*(Changed 20 November 2026 by [ADR 021](decisions/021-email-otp-device-sessions.md): email codes, device-bound sessions and step-up. The restricted MFA sessions and the `mfa_*` states are gone.)*
+
+`GET /api/auth/session` is tenant-bound. A valid session cookie (with its device cookie) is inspected without updating `lastSeenAt` or extending expiry.
 
 ```ts
 {
   data: {
-    state: "authenticated" | "mfa_required" | "mfa_setup_required";
-    expiresAt: string;                  // absolute UTC ISO expiry
-    idleExpiresAt: string;              // earlier of idle and absolute expiry
-    nextAction: "none" | "verify_mfa" | "setup_mfa";
+    state: "authenticated" | "authenticator_setup_required";
+    expiresAt: string;                  // the hard limit: 20 days from sign-in (12 hours on a shared computer)
+    idleExpiresAt: string;              // earlier of 7 days idle and the hard limit
+    nextAction: "none" | "setup_authenticator";
+    securityValidUntil: string | null;  // step-up: security actions allowed until (10 minutes)
+    workValidUntil: string | null;      // step-up: daily work actions allowed until (30 minutes)
   };
 }
 ```
@@ -166,17 +170,16 @@ The API never returns raw `details`. Bulk history includes only the selected pro
 | HTTP/code or state | Frontend action |
 | --- | --- |
 | 200 `authenticated` | Continue; use `/api/auth/me` for profile/permissions. |
-| 200 `mfa_required` | Show MFA verification. |
-| 200 `mfa_setup_required` | Show MFA enrollment, including password confirmation. |
+| 200 `authenticator_setup_required` | The store requires an authenticator app the user has not set up: show `POST /api/account/authenticator/setup` and `/verify`. |
 | 401 `UNAUTHENTICATED` | Show sign-in. Cookie is missing, invalid/revoked, or membership is inactive. |
-| 401 `SESSION_EXPIRED` | Show session-expired/sign-in. A recognizable session exceeded idle or absolute expiry. |
-| 403 `MFA_REQUIRED` on a protected API | Show MFA verification; do not label it a network failure. |
-| 403 `MFA_SETUP_REQUIRED` on a protected API | Show MFA enrollment. |
+| 401 `SESSION_EXPIRED` | Show sign-in. The session passed 7 days idle or its 20-day limit, or its device cookie is missing or no longer trusted. |
+| 403 `AUTHENTICATOR_SETUP_REQUIRED` on a protected API | Show authenticator setup. |
+| 403 `STEP_UP_REQUIRED` (`meta.window`: `security` or `work`) | Ask for a fresh code (`POST /api/auth/step-up/start`, then `/verify`) and retry the action. |
 | 403 `CSRF_REQUIRED` | Refresh session/CSRF state; do not blindly replay a mutation. |
-| 403 `FORBIDDEN` | Permission or Origin failure; do not treat every 403 as MFA. |
+| 403 `FORBIDDEN` | Permission or Origin failure. |
 | 500 `INTERNAL_ERROR` | Show a server-error state and Request ID; preserve the distinction from sign-out. |
 
-Restricted sessions last 10 minutes. Full-session defaults are 12 hours absolute and 30 minutes idle, configurable by the server. If a browser stops sending an expired cookie, the backend cannot distinguish expiry from sign-out. Login and MFA verification forms can return expected 401s for rejected credentials/codes and must not trigger a global session-expired flow.
+Sign-in: `POST /api/auth/login` answers either a session (this user's trusted device) or `{ state: "otp_required" | "totp_required", challengeExpiresAt, resendAvailableAt, maskedEmail }` with a 10-minute challenge cookie. Then `POST /api/auth/otp/verify { code }` (or `/otp/recovery { code }` with a recovery code for authenticator users). Codes: 401 `OTP_INVALID` (`meta.attemptsLeft`), `OTP_LOCKED` (after five wrong codes), `CHALLENGE_EXPIRED` (enter the password again); 429 `OTP_SEND_LIMIT` (`meta.retryAfterSeconds`). `POST /api/auth/otp/resend` sends a new code. These forms return expected 401s and must not trigger a global session-expired flow. See ADR 021 for the account endpoints.
 
 ## Error envelope and Request ID
 

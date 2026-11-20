@@ -2,6 +2,8 @@
 
 Date: 2026-10-28
 
+> **Sessions and MFA superseded** by [ADR 021](021-email-otp-device-sessions.md) (20 November 2026): restricted MFA sessions, forced Owner TOTP and `SESSION_HOURS` / `SESSION_IDLE_MINUTES` are replaced by email codes, device-bound 20-day / 7-day-idle sessions and step-up. The tenant, Origin, CSRF and invitation rules below still hold.
+
 ## Repository inspection
 
 The repository starts with a Fastify 5 server, Drizzle table definitions, pg-boss

@@ -42,12 +42,12 @@ try {
     } catch { throw 'Login failed. Response details suppressed.' }
     $loginBody = $null
     $csrf = $login.data.csrfToken
-    if ($login.data.state -eq 'mfa_required') {
-        $code = Read-Host 'Authenticator code (6 digits)'
-        $verified = Api 'POST' '/api/auth/mfa/verify' @{ code = $code }
+    if ($login.data.state -in @('otp_required', 'totp_required')) {
+        $code = Read-Host 'Code from your email or authenticator app (6 digits)'
+        $verified = Api 'POST' '/api/auth/otp/verify' @{ code = $code }
         $csrf = $verified.data.csrfToken
         if ($verified.data.state -ne 'authenticated') { throw 'MFA verification did not complete.' }
-    } elseif ($login.data.state -ne 'authenticated') { throw "Login state is $($login.data.state); finish MFA enrolment in the app first." }
+    } elseif ($login.data.state -ne 'authenticated') { throw "Login state is $($login.data.state); set up the authenticator app first (the store requires one)." }
 
     $body = @{ marketplaceId = $Target; selection = @{ filter = @{ show = 'all' } }
                action = @{ type = 'copy_from_marketplace'; sourceMarketplaceId = $Source; fields = @($Fields) } }

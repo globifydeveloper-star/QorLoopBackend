@@ -68,6 +68,14 @@ npm run provision:store -- resend-owner-invitation --slug second   # if the 48-h
 Open `http://second.localhost:3000`. The dev check scripts take `-Store second` (default `qorloop-demo`), for example
 `powershell -File scripts/dev/onboarding-check.ps1 -Store second`.
 
+### 6. Signing in (ADR 021)
+A new browser needs the six-digit code from your email after the password; with the worker running it arrives in Mailpit
+(`http://localhost:8025`) within seconds. The browser is then trusted for 90 days, and sessions last up to 20 days, or 7
+days without use. Sensitive actions (team changes, bulk prices, downloads) ask for a fresh code: 10 minutes for security
+actions, 30 minutes for daily work. An authenticator app can be added under Account as a stronger, optional factor.
+To recover an Owner who lost the mailbox (after confirming their identity):
+`npm run provision:store -- recover-owner --slug s --current-email old@example.test --new-email new@example.test --confirmed-identity`.
+
 
 ## Upload API (Task 6)
 

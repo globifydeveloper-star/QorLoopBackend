@@ -148,6 +148,14 @@ describe('step-up: a fresh code before sensitive actions', () => {
     expect((await h.request('PUT', '/api/settings', s, s.owner, { expectedRevision: await revision(), thresholds: { staleHours: 24 } })).statusCode).toBe(200);
     expect((await h.request('PUT', '/api/settings', s, s.owner, { expectedRevision: await revision(), security: { analystCanExport: false } })).json().error.code).toBe('STEP_UP_REQUIRED');
   });
+  it('counts a sign-in that just checked a code as a step-up, but not a password-only sign-in on a trusted device', async () => {
+    const s = await store();
+    const invite = (who: Session) => h.request('POST', '/api/team/invitations', s, who, { email: 'fresh' + Math.random() + '@example.test', role: 'analyst' });
+    const withCode = await h.login(s, ownerEmail(s));
+    expect((await invite(withCode)).statusCode).toBe(200);
+    const trusted = await h.login(s, ownerEmail(s), s.owner.device);
+    expect((await invite(trusted)).json().error.code).toBe('STEP_UP_REQUIRED');
+  });
   it('consumes a single-use step-up: the second sensitive request needs a new code', async () => {
     const s = await store();
     await h.stepUp(s.owner);

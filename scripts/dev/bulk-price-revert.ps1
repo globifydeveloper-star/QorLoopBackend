@@ -39,8 +39,8 @@ try {
     } catch { throw 'Login failed. Response details suppressed.' }
     $loginBody = $null
     $csrf = $login.data.csrfToken
-    if ($login.data.state -eq 'mfa_required') {
-        $verified = Api 'POST' '/api/auth/mfa/verify' @{ code = (Read-Host 'Authenticator code (6 digits)') }
+    if ($login.data.state -in @('otp_required', 'totp_required')) {
+        $verified = Api 'POST' '/api/auth/otp/verify' @{ code = (Read-Host 'Code from your email or authenticator app (6 digits)') }
         $csrf = $verified.data.csrfToken
         if ($verified.data.state -ne 'authenticated') { throw 'MFA verification did not complete.' }
     } elseif ($login.data.state -ne 'authenticated') { throw "Login state is $($login.data.state)." }
