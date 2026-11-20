@@ -39,7 +39,7 @@ export class TeamService {
       if ((member.role === 'owner' || role === 'owner') && p.member.role !== 'owner') throw new ForbiddenException('Only Owners can manage Owner permissions');
       if (member.role === 'owner' && role !== 'owner' && await data.ownerCount() <= 1) throw new ConflictException('The store must retain an active Owner');
       await data.updateMembership(id, { role });
-      await data.deleteUserSessions(member.userId);
+      await data.signOutUserExcept(member.userId, null);
       await data.event('team.role_changed', p.user.id, id, ctx.requestId, { from: member.role, to: role });
       return { id, role };
     });
@@ -51,7 +51,7 @@ export class TeamService {
       if (member.role === 'owner' && p.member.role !== 'owner') throw new ForbiddenException('Only Owners can remove Owners');
       if (member.role === 'owner' && await data.ownerCount() <= 1) throw new ConflictException('The store must retain an active Owner');
       await data.updateMembership(id, { active: false });
-      await data.deleteUserSessions(member.userId);
+      await data.signOutUserExcept(member.userId, null);
       await data.invalidateResets(member.userId);
       await data.event('team.member_deactivated', p.user.id, id, ctx.requestId);
       return { success: true };

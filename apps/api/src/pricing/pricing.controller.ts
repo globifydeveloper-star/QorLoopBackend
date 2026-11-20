@@ -243,7 +243,7 @@ export class PricingController {
     return this.bulkOffers.preview(context(req, this.config), input);
   }
 
-  @Post('pricing/offers/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Post('pricing/offers/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.edit', stepUp: 'work' })
   @Contract(`Apply a bulk offer, re-planned from current data: the valid rows are written in one transaction with one audit event and one recompute, rejected rows are reported and not written; the same idempotencyKey and body answers the first result again (replayed: true), another body 409; a stale previewToken 409. ${offerDates}`, dto.bulkOfferApply, offerApplySchema)
   offersBulkApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferApply)) input: z.infer<typeof dto.bulkOfferApply>) {
     return this.bulkOffers.apply(context(req, this.config), input);
@@ -255,7 +255,7 @@ export class PricingController {
     return this.bulkOffers.removePreview(context(req, this.config), input);
   }
 
-  @Post('pricing/offers/bulk-remove/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Post('pricing/offers/bulk-remove/apply') @HttpCode(200) @Access({ permission: 'pricing.edit', stepUp: 'work' })
   @Contract('Remove the offers of the ticked products (any state), re-planned from current data, in one transaction with one audit event and one recompute; skipped products are reported; the same idempotencyKey and ids answers the first result again (replayed: true), other ids 409; a stale previewToken 409', dto.bulkOfferRemoveApply, removeApplySchema)
   offersBulkRemoveApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkOfferRemoveApply)) input: z.infer<typeof dto.bulkOfferRemoveApply>) {
     return this.bulkOffers.removeApply(context(req, this.config), input);
@@ -267,7 +267,7 @@ export class PricingController {
     return this.bulk.preview(context(req, this.config), input);
   }
 
-  @Post('pricing/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.bulk' })
+  @Post('pricing/bulk/apply') @HttpCode(200) @Access({ permission: 'pricing.bulk', stepUp: 'work' })
   @Contract('Apply a bulk price change, re-planned from current data, in one transaction with one audit event; the same idempotencyKey and body answers the first result again (replayed: true), another body 409; a stale previewToken 409', dto.bulkPriceApply, bulkApplySchema)
   bulkApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.bulkPriceApply)) input: z.infer<typeof dto.bulkPriceApply>) {
     return this.bulk.apply(context(req, this.config), input);
@@ -285,7 +285,7 @@ export class PricingController {
     return this.pricing.activeOffers(context(req, this.config), query);
   }
 
-  @Put('pricing/settings') @Access({ permission: 'pricing.edit' })
+  @Put('pricing/settings') @Access({ permission: 'pricing.edit', stepUp: 'work' })
   @Contract('Change any of the pricing settings; marketplaceRules, when given, is the full set (one audit event per changed field or rule)', dto.updatePricingSettings, settings)
   updateSettings(@Req() req: AppRequest, @Body(new ZodPipe(dto.updatePricingSettings)) input: z.infer<typeof dto.updatePricingSettings>) {
     return this.pricing.updateSettings(context(req, this.config), input);
@@ -316,7 +316,7 @@ export class PricingController {
     return this.pricing.adoptPreview(context(req, this.config), input);
   }
 
-  @Post('pricing/adopt/apply') @HttpCode(200) @Access({ permission: 'pricing.edit' })
+  @Post('pricing/adopt/apply') @HttpCode(200) @Access({ permission: 'pricing.edit', stepUp: 'work' })
   @Contract("Adopt a marketplace's current listing prices as product rules, in one transaction; a repeat adopts nothing", dto.adoptPrices, adoptCounts)
   adoptApply(@Req() req: AppRequest, @Body(new ZodPipe(dto.adoptPrices)) input: z.infer<typeof dto.adoptPrices>) {
     return this.pricing.adoptApply(context(req, this.config), input);
@@ -326,7 +326,7 @@ export class PricingController {
   @Contract('How the store sets its prices: erp_markup (the default rule on the ERP price) or adopt (one marketplace\'s prices as product rules); source null until chosen', undefined, priceSourceSchema)
   priceSource(@Req() req: AppRequest) { return this.pricing.priceSource(context(req, this.config)); }
 
-  @Put('pricing/price-source') @Access({ permission: 'pricing.edit' })
+  @Put('pricing/price-source') @Access({ permission: 'pricing.edit', stepUp: 'work' })
   @Contract('Choose how the store sets prices (Owner and Admin only). erp_markup writes the default rule; adopt applies exactly the previewed whole-catalogue adoption (previewToken from adopt/preview with scope all; 409 when the plan changed). One transaction', dto.setPriceSource, {
     type: 'object', required: ['priceSource', 'pricing', 'adopted'], properties: {
       priceSource: priceSourceSchema, pricing: settings, adopted: { ...adoptCounts, type: ['object', 'null'], description: 'adopt only' },

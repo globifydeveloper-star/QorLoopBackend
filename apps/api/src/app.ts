@@ -17,7 +17,9 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG, GENERATED_FILES_QUEUE, READINESS, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { CONFIG, GENERATED_FILES_QUEUE, MAIL_TRIGGER, READINESS, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { AccountController } from './auth/account.controller.js';
+import { BullMailTrigger, type MailTrigger } from '../../../packages/shared/src/mail.js';
 import { checkReadiness } from './http/readiness.js';
 import { sendError } from './http/errors.js';
 import { UploadsController } from './uploads/uploads.controller.js';
@@ -85,7 +87,7 @@ class ErrorFilter implements ExceptionFilter {
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; logStream?: { write: (chunk: string) => void }; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue; redisHealth?: () => Promise<unknown> } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; logStream?: { write: (chunk: string) => void }; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue; mailTrigger?: MailTrigger; redisHealth?: () => Promise<unknown> } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
   const storage = options.storage ?? new S3Storage({
@@ -93,15 +95,16 @@ export async function buildApp(config: Config, options: { database?: Database; c
     accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
   });
   let queueRedis: import('ioredis').Redis | undefined;
-  if (!options.queue || !options.recon || !options.generatedFiles) {
+  if (!options.queue || !options.recon || !options.generatedFiles || !options.mailTrigger) {
     const { Redis } = await import('ioredis');
     queueRedis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
   }
   const queue = options.queue ?? new BullUploadQueue(queueRedis!);
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
   const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
+  const mailTrigger = options.mailTrigger ?? new BullMailTrigger(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController, MarketplaceValuesController],
+    controllers: [SystemController, AuthController, AccountController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController, MarketplaceValuesController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
       { provide: READINESS, useValue: () => checkReadiness(() => database.ping(), options.redisHealth ?? (() => {
@@ -112,6 +115,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },
+      { provide: MAIL_TRIGGER, useValue: mailTrigger },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
@@ -177,15 +181,17 @@ export async function buildApp(config: Config, options: { database?: Database; c
     if (!options.queue) await (queue as BullUploadQueue).close();
     if (!options.recon) await (recon as BullReconQueue).close();
     if (!options.generatedFiles) await (generatedFiles as BullGeneratedFilesQueue).close();
+    if (!options.mailTrigger) await (mailTrigger as BullMailTrigger).close();
     await queueRedis?.quit();
     if (!options.database) await database.close();
   });
   app.useGlobalFilters(new ErrorFilter(Boolean(config.SENTRY_DSN)));
   app.useGlobalInterceptors(new EnvelopeInterceptor());
   const spec = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('Qorloop API').setDescription(
-    'Invitation-only API. All mutations require a trusted Origin. Cookie-authenticated mutations also require X-CSRF-Token from login/MFA responses or the readable CSRF cookie. Host resolves the store; client tenant IDs are never accepted. Restricted MFA sessions can only enroll/verify MFA or log out.',
-  ).setVersion('0.2.0').addCookieAuth(cookieName(config), { type: 'apiKey', in: 'cookie' }, 'cookie').build());
-  const publicPaths = new Set(['/api/auth/invitations/accept', '/api/auth/login', '/api/auth/password/forgot', '/api/auth/password/reset', '/health', '/health/ready']);
+    'Invitation-only API. All mutations require a trusted Origin. Cookie-authenticated mutations also require X-CSRF-Token from the session response or the readable CSRF cookie. Host resolves the store; client tenant IDs are never accepted. Sign-in on a new device needs a second factor (emailed code, or the authenticator app when enrolled); sessions are bound to the device cookie, last 20 days at most and 7 days idle. Sensitive actions answer 403 STEP_UP_REQUIRED until POST /api/auth/step-up/verify (security window 10 minutes, work window 30 minutes).',
+  ).setVersion('0.3.0').addCookieAuth(cookieName(config), { type: 'apiKey', in: 'cookie' }, 'cookie').build());
+  const publicPaths = new Set(['/api/auth/invitations/accept', '/api/auth/login', '/api/auth/otp/verify', '/api/auth/otp/recovery', '/api/auth/otp/resend',
+    '/api/auth/password/forgot', '/api/auth/password/reset', '/api/auth/email/confirm', '/health', '/health/ready']);
   for (const [path, item] of Object.entries(spec.paths)) {
     for (const [method, value] of Object.entries(item ?? {})) {
       if (!value || typeof value !== 'object' || !('responses' in value)) continue;

@@ -166,8 +166,8 @@ model TrustedDevice {
   label      String?   @db.VarChar(200)
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
   lastUsedAt DateTime  @default(now()) @map("last_used_at") @db.Timestamptz
+  /// The 90-day trust; revoking deletes the row (and its sessions, by cascade).
   expiresAt  DateTime  @map("expires_at") @db.Timestamptz
-  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz
   sessions   Session[]
 
   @@unique([tenantId, id])

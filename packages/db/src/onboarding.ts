@@ -14,8 +14,9 @@ export class OnboardingRepository {
   async facts(): Promise<OnboardingFacts> {
     const tenantId = this.tenantId;
     const [owner, erp, marketplaceUploads, comparison, invitation, pricing, marketplaceRule, generated] = await Promise.all([
-      // Select only membership ID, never MFA ciphertext. An active enrolled Owner is sufficient.
-      this.tx.membership.findFirst({ where: { tenantId, role: 'owner', active: true, user: { tenantId, mfaSecret: { not: null } } }, select: { id: true } }),
+      // Since ADR 021 every sign-in on a new device needs a second factor (an emailed code, or the authenticator app),
+      // so an active Owner has secured the account; the app itself is optional.
+      this.tx.membership.findFirst({ where: { tenantId, role: 'owner', active: true }, select: { id: true } }),
       // Ordered, so doneAt is the earliest retained evidence and stable between calls (plan finding B6).
       this.tx.upload.findFirst({ where: { tenantId, source: 'erp', status: 'applied', appliedAt: { not: null } }, select: { appliedAt: true }, orderBy: { appliedAt: 'asc' } }),
       Promise.all(MARKETPLACES.map(async marketplaceId => {

@@ -6,17 +6,15 @@ import { AuthService } from '../auth/auth.service.js';
 import { loadConfig } from '../../../../packages/shared/src/config.js';
 import { digest, unseal } from '../../../../packages/shared/src/security.js';
 import { testDatabase } from './database.js';
-import { testServices } from './harness.js';
+import { sessionFrom, sessionToken, testServices, type Session } from './harness.js';
 import { SecurityGuard, tenantPin } from '../http/security.guard.js';
 
 const password = 'Correct horse battery staple!';
-type Session = { cookie: string; csrf: string; recoveryCodes?: string[] };
 type Store = { id: string; hostname: string; owner: Session };
 let fixture: Awaited<ReturnType<typeof testDatabase>>;
 let api: Awaited<ReturnType<typeof buildApp>>;
 let a: Store, b: Store;
 let counter = 0;
-const onboarding: { blocked: number; state: string; rotated: boolean; httpOnly: boolean }[] = [];
 const config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://test:test@localhost/test', AUTH_SECRET: 'test-only-secret-at-least-thirty-two-characters', APP_ORIGIN: 'http://dohafresh.localhost:3000' });
 
 function request(method: HTTPMethods, url: string, store: Pick<Store, 'hostname'>, session?: Session, payload?: Record<string, unknown>, extra?: Record<string, string>, remoteAddress = '127.0.0.1') {
@@ -26,12 +24,6 @@ function request(method: HTTPMethods, url: string, store: Pick<Store, 'hostname'
     ...(payload ? { payload } : {}),
   });
 }
-function sessionFrom(response: Awaited<ReturnType<typeof request>>): Session {
-  expect(response.statusCode).toBe(200);
-  const cookie = response.cookies.find(c => c.name === 'qorloop');
-  expect(cookie).toBeDefined();
-  return { cookie: 'qorloop=' + cookie!.value, csrf: response.json().data.csrfToken, recoveryCodes: response.json().data.recoveryCodes };
-}
 async function tokenFor(id: string, kind = 'invitation') {
   const message = await fixture.prisma.emailOutbox.findFirstOrThrow({ where: { dedupeKey: { startsWith: kind + ':' + id } }, orderBy: { createdAt: 'desc' } });
   const plaintext = await unseal<{text: string}>(message.sealedMessage, config.AUTH_SECRET);
@@ -39,23 +31,33 @@ async function tokenFor(id: string, kind = 'invitation') {
   expect(token).toHaveLength(43);
   return token!;
 }
+async function codeFor(store: Pick<Store, 'id'>, email: string) {
+  for (const row of await fixture.prisma.emailOutbox.findMany({ where: { tenantId: store.id, dedupeKey: { startsWith: 'otp:' } }, orderBy: { createdAt: 'desc' } })) {
+    const message = await unseal<{ to: string; text: string }>(row.sealedMessage, config.AUTH_SECRET);
+    if (message.to === email) return /Your code is (\d{6})/.exec(message.text)![1]!;
+  }
+  throw new Error('no code');
+}
+/** Marks the session as freshly confirmed (a step-up), as the harness does; the real flow is in auth-otp tests. */
+const stepUp = async (session: Session) => { await fixture.prisma.session.update({ where: { tokenHash: digest(sessionToken(session)) }, data: { stepUpAt: new Date() } }); return session; };
+const challengeCookie = (response: { cookies: { name: string; value: string }[] }) => response.cookies.find(c => c.name === 'qorloop.challenge');
+/** Password, then (new device) the emailed code. */
+async function signIn(store: Store, email: string, options: { device?: string; secret?: string; sharedDevice?: boolean } = {}) {
+  const first = await request('POST', '/api/auth/login', store, options.device ? { cookie: 'qorloop.device=' + options.device, csrf: '' } : undefined,
+    { email, password: options.secret ?? password, ...(options.sharedDevice ? { sharedDevice: true } : {}) });
+  expect(first.statusCode).toBe(200);
+  if (first.json().data.state === 'authenticated') return sessionFrom(first, options.device);
+  const challenge = { cookie: 'qorloop.challenge=' + challengeCookie(first)!.value + (options.device ? '; qorloop.device=' + options.device : ''), csrf: '' };
+  return sessionFrom(await request('POST', '/api/auth/otp/verify', store, challenge, { code: await codeFor(store, email) }), options.device);
+}
 async function createOwner(slug: string) {
-  const auth = new AuthService(fixture.database, config);
-  const result = await auth.provision({ name: slug, slug, hostname: slug + '.localhost', ownerEmail: 'owner@example.test' });
+  const result = await new AuthService(fixture.database, config).provision({ name: slug, slug, hostname: slug + '.localhost', ownerEmail: 'owner@example.test' });
   const store = { id: result.tenantId, hostname: slug + '.localhost', owner: {} as Session };
-  const accepted = await request('POST', '/api/auth/invitations/accept', store, undefined, { token: await tokenFor(result.invitationId), name: 'Owner', password });
-  const pending = sessionFrom(accepted);
-  const blocked = await request('GET', '/api/auth/me', store, pending);
-  const setup = await request('POST', '/api/auth/mfa/setup', store, pending, { password });
-  expect(setup.statusCode).toBe(200);
-  const secret = new URL(setup.json().data.totpUri).searchParams.get('secret')!;
-  const verified = await request('POST', '/api/auth/mfa/verify', store, pending, { code: await generate({ secret }) });
-  store.owner = sessionFrom(verified);
-  onboarding.push({ blocked: blocked.statusCode, state: accepted.json().data.state, rotated: pending.cookie !== store.owner.cookie, httpOnly: Boolean(accepted.cookies.find(c => c.name === 'qorloop')?.httpOnly) });
+  store.owner = await stepUp(sessionFrom(await request('POST', '/api/auth/invitations/accept', store, undefined, { token: await tokenFor(result.invitationId), name: 'Owner', password })));
   return store;
 }
 async function invite(store: Store, role: string, email = 'user' + (++counter) + '@example.test') {
-  const response = await request('POST', '/api/team/invitations', store, store.owner, { role, email });
+  const response = await request('POST', '/api/team/invitations', store, await stepUp(store.owner), { role, email });
   expect(response.statusCode).toBe(200);
   return { id: response.json().data.id as string, email };
 }
@@ -63,7 +65,7 @@ async function acceptMember(store: Store, role: string) {
   const invited = await invite(store, role);
   const token = await tokenFor(invited.id);
   const response = await request('POST', '/api/auth/invitations/accept', store, undefined, { token, name: 'Team member', password });
-  return { ...invited, session: sessionFrom(response), token };
+  return { ...invited, session: await stepUp(sessionFrom(response)), token };
 }
 
 beforeAll(async () => {
@@ -124,28 +126,31 @@ describe('Foundation and tenant routing', () => {
     const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, email: 'owner@example.test' } });
     await expect(fixture.prisma.membership.create({ data: { tenantId: b.id, userId: user.id, role: 'analyst' } })).rejects.toThrow();
   });
-  it('publishes contracts without a signup path', async () => {
-    expect(api.spec.paths['/api/auth/mfa/verify']).toBeDefined();
-    expect(api.spec.paths['/api/team/members/{id}/role']).toBeDefined();
+  it('publishes the new sign-in contracts without a signup path or the removed MFA routes', async () => {
+    for (const path of ['/api/auth/otp/verify', '/api/auth/otp/resend', '/api/auth/step-up/verify', '/api/account/sessions', '/api/team/members/{id}/role']) expect(api.spec.paths[path]).toBeDefined();
+    for (const path of ['/api/auth/mfa/setup', '/api/auth/mfa/verify', '/api/auth/mfa/recovery']) expect(api.spec.paths[path]).toBeUndefined();
     expect(Object.keys(api.spec.paths).some(path => /signup|sign-up|provision/.test(path))).toBe(false);
     expect((await api.server.inject('/docs/openapi.json')).statusCode).toBe(200);
   });
 });
 
-describe('Invitation-only accounts and MFA', () => {
-  it('restricts Owners until MFA, rotates the cookie, and stores only protected credentials', async () => {
-    for (const flow of onboarding) expect(flow).toEqual({ blocked: 403, state: 'mfa_setup_required', rotated: true, httpOnly: true });
+describe('Invitation-only accounts, devices and second factors', () => {
+  it('activates on a trusted device and stores only protected credentials', async () => {
     const users = await fixture.prisma.user.findMany();
     for (const user of users) {
       expect(user.passwordHash).toMatch(/^\$argon2id\$/);
-      expect(user.mfaSecret).toMatch(/^Fe26/);
+      expect(user.mfaSecret).toBeNull();
       expect(user.emailVerifiedAt).toBeInstanceOf(Date);
-      expect(user.pendingMfaSecret).toBeNull();
     }
     const me = await request('GET', '/api/auth/me', a, a.owner);
     expect(me.statusCode).toBe(200);
+    expect(me.json().data).toMatchObject({ mfaEnabled: false });
     expect(me.body).not.toMatch(/passwordHash|mfaSecret|tokenHash/);
-    expect(a.owner.recoveryCodes).toHaveLength(10);
+    const session = await fixture.prisma.session.findUniqueOrThrow({ where: { tokenHash: digest(sessionToken(a.owner)) }, include: { device: true } });
+    expect(session.device!.tokenHash).toBe(digest(a.owner.device!));
+    expect(session.device!.tokenHash).not.toBe(a.owner.device);
+    expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeGreaterThan(19.9 * 86_400_000);
+    expect(session.device!.expiresAt.getTime() - Date.now()).toBeGreaterThan(89 * 86_400_000);
   });
   it('rejects invitation replay, expiry, foreign-tenant tokens and client tenant IDs', async () => {
     const member = await acceptMember(a, 'analyst');
@@ -168,38 +173,94 @@ describe('Invitation-only accounts and MFA', () => {
     expect(await fixture.prisma.emailOutbox.count({ where: { tenantId: first.tenantId } })).toBe(1);
     await expect(auth.provision({ ...input, ownerEmail: 'different@example.test' })).rejects.toThrow('differs');
   });
-  it('requires MFA on every Owner login and consumes recovery codes only once', async () => {
-    const login = await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password });
-    expect(login.json().data.state).toBe('mfa_required');
-    const pending = sessionFrom(login);
-    expect((await request('GET', '/api/team/members', a, pending)).statusCode).toBe(403);
-    expect((await request('POST', '/api/auth/mfa/recovery', b, pending, { code: a.owner.recoveryCodes![0] })).statusCode).toBe(401);
-    const recovered = await request('POST', '/api/auth/mfa/recovery', a, pending, { code: a.owner.recoveryCodes![0] });
-    const full = sessionFrom(recovered);
-    expect((await request('GET', '/api/auth/me', a, full)).statusCode).toBe(200);
-    expect((await request('GET', '/api/auth/me', a, pending)).statusCode).toBe(401);
-    const another = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }));
-    expect((await request('POST', '/api/auth/mfa/recovery', a, another, { code: a.owner.recoveryCodes![0] })).statusCode).toBe(401);
-    expect((await request('POST', '/api/auth/mfa/recovery', a, another, { code: a.owner.recoveryCodes![1] })).statusCode).toBe(200);
+  it('signs in with the password only on a trusted device, and asks a new device for the emailed code', async () => {
+    const trusted = await request('POST', '/api/auth/login', a, { cookie: 'qorloop.device=' + a.owner.device, csrf: '' }, { email: 'owner@example.test', password });
+    expect(trusted.json().data.state).toBe('authenticated');
+    expect(trusted.cookies.find(c => c.name === 'qorloop.device')).toBeUndefined();
+
+    const fresh = await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password });
+    expect(fresh.json().data).toMatchObject({ state: 'otp_required', maskedEmail: 'o***@e***.test' });
+    expect(fresh.json().data.csrfToken).toBeUndefined();
+    const cookie = challengeCookie(fresh)!;
+    expect(cookie).toMatchObject({ httpOnly: true, sameSite: 'Strict' });
+    const challenge = { cookie: 'qorloop.challenge=' + cookie.value, csrf: '' };
+    expect((await request('GET', '/api/auth/me', a, challenge)).statusCode).toBe(401);
+    const code = await codeFor(a, 'owner@example.test');
+    const wrong = await request('POST', '/api/auth/otp/verify', a, challenge, { code: code === '000000' ? '000001' : '000000' });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json().error).toMatchObject({ code: 'OTP_INVALID', meta: { attemptsLeft: 4 } });
+    expect(wrong.body).not.toContain(code);
+    expect((await request('POST', '/api/auth/otp/verify', b, challenge, { code })).statusCode).toBe(401);
+    const verified = await request('POST', '/api/auth/otp/verify', a, challenge, { code });
+    const session = sessionFrom(verified);
+    expect(session.device).toBeDefined();
+    expect(session.device).not.toBe(a.owner.device);
+    expect((await request('GET', '/api/auth/me', a, session)).statusCode).toBe(200);
+    expect((await request('POST', '/api/auth/otp/verify', a, challenge, { code })).json().error.code).toBe('CHALLENGE_EXPIRED');
+    const actions = (await fixture.prisma.auditEvent.findMany({ where: { tenantId: a.id, action: { startsWith: 'auth.' } } })).map(e => e.action);
+    expect(actions).toEqual(expect.arrayContaining(['auth.otp_sent', 'auth.otp_failed', 'auth.otp_verified', 'auth.new_device', 'auth.login_succeeded']));
+    expect(JSON.stringify(await fixture.prisma.auditEvent.findMany({ where: { tenantId: a.id } }))).not.toContain(code);
   });
-  it('rejects invalid and replayed TOTP steps, including simultaneous challenge sessions', async () => {
-    const login1 = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }));
-    const login2 = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }));
-    expect((await request('POST', '/api/auth/mfa/verify', a, login1, { code: 'abcdef' })).statusCode).toBe(400);
-    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, email: 'owner@example.test' } });
-    const secret = await unseal<string>(user.mfaSecret!, config.AUTH_SECRET);
-    await fixture.prisma.user.update({ where: { id: user.id }, data: { lastTotpStep: Math.floor(Date.now() / 30_000) - 1 } });
-    const code = await generate({ secret });
-    expect((await request('POST', '/api/auth/mfa/verify', a, login1, { code })).statusCode).toBe(200);
-    expect((await request('POST', '/api/auth/mfa/verify', a, login2, { code })).statusCode).toBe(401);
+  it('gives a shared computer no device trust and a 12-hour session', async () => {
+    const first = await request('POST', '/api/auth/login', a, { cookie: 'qorloop.device=' + a.owner.device, csrf: '' }, { email: 'owner@example.test', password, sharedDevice: true });
+    expect(first.json().data.state).toBe('otp_required');
+    const verified = await request('POST', '/api/auth/otp/verify', a, { cookie: 'qorloop.challenge=' + challengeCookie(first)!.value, csrf: '' }, { code: await codeFor(a, 'owner@example.test') });
+    expect(verified.cookies.find(c => c.name === 'qorloop.device')).toBeUndefined();
+    const shared = sessionFrom(verified);
+    const row = await fixture.prisma.session.findUniqueOrThrow({ where: { tokenHash: digest(sessionToken(shared)) } });
+    expect(row.deviceId).toBeNull();
+    expect(row.expiresAt.getTime() - row.createdAt.getTime()).toBeLessThanOrEqual(12 * 3_600_000 + 1000);
+    expect((await request('GET', '/api/auth/me', a, shared)).statusCode).toBe(200);
   });
-  it('honors configurable MFA requirements for non-Owners', async () => {
+  it('refuses a session cookie without its own device cookie', async () => {
+    const bare = { cookie: 'qorloop=' + sessionToken(a.owner), csrf: a.owner.csrf };
+    expect((await request('GET', '/api/auth/me', a, bare)).json().error.code).toBe('SESSION_EXPIRED');
+    const member = await acceptMember(a, 'analyst');
+    const swapped = { cookie: 'qorloop=' + sessionToken(a.owner) + '; qorloop.device=' + member.session.device, csrf: a.owner.csrf };
+    expect((await request('GET', '/api/auth/me', a, swapped)).statusCode).toBe(401);
+    expect((await request('GET', '/api/auth/me', a, a.owner)).statusCode).toBe(200);
+  });
+  it('uses the authenticator app instead of the email code once enrolled, and consumes recovery codes once', async () => {
+    const member = await acceptMember(b, 'admin');
+    const setup = await request('POST', '/api/account/authenticator/setup', b, member.session, { password });
+    expect(setup.statusCode).toBe(200);
+    const secret = new URL(setup.json().data.totpUri).searchParams.get('secret')!;
+    const enrolled = await request('POST', '/api/account/authenticator/verify', b, member.session, { code: await generate({ secret }) });
+    expect(enrolled.statusCode).toBe(200);
+    const recoveryCodes = enrolled.json().data.recoveryCodes as string[];
+    expect(recoveryCodes).toHaveLength(10);
+    const user = await fixture.prisma.user.findFirstOrThrow({ where: { tenantId: b.id, email: member.email } });
+    expect(user.mfaSecret).toMatch(/^Fe26/);
+
+    const mailsBefore = await fixture.prisma.emailOutbox.count({ where: { tenantId: b.id, dedupeKey: { startsWith: 'otp:' } } });
+    const first = await request('POST', '/api/auth/login', b, undefined, { email: member.email, password });
+    expect(first.json().data).toMatchObject({ state: 'totp_required', maskedEmail: null, resendAvailableAt: null });
+    expect(await fixture.prisma.emailOutbox.count({ where: { tenantId: b.id, dedupeKey: { startsWith: 'otp:' } } })).toBe(mailsBefore);
+    const challenge = { cookie: 'qorloop.challenge=' + challengeCookie(first)!.value, csrf: '' };
+    expect((await request('POST', '/api/auth/otp/resend', b, challenge)).json().error.code).toBe('CHALLENGE_EXPIRED');
+    await fixture.prisma.user.update({ where: { id: user.id }, data: { lastTotpStep: Math.floor(Date.now() / 30_000) - 2 } });
+    const viaApp = await request('POST', '/api/auth/otp/verify', b, challenge, { code: await generate({ secret }) });
+    expect(viaApp.statusCode).toBe(200);
+
+    const second = await request('POST', '/api/auth/login', b, undefined, { email: member.email, password });
+    const recovery = { cookie: 'qorloop.challenge=' + challengeCookie(second)!.value, csrf: '' };
+    expect((await request('POST', '/api/auth/otp/recovery', b, recovery, { code: recoveryCodes[0] })).statusCode).toBe(200);
+    const third = await request('POST', '/api/auth/login', b, undefined, { email: member.email, password });
+    const again = { cookie: 'qorloop.challenge=' + challengeCookie(third)!.value, csrf: '' };
+    expect((await request('POST', '/api/auth/otp/recovery', b, again, { code: recoveryCodes[0] })).json().error.code).toBe('OTP_INVALID');
+    expect((await request('POST', '/api/auth/otp/recovery', b, again, { code: recoveryCodes[1] })).statusCode).toBe(200);
+  });
+  it('honors a store rule requiring an authenticator app', async () => {
     const member = await acceptMember(b, 'analyst');
     await fixture.prisma.tenantSettings.update({ where: { tenantId: b.id }, data: { mfaRequiredForAll: true } });
-    expect((await request('GET', '/api/auth/me', b, member.session)).statusCode).toBe(403);
-    const login = await request('POST', '/api/auth/login', b, undefined, { email: member.email, password });
-    expect(login.json().data.state).toBe('mfa_setup_required');
-    await fixture.prisma.tenantSettings.update({ where: { tenantId: b.id }, data: { mfaRequiredForAll: false } });
+    try {
+      const blocked = await request('GET', '/api/auth/me', b, member.session);
+      expect(blocked.statusCode).toBe(403);
+      expect(blocked.json().error.code).toBe('AUTHENTICATOR_SETUP_REQUIRED');
+      expect((await request('POST', '/api/account/authenticator/setup', b, member.session, { password })).statusCode).toBe(200);
+      const signIn = await request('POST', '/api/auth/login', b, { cookie: 'qorloop.device=' + member.session.device, csrf: '' }, { email: member.email, password });
+      expect(signIn.json().data.state).toBe('authenticator_setup_required');
+    } finally { await fixture.prisma.tenantSettings.update({ where: { tenantId: b.id }, data: { mfaRequiredForAll: false } }); }
   });
 });
 
@@ -214,6 +275,22 @@ describe('Team authorization and lifecycle', () => {
       expect((await request('PATCH', '/api/team/members/' + target.id + '/role', a, member.session, { role: 'analyst' })).statusCode).toBe(403);
       expect((await request('DELETE', '/api/team/members/' + target.id, a, member.session)).statusCode).toBe(403);
     }
+  });
+  it('asks for a fresh code (security window) before invitations, role changes and removal', async () => {
+    const member = await acceptMember(a, 'analyst');
+    const membership = await fixture.prisma.membership.findFirstOrThrow({ where: { tenantId: a.id, user: { email: member.email } } });
+    await fixture.prisma.session.update({ where: { tokenHash: digest(sessionToken(a.owner)) }, data: { stepUpAt: new Date(Date.now() - 11 * 60_000) } });
+    for (const [method, url, body] of [['POST', '/api/team/invitations', { email: 'later@example.test', role: 'analyst' }], ['PATCH', `/api/team/members/${membership.id}/role`, { role: 'admin' }],
+      ['DELETE', `/api/team/members/${membership.id}`, undefined]] as const) {
+      const r = await request(method, url, a, a.owner, body);
+      expect(r.statusCode).toBe(403);
+      expect(r.json().error).toMatchObject({ code: 'STEP_UP_REQUIRED', meta: { window: 'security' } });
+    }
+    expect((await fixture.prisma.membership.findUniqueOrThrow({ where: { id: membership.id } })).role).toBe('analyst');
+    // Revoking an invitation only lowers risk: no step-up.
+    const pending = await fixture.prisma.invitation.create({ data: { tenantId: a.id, email: 'norevoke@example.test', pendingEmail: 'norevoke@example.test', role: 'analyst', tokenHash: digest('x' + Date.now()), expiresAt: new Date(Date.now() + 3_600_000) } });
+    expect((await request('DELETE', '/api/team/invitations/' + pending.id, a, a.owner)).statusCode).toBe(200);
+    await stepUp(a.owner);
   });
   it('prevents Admins from inviting, promoting, demoting or removing Owners', async () => {
     const admin = await acceptMember(a, 'admin');
@@ -236,7 +313,7 @@ describe('Team authorization and lifecycle', () => {
     const invited = await invite(a, 'analyst');
     const oldToken = await tokenFor(invited.id);
     expect((await request('POST', '/api/team/invitations', a, a.owner, { email: invited.email, role: 'analyst' })).statusCode).toBe(409);
-    expect((await request('POST', '/api/team/invitations/' + invited.id + '/resend', b, b.owner)).statusCode).toBe(404);
+    expect((await request('POST', '/api/team/invitations/' + invited.id + '/resend', b, await stepUp(b.owner))).statusCode).toBe(404);
     expect((await request('DELETE', '/api/team/invitations/' + invited.id, b, b.owner)).statusCode).toBe(404);
     expect((await request('POST', '/api/team/invitations/' + invited.id + '/resend', a, a.owner)).statusCode).toBe(200);
     const latest = await tokenFor(invited.id);
@@ -245,14 +322,18 @@ describe('Team authorization and lifecycle', () => {
     expect((await request('DELETE', '/api/team/invitations/' + invited.id, a, a.owner)).statusCode).toBe(200);
     expect((await request('POST', '/api/auth/invitations/accept', a, undefined, { token: latest, name: 'Revoked', password })).statusCode).toBe(400);
   });
-  it('revokes sessions after role changes and deactivation and writes audit events', async () => {
+  it('signs a member out on every device after a role change or removal and writes audit events', async () => {
     const member = await acceptMember(a, 'analyst');
     const membership = await fixture.prisma.membership.findFirstOrThrow({ where: { tenantId: a.id, user: { email: member.email } } });
-    expect((await request('PATCH', '/api/team/members/' + membership.id + '/role', a, a.owner, { role: 'catalogue_manager' })).statusCode).toBe(200);
+    expect((await request('PATCH', '/api/team/members/' + membership.id + '/role', a, await stepUp(a.owner), { role: 'catalogue_manager' })).statusCode).toBe(200);
     expect((await request('GET', '/api/auth/me', a, member.session)).statusCode).toBe(401);
-    const current = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: member.email, password }));
+    // The device lost its trust too: signing in again needs the emailed code.
+    const again = await request('POST', '/api/auth/login', a, { cookie: 'qorloop.device=' + member.session.device, csrf: '' }, { email: member.email, password });
+    expect(again.json().data.state).toBe('otp_required');
+    const current = await signIn(a, member.email);
     expect((await request('DELETE', '/api/team/members/' + membership.id, a, a.owner)).statusCode).toBe(200);
     expect((await request('GET', '/api/auth/me', a, current)).statusCode).toBe(401);
+    expect(await fixture.prisma.trustedDevice.count({ where: { tenantId: a.id, userId: membership.userId } })).toBe(0);
     expect((await request('POST', '/api/auth/login', a, undefined, { email: member.email, password })).statusCode).toBe(401);
     const events = await fixture.prisma.auditEvent.findMany({ where: { tenantId: a.id, entityId: membership.id } });
     expect(events.map(e => e.action)).toEqual(expect.arrayContaining(['team.role_changed', 'team.member_deactivated']));
@@ -265,22 +346,25 @@ describe('Session, CSRF, password reset and throttling', () => {
     expect((await request('POST', '/api/team/invitations', a, a.owner, { email: 'csrf@example.test', role: 'analyst' }, { 'x-csrf-token': '' })).statusCode).toBe(403);
     expect((await request('POST', '/api/auth/logout', a, a.owner, undefined, { origin: 'https://evil.example' })).statusCode).toBe(403);
     expect((await request('POST', '/api/auth/login', a, undefined, { email: 'owner@example.test', password }, { origin: '' })).statusCode).toBe(403);
+    expect((await request('POST', '/api/auth/otp/verify', a, undefined, { code: '123456' }, { origin: '' })).statusCode).toBe(403);
     expect((await request('GET', '/api/auth/me', a, a.owner, undefined, { origin: 'http://' + b.hostname + ':3000' })).statusCode).toBe(403);
     expect((await request('OPTIONS', '/api/auth/login', a)).statusCode).toBe(204);
   });
-  it('enforces idle expiry, absolute expiry and logout invalidation', async () => {
+  it('enforces 7 days idle and the 20-day hard limit; logout keeps the device trusted', async () => {
     const member = await acceptMember(a, 'analyst');
-    const token = member.session.cookie.split('=')[1]!;
-    await fixture.prisma.session.update({ where: { tokenHash: digest(token) }, data: { lastSeenAt: new Date(Date.now() - 31 * 60_000) } });
-    expect((await request('GET', '/api/auth/me', a, member.session)).statusCode).toBe(401);
-    const current = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: member.email, password }));
-    await fixture.prisma.session.update({ where: { tokenHash: digest(current.cookie.split('=')[1]!) }, data: { expiresAt: new Date(Date.now() - 1000), createdAt: new Date(Date.now() - 3_600_000) } });
-    expect((await request('GET', '/api/auth/me', a, current)).statusCode).toBe(401);
-    const logout = sessionFrom(await request('POST', '/api/auth/login', a, undefined, { email: member.email, password }));
+    await fixture.prisma.session.update({ where: { tokenHash: digest(sessionToken(member.session)) }, data: { lastSeenAt: new Date(Date.now() - 7 * 86_400_000 - 60_000) } });
+    expect((await request('GET', '/api/auth/me', a, member.session)).json().error.code).toBe('SESSION_EXPIRED');
+    const current = await signIn(a, member.email, { device: member.session.device });
+    // Active every day still ends at the hard limit, 20 days from sign-in.
+    await fixture.prisma.session.update({ where: { tokenHash: digest(sessionToken(current)) }, data: { createdAt: new Date(Date.now() - 20 * 86_400_000), lastSeenAt: new Date(), expiresAt: new Date(Date.now() - 1000) } });
+    expect((await request('GET', '/api/auth/me', a, current)).json().error.code).toBe('SESSION_EXPIRED');
+    const logout = await signIn(a, member.email, { device: member.session.device });
     expect((await request('POST', '/api/auth/logout', a, logout)).statusCode).toBe(200);
     expect((await request('GET', '/api/auth/me', a, logout)).statusCode).toBe(401);
+    const back = await request('POST', '/api/auth/login', a, { cookie: 'qorloop.device=' + member.session.device, csrf: '' }, { email: member.email, password });
+    expect(back.json().data.state).toBe('authenticated');
   });
-  it('uses generic forgot responses and tenant-bound, expiring, single-use reset tokens', async () => {
+  it('uses generic forgot responses and tenant-bound, expiring, single-use reset tokens; a reset signs out every device', async () => {
     const member = await acceptMember(b, 'analyst');
     const known = await request('POST', '/api/auth/password/forgot', b, undefined, { email: member.email });
     const unknown = await request('POST', '/api/auth/password/forgot', b, undefined, { email: 'absent@example.test' });
@@ -293,8 +377,9 @@ describe('Session, CSRF, password reset and throttling', () => {
     expect((await request('POST', '/api/auth/password/reset', b, undefined, payload)).statusCode).toBe(200);
     expect((await request('POST', '/api/auth/password/reset', b, undefined, payload)).statusCode).toBe(400);
     expect((await request('GET', '/api/auth/me', b, member.session)).statusCode).toBe(401);
+    expect(await fixture.prisma.trustedDevice.count({ where: { tenantId: b.id, userId: user.id } })).toBe(0);
     expect((await request('POST', '/api/auth/login', b, undefined, { email: member.email, password })).statusCode).toBe(401);
-    expect((await request('POST', '/api/auth/login', b, undefined, { email: member.email, password: payload.password })).statusCode).toBe(200);
+    expect((await request('GET', '/api/auth/me', b, await signIn(b, member.email, { secret: payload.password }))).statusCode).toBe(200);
     await request('POST', '/api/auth/password/forgot', b, undefined, { email: member.email });
     const expired = await fixture.prisma.passwordReset.findFirstOrThrow({ where: { userId: user.id, usedAt: null } });
     await fixture.prisma.passwordReset.update({ where: { id: expired.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
@@ -309,4 +394,3 @@ describe('Session, CSRF, password reset and throttling', () => {
     expect(response.json().requestId).toBeDefined();
   });
 });
-

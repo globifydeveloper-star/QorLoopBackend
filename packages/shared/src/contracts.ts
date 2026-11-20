@@ -17,12 +17,22 @@ export const password = z.string().min(12).max(128);
 export const role = z.enum(['owner', 'admin', 'catalogue_manager', 'analyst']);
 export const token = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const acceptInvitation = z.object({ token, name: z.string().trim().min(1).max(100), password }).strict();
-export const login = z.object({ email, password: z.string().min(1).max(128) }).strict();
+/** sharedDevice: a shared computer: no device trust, a 12-hour session, a code at every sign-in. */
+export const login = z.object({ email, password: z.string().min(1).max(128), sharedDevice: z.boolean().optional() }).strict();
 export const forgotPassword = z.object({ email }).strict();
 export const resetPassword = z.object({ token, password }).strict();
 export const mfaSetup = z.object({ password: z.string().min(1).max(128) }).strict();
 export const mfaVerify = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();
 export const mfaRecovery = z.object({ code: token }).strict();
+/** The emailed code or the authenticator app's code (six digits). */
+export const otpCode = z.object({ code: z.string().regex(/^\d{6}$/) }).strict();
+/** Step-up: a six-digit code, or (authenticator users) one recovery code. */
+export const stepUpVerify = z.union([z.object({ code: z.string().regex(/^\d{6}$/) }).strict(), z.object({ recoveryCode: token }).strict()]);
+export const changePassword = z.object({ currentPassword: z.string().min(1).max(128), newPassword: password }).strict()
+  .refine(v => v.currentPassword !== v.newPassword, { message: 'Choose a new password', path: ['newPassword'] });
+export const changeEmail = z.object({ newEmail: email }).strict();
+export const confirmEmail = z.object({ token }).strict();
+export const revokeAllSessions = z.object({ includeCurrent: z.boolean().default(false) }).strict();
 export const inviteMember = z.object({ email, role }).strict();
 export const changeRole = z.object({ role }).strict();
 

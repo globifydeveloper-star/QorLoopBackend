@@ -76,7 +76,7 @@ export class GeneratedFilesController {
   @Contract('Generated files from the last 30 days, newest first', undefined, historySchema)
   history(@Req() req: AppRequest) { return this.files.history(context(req, this.config)); }
 
-  @Get(':id/download') @Access({ permission: 'files.download' })
+  @Get(':id/download') @Access({ permission: 'files.download', stepUp: 'work' })
   @Contract('A short-lived signed download URL; expired files return 404', undefined, {
     type: 'object', required: ['url', 'fileName', 'expiresAt'], properties: { url: { type: 'string', format: 'uri' }, fileName: { type: 'string' }, expiresAt: date },
   })

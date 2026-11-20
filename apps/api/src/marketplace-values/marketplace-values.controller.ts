@@ -103,7 +103,7 @@ export class MarketplaceValuesController {
     return this.values.bulkPreview(context(req, this.config), input);
   }
 
-  @Post('bulk/apply') @HttpCode(200) @Access({ permission: 'marketplace.values_edit' })
+  @Post('bulk/apply') @HttpCode(200) @Access({ permission: 'marketplace.values_edit', stepUp: 'work' })
   @Contract('Apply a previewed bulk change (previewToken and idempotencyKey required); one audit event', dto.marketplaceValuesBulkApply, {
     type: 'object', properties: {
       operationId: { type: 'string', format: 'uuid' }, replayed: { type: 'boolean' }, appliedAt: { type: 'string', format: 'date-time' },

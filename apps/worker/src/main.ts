@@ -4,7 +4,8 @@ import nodemailer from 'nodemailer';
 import pino from 'pino';
 import { Database } from '../../../packages/db/src/database.js';
 import { loadConfig } from '../../../packages/shared/src/config.js';
-import { unseal } from '../../../packages/shared/src/security.js';
+import { MAIL_QUEUE_NAME } from '../../../packages/shared/src/mail.js';
+import { deliverDueMail } from './deliver-mail.js';
 import { S3Storage } from '../../../packages/shared/src/storage.js';
 import { applyJobId, JOB_DEFAULTS, processJobId, QUEUES, type ApplyUploadJob, type ProcessUploadJob } from '../../../packages/shared/src/queue.js';
 import { markFailed, processUpload, recoverStuckUploads } from './process-upload.js';
@@ -19,28 +20,19 @@ const log = pino();
 const database = new Database(config.DATABASE_URL);
 await database.connect();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
+const secure = config.SMTP_SECURE ?? config.SMTP_PORT === 465;
 const transport = nodemailer.createTransport({
-  host: config.SMTP_HOST, port: config.SMTP_PORT, secure: config.SMTP_PORT === 465,
-  requireTLS: config.NODE_ENV === 'production' && config.SMTP_PORT !== 465,
+  host: config.SMTP_HOST, port: config.SMTP_PORT, secure,
+  // Production: STARTTLS is mandatory when the port does not use implicit TLS. Certificates are verified (default).
+  requireTLS: config.NODE_ENV === 'production' && !secure,
   ...(config.SMTP_USER ? { auth: { user: config.SMTP_USER, pass: config.SMTP_PASSWORD } } : {}),
 });
-const queue = new Queue('email-outbox', { connection });
+// Reports reachability and login once at start; delivery keeps retrying either way. Never logs the error text.
+transport.verify().then(() => log.info('Mail service reachable'), () => log.error('Mail service unreachable or login refused; delivery will retry'));
+const queue = new Queue(MAIL_QUEUE_NAME, { connection });
 await queue.upsertJobScheduler('outbox-poll', { every: 10_000 }, { name: 'deliver', data: {}, opts: { removeOnComplete: 10, removeOnFail: 10 } });
-const worker = new Worker('email-outbox', async () => {
-  for (const row of await database.dueMail()) {
-    const mail = await database.run(row.tenantId, data => data.claimMail(row.id));
-    if (!mail) continue;
-    try {
-      const message = await unseal<{to: string; subject: string; text: string}>(mail.sealedMessage, config.AUTH_SECRET);
-      await transport.sendMail({ ...message, from: config.MAIL_FROM, messageId: '<' + row.id + '@qorloop.globify.ae>' });
-      await database.run(row.tenantId, data => data.ackMail(row.id));
-    } catch {
-      // Lease expires in five minutes. Maximum ten delivery attempts; retain the
-      // encrypted payload for operations inspection, never print it.
-      log.error({ outboxId: row.id }, 'Email delivery failed; retry scheduled');
-    }
-  }
-}, { connection, concurrency: 1 });
+// The poll, and the API's nudge after a one-time code is queued (BullMailTrigger), run the same delivery round.
+const worker = new Worker(MAIL_QUEUE_NAME, () => deliverDueMail({ database, transport, config, log }), { connection, concurrency: 1 });
 worker.on('error', () => log.error('Email worker failed'));
 
 // Upload processing: parse, detect layout, validate and build the review for 25 MB / 50,000-row files.

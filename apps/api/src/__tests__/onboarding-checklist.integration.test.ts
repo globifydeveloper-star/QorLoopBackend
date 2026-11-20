@@ -31,7 +31,8 @@ describe('onboarding checklist through the API', () => {
     let p = await get(s);
     expect(p.essentials).toMatchObject({ complete: false, percent: 0 });
     expect(item(p, 'store_details').status).toBe('next');
-    expect(item(p, 'authenticator_app').status).toBe('done');
+    // Optional since ADR 021: the Owner signs in with emailed codes until adding an app.
+    expect(item(p, 'authenticator_app').status).toBe('todo');
 
     const revision = (await h.request('GET', '/api/settings', s, s.owner)).json().data.revision;
     expect((await h.request('PUT', '/api/settings/marketplaces', s, s.owner, { expectedRevision: revision, enabled: ['talabat', 'snoonu'] })).statusCode).toBe(200);

@@ -132,11 +132,21 @@ export class Database {
     });
     return rows.map(r => r.tenantId);
   }
+  /** Due mail, one-time codes first. A code past its expiry is never sent (see discardExpiredMail). */
   async dueMail() {
+    const now = new Date();
     return this.client.emailOutbox.findMany({
-      where: { deliveredAt: null, availableAt: { lte: new Date() }, attempts: { lt: 10 }, tenant: { status: 'active' } },
-      select: { id: true, tenantId: true }, orderBy: { availableAt: 'asc' }, take: 25,
+      where: { deliveredAt: null, failedAt: null, availableAt: { lte: now }, attempts: { lt: 10 }, tenant: { status: 'active' },
+        OR: [{ discardAfter: null }, { discardAfter: { gt: now } }] },
+      select: { id: true, tenantId: true }, orderBy: [{ priority: 'desc' }, { availableAt: 'asc' }], take: 25,
     });
+  }
+  /** Gives up undelivered mail whose code has expired: marked failed, the sealed body cleared. Returns the count. */
+  async discardExpiredMail() {
+    const { count } = await this.client.emailOutbox.updateMany({
+      where: { deliveredAt: null, failedAt: null, discardAfter: { lte: new Date() } }, data: { failedAt: new Date(), sealedMessage: '' },
+    });
+    return count;
   }
 }
 
@@ -171,7 +181,7 @@ export class TenantData {
   createUser(data: Omit<Prisma.UserUncheckedCreateInput, 'tenantId'>) {
     return this.tx.user.create({ data: { ...data, tenantId: this.tenantId } });
   }
-  updateUser(id: string, data: Pick<Prisma.UserUpdateManyMutationInput, 'passwordHash' | 'mfaSecret' | 'pendingMfaSecret' | 'pendingMfaExpiresAt' | 'lastTotpStep'>) {
+  updateUser(id: string, data: Pick<Prisma.UserUpdateManyMutationInput, 'passwordHash' | 'mfaSecret' | 'pendingMfaSecret' | 'pendingMfaExpiresAt' | 'lastTotpStep' | 'email' | 'name'>) {
     return this.tx.user.updateMany({ where: { tenantId: this.tenantId, id }, data });
   }
   membership(userId: string) { return this.tx.membership.findFirst({ where: { tenantId: this.tenantId, userId } }); }
@@ -207,9 +217,50 @@ export class TenantData {
   updateInvitation(id: string, data: Pick<Prisma.InvitationUpdateManyMutationInput, 'pendingEmail' | 'tokenHash' | 'expiresAt' | 'acceptedAt' | 'revokedAt'>) {
     return this.tx.invitation.updateMany({ where: { tenantId: this.tenantId, id }, data });
   }
-  sessionByHash(tokenHash: string) { return this.tx.session.findFirst({ where: { tenantId: this.tenantId, tokenHash }, include: { user: true } }); }
+  sessionByHash(tokenHash: string) { return this.tx.session.findFirst({ where: { tenantId: this.tenantId, tokenHash }, include: { user: true, device: true } }); }
   createSession(data: Omit<Prisma.SessionUncheckedCreateInput, 'tenantId'>) { return this.tx.session.create({ data: { ...data, tenantId: this.tenantId } }); }
   touchSession(id: string) { return this.tx.session.updateMany({ where: { tenantId: this.tenantId, id }, data: { lastSeenAt: new Date() } }); }
+  setStepUp(sessionId: string, at: Date | null) { return this.tx.session.updateMany({ where: { tenantId: this.tenantId, id: sessionId }, data: { stepUpAt: at } }); }
+  userSessions(userId: string) {
+    return this.tx.session.findMany({ where: { tenantId: this.tenantId, userId }, orderBy: { lastSeenAt: 'desc' },
+      select: { id: true, createdAt: true, lastSeenAt: true, expiresAt: true, userAgent: true, deviceId: true } });
+  }
+  /** Signs a user out everywhere except one session (and its device); returns the count of other sessions removed. */
+  async signOutUserExcept(userId: string, keepSessionId: string | null) {
+    const keep = keepSessionId ? await this.tx.session.findFirst({ where: { tenantId: this.tenantId, id: keepSessionId }, select: { deviceId: true } }) : null;
+    const { count } = await this.tx.session.deleteMany({ where: { tenantId: this.tenantId, userId, ...(keepSessionId ? { id: { not: keepSessionId } } : {}) } });
+    await this.tx.trustedDevice.deleteMany({ where: { tenantId: this.tenantId, userId, ...(keep?.deviceId ? { id: { not: keep.deviceId } } : {}) } });
+    return count;
+  }
+  /** Every session and trusted device of the store (an Owner's store-wide sign-out). */
+  async signOutStore() {
+    const { count } = await this.tx.session.deleteMany({ where: { tenantId: this.tenantId } });
+    await this.tx.trustedDevice.deleteMany({ where: { tenantId: this.tenantId } });
+    return count;
+  }
+  deviceByHash(tokenHash: string) { return this.tx.trustedDevice.findFirst({ where: { tenantId: this.tenantId, tokenHash } }); }
+  createDevice(data: Omit<Prisma.TrustedDeviceUncheckedCreateInput, 'tenantId'>) { return this.tx.trustedDevice.create({ data: { ...data, tenantId: this.tenantId } }); }
+  touchDevice(id: string) { return this.tx.trustedDevice.updateMany({ where: { tenantId: this.tenantId, id }, data: { lastUsedAt: new Date() } }); }
+  /** Deletes one device of the user; its sessions go with it (cascade). */
+  deleteDevice(userId: string, id: string) { return this.tx.trustedDevice.deleteMany({ where: { tenantId: this.tenantId, userId, id } }); }
+  createChallenge(data: Omit<Prisma.LoginChallengeUncheckedCreateInput, 'tenantId'>) { return this.tx.loginChallenge.create({ data: { ...data, tenantId: this.tenantId } }); }
+  challengeByHash(challengeHash: string) { return this.tx.loginChallenge.findFirst({ where: { tenantId: this.tenantId, challengeHash }, include: { user: true } }); }
+  updateChallenge(id: string, data: Pick<Prisma.LoginChallengeUpdateManyMutationInput, 'attempts' | 'sends' | 'lastSentAt' | 'codeHash' | 'expiresAt' | 'consumedAt'>) {
+    return this.tx.loginChallenge.updateMany({ where: { tenantId: this.tenantId, id }, data });
+  }
+  /** The open step-up check of one session, newest first. */
+  openStepUp(sessionId: string) {
+    return this.tx.loginChallenge.findFirst({ where: { tenantId: this.tenantId, purpose: 'step_up', sessionId, consumedAt: null }, orderBy: { createdAt: 'desc' }, include: { user: true } });
+  }
+  /** Closes a user's open challenges of one purpose (a new sign-in or step-up replaces the previous one). */
+  closeChallenges(userId: string, purpose: string, sessionId?: string) {
+    return this.tx.loginChallenge.updateMany({ where: { tenantId: this.tenantId, userId, purpose, consumedAt: null, ...(sessionId ? { sessionId } : {}) }, data: { consumedAt: new Date() } });
+  }
+  /** Code emails sent since `since`, for one user or (no user) the whole store: the hourly send limits. */
+  async codeSendsSince(since: Date, userId?: string) {
+    const r = await this.tx.loginChallenge.aggregate({ where: { tenantId: this.tenantId, method: 'email', lastSentAt: { gte: since }, ...(userId ? { userId } : {}) }, _sum: { sends: true } });
+    return r._sum.sends ?? 0;
+  }
   deleteSession(id: string) { return this.tx.session.deleteMany({ where: { tenantId: this.tenantId, id } }); }
   deleteUserSessions(userId: string) { return this.tx.session.deleteMany({ where: { tenantId: this.tenantId, userId } }); }
   createReset(data: Omit<Prisma.PasswordResetUncheckedCreateInput, 'tenantId'>) { return this.tx.passwordReset.create({ data: { ...data, tenantId: this.tenantId } }); }
@@ -225,15 +276,24 @@ export class TenantData {
   event(action: string, actorId: string | null, entityId: string | null, requestId?: string, details?: Prisma.InputJsonObject) {
     return this.tx.auditEvent.create({ data: { tenantId: this.tenantId, action, actorId, entityId, requestId, details } });
   }
-  queueMail(dedupeKey: string, sealedMessage: string) {
-    return this.tx.emailOutbox.create({ data: { tenantId: this.tenantId, dedupeKey, sealedMessage } });
+  /** priority 1 = one-time-code mail; discardAfter: never delivered after this (the code's expiry). */
+  queueMail(dedupeKey: string, sealedMessage: string, options: { priority?: number; discardAfter?: Date } = {}) {
+    return this.tx.emailOutbox.create({ data: { tenantId: this.tenantId, dedupeKey, sealedMessage, priority: options.priority ?? 0, discardAfter: options.discardAfter ?? null } });
   }
+  /** Claims a lease: 20 seconds for code mail, five minutes for the rest, before another attempt may send it. */
   async claimMail(id: string) {
-    const row = await this.tx.emailOutbox.findFirst({ where: { tenantId: this.tenantId, id, deliveredAt: null, availableAt: { lte: new Date() }, attempts: { lt: 10 } } });
+    const now = new Date();
+    const row = await this.tx.emailOutbox.findFirst({ where: { tenantId: this.tenantId, id, deliveredAt: null, failedAt: null, availableAt: { lte: now }, attempts: { lt: 10 },
+      OR: [{ discardAfter: null }, { discardAfter: { gt: now } }] } });
     if (!row) return null;
-    await this.tx.emailOutbox.updateMany({ where: { tenantId: this.tenantId, id }, data: { attempts: { increment: 1 }, availableAt: new Date(Date.now() + 300_000) } });
+    const lease = row.priority > 0 ? 20_000 : 300_000;
+    await this.tx.emailOutbox.updateMany({ where: { tenantId: this.tenantId, id }, data: { attempts: { increment: 1 }, availableAt: new Date(Date.now() + lease) } });
     return row;
   }
   ackMail(id: string) { return this.tx.emailOutbox.updateMany({ where: { tenantId: this.tenantId, id }, data: { deliveredAt: new Date(), sealedMessage: '' } }); }
+  /** After the last attempt: visible as failed. Code mail loses its body; other mail keeps it sealed for operations. */
+  failMail(id: string, clearBody: boolean) {
+    return this.tx.emailOutbox.updateMany({ where: { tenantId: this.tenantId, id }, data: { failedAt: new Date(), ...(clearBody ? { sealedMessage: '' } : {}) } });
+  }
 }
 

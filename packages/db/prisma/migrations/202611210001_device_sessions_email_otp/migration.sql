@@ -1,6 +1,7 @@
 -- Email one-time codes and device-bound sessions (plan Part 5, docs/plans/onboarding-redesign-backend.md; ADR 021).
 
 -- A browser the user verified with a second factor. The cookie holds an opaque token; only its SHA-256 is stored.
+-- Revoking a device deletes its row; its sessions go with it (sessions.device_id ON DELETE CASCADE).
 CREATE TABLE "trusted_devices" (
   "id" UUID NOT NULL,
   "tenant_id" UUID NOT NULL,
@@ -10,7 +11,6 @@ CREATE TABLE "trusted_devices" (
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "last_used_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "expires_at" TIMESTAMPTZ NOT NULL,
-  "revoked_at" TIMESTAMPTZ,
   CONSTRAINT "trusted_devices_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX "trusted_devices_token_hash_key" ON "trusted_devices"("token_hash");

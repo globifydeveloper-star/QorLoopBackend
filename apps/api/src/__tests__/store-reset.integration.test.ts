@@ -365,7 +365,8 @@ describe('store data reset: checks, queues and storage without a database', () =
   it('uses the same queue names, recon deduplication id and recon lock key as the app', async () => {
     expect(plan.TENANT_QUEUES).toEqual([QUEUES.uploads, QUEUES.uploadApply, RECON_QUEUE_NAME, 'generated-files']);
     expect(await readFile('packages/shared/src/generated-files.ts', 'utf8')).toContain("export const GENERATED_FILES_QUEUE = 'generated-files';");
-    expect(await readFile('apps/worker/src/main.ts', 'utf8')).toContain("new Queue('email-outbox'");
+    expect(await readFile('packages/shared/src/mail.ts', 'utf8')).toContain("MAIL_QUEUE_NAME = 'email-outbox'");
+    expect(await readFile('apps/worker/src/main.ts', 'utf8')).toContain('new Queue(MAIL_QUEUE_NAME');
     expect(plan.reconDeduplicationId(A)).toBe(reconJobKey(A));
     expect(await readFile('apps/worker/src/recompute-recon.ts', 'utf8')).toContain("runSnapshot(tenantId, 'recon'");
     expect(await readFile('packages/db/src/database.ts', 'utf8')).toContain("hashtextextended(${job + ':' + tenantId}, 0)");

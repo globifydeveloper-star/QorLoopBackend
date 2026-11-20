@@ -75,9 +75,16 @@ describe('tenant settings', () => {
     expect((await put({ security: { analystCanExport: false } }, admin)).statusCode).toBe(200);
     const me = await h.request('GET', '/api/auth/me', a, analyst);
     expect(me.json().data.permissions).not.toContain('reports.export');
+    // The authenticator app is optional (ADR 021): an Owner without one cannot require it for everyone.
+    expect((await put({ security: { mfaRequiredForAll: true } })).statusCode).toBe(409);
+    const ownerId = (await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id, name: 'Owner' } })).id;
+    await h.fixture.prisma.user.update({ where: { id: ownerId }, data: { mfaSecret: 'sealed-app-secret' } });
     expect((await put({ security: { mfaRequiredForAll: true } })).statusCode).toBe(200);
-    expect((await get(a, analyst)).statusCode).toBe(403);
+    const blocked = await get(a, analyst);
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.code).toBe('AUTHENTICATOR_SETUP_REQUIRED');
     expect((await put({ security: { mfaRequiredForAll: false } })).statusCode).toBe(200);
+    await h.fixture.prisma.user.update({ where: { id: ownerId }, data: { mfaSecret: null } });
   });
   it('requires the correct tenant session, Origin and CSRF', async () => {
     expect((await h.request('GET', '/api/settings', a)).statusCode).toBe(401);
