@@ -21,6 +21,16 @@ const settingsSchema = { type: 'object', properties: {
   } }, revision: { type: 'string', pattern: '^[a-f0-9]{64}$' },
 } };
 
+const marketplacesSchema = {
+  type: 'object', required: ['items', 'revision'], properties: {
+    items: { type: 'array', items: { type: 'object', required: ['marketplaceId', 'enabled', 'explicit', 'hasData', 'lastUploadAt', 'ageHours'], properties: {
+      marketplaceId: { type: 'string', enum: ['talabat', 'snoonu', 'rafeeq', 'keeta'] }, enabled: { type: 'boolean' }, explicit: { type: 'boolean' }, hasData: { type: 'boolean' },
+      lastUploadAt: { type: ['string', 'null'], format: 'date-time' }, ageHours: { type: ['number', 'null'] },
+    } } },
+    revision: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+  },
+};
+
 @ApiTags('Settings') @ApiCookieAuth()
 @Controller('api/settings')
 export class SettingsController {
@@ -34,11 +44,11 @@ export class SettingsController {
     return this.settings.put(context(req, this.config), input);
   }
   @Get('marketplaces') @Access({ permission: 'settings.view' })
-  @Contract('Enabled marketplaces, latest applied upload and age in hours; read-only', undefined, {
-    type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: {
-      marketplaceId: { type: 'string', enum: ['talabat', 'snoonu', 'rafeeq', 'keeta'] }, enabled: { type: 'boolean', enum: [true] }, hasData: { type: 'boolean' },
-      lastUploadAt: { type: ['string', 'null'], format: 'date-time' }, ageHours: { type: ['number', 'null'] },
-    } } } },
-  })
+  @Contract('All four marketplaces with their effective switch (explicit=false: no switch row yet, an applied upload enables it), latest applied upload and age in hours', undefined, marketplacesSchema)
   marketplaces(@Req() req: AppRequest) { return this.settings.marketplaces(context(req, this.config)); }
+  @Put('marketplaces') @Access({ permission: 'marketplaces.edit' })
+  @Contract('Choose the marketplaces the store uses (at least one): explicit switches for all four; data is kept; expectedRevision from GET /api/settings, 409 on conflict', dto.updateMarketplaces, marketplacesSchema)
+  setMarketplaces(@Req() req: AppRequest, @Body(new ZodPipe(dto.updateMarketplaces)) input: z.infer<typeof dto.updateMarketplaces>) {
+    return this.settings.setMarketplaces(context(req, this.config), input);
+  }
 }

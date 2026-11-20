@@ -183,6 +183,12 @@ export const updateTenantSettings = z.object({
   security: z.object({ mfaRequiredForAll: z.boolean().optional(), analystCanExport: z.boolean().optional() })
     .strict().refine(v => Object.keys(v).length > 0, 'Nothing to change').optional(),
 }).strict().refine(v => Object.keys(v).some(k => k !== 'expectedRevision'), 'Nothing to change');
+/** PUT /api/settings/marketplaces: the marketplaces the store uses (at least one); every other one is switched off. */
+export const updateMarketplaces = z.object({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  enabled: z.array(z.enum(MARKETPLACES)).min(1, 'Choose at least one marketplace').max(MARKETPLACES.length)
+    .refine(v => new Set(v).size === v.length, 'Each marketplace once'),
+}).strict();
 const categoryKey = { categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
 export const categoryPriceRule = ruleWith(categoryKey);
 export const categoryPriceRuleKey = z.object(categoryKey).strict();

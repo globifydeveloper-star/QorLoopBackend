@@ -86,7 +86,7 @@ describe('tenant settings', () => {
     const noOrigin = await h.api.server.inject({ method: 'PUT', url: '/api/settings', headers: { host: a.hostname + ':4000', cookie: a.owner.cookie }, payload: {} });
     expect(noOrigin.statusCode).toBe(403);
   });
-  it('lists enabled marketplaces using applied uploads and explicit switches', async () => {
+  it('lists every marketplace with its effective switch from applied uploads and explicit switches', async () => {
     const user = await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: a.id } });
     await h.fixture.prisma.upload.create({ data: { tenantId: a.id, source: 'snoonu', fileName: 'sample.xlsx', size: 1, storageKey: 'test-settings', uploadedById: user.id,
       status: 'applied', appliedAt: new Date(Date.now() - 7200000) } });
@@ -95,10 +95,12 @@ describe('tenant settings', () => {
     ] });
     const r = await h.request('GET', '/api/settings/marketplaces', a, analyst);
     expect(r.statusCode).toBe(200);
-    expect(r.json().data.items.map((x: { marketplaceId: string }) => x.marketplaceId)).toEqual(['talabat', 'snoonu']);
-    expect(r.json().data.items[0]).toMatchObject({ enabled: true, hasData: false, lastUploadAt: null, ageHours: null });
-    expect(r.json().data.items[1].ageHours).toBeGreaterThanOrEqual(2);
-    expect((await h.request('GET', '/api/settings/marketplaces', b, b.owner)).json().data.items).toEqual([]);
+    const items = r.json().data.items as { marketplaceId: string; enabled: boolean; explicit: boolean; ageHours: number | null }[];
+    expect(items.map(x => [x.marketplaceId, x.enabled, x.explicit])).toEqual([['talabat', true, true], ['snoonu', true, false], ['rafeeq', false, false], ['keeta', false, true]]);
+    expect(items[0]).toMatchObject({ hasData: false, lastUploadAt: null, ageHours: null });
+    expect(items[1]!.ageHours).toBeGreaterThanOrEqual(2);
+    expect(r.json().data.revision).toBe((await get()).json().data.revision);
+    expect((await h.request('GET', '/api/settings/marketplaces', b, b.owner)).json().data.items.filter((x: { enabled: boolean }) => x.enabled)).toEqual([]);
   });
   it('changes the reconciliation results and stale warning through existing consumers', async () => {
     await h.recon.drain();
@@ -122,5 +124,76 @@ describe('tenant settings', () => {
       const after = (await h.request('GET', '/api/recon/summary', s, s.owner)).json().data.marketplaces[0];
       expect(after).toMatchObject({ stock: 1, price: 1, stale: false });
     } finally { await h.recon.drain(); h.recon.handler = undefined; }
+  });
+});
+
+describe('PUT /api/settings/marketplaces (plan step 6)', () => {
+  let s: Store, sAdmin: Session, sManager: Session, sAnalyst: Session;
+  const revision = async (store: Store) => (await h.request('GET', '/api/settings', store, store.owner)).json().data.revision as string;
+  const setMarketplaces = async (store: Store, enabled: unknown, who = store.owner, expectedRevision?: string) =>
+    h.request('PUT', '/api/settings/marketplaces', store, who, { expectedRevision: expectedRevision ?? await revision(store), enabled });
+  const switches = async (store: Store) => (await h.fixture.prisma.tenantMarketplace.findMany({ where: { tenantId: store.id } }))
+    .map(r => [r.marketplaceId, r.enabled]).sort();
+  beforeAll(async () => {
+    s = await h.createOwner('settings-mp');
+    sAdmin = await h.member(s, 'admin'); sManager = await h.member(s, 'catalogue_manager'); sAnalyst = await h.member(s, 'analyst');
+  });
+
+  it('switches the chosen marketplaces on and all others off, audits once and recomputes', async () => {
+    const before = await revision(s);
+    const r = await setMarketplaces(s, ['snoonu', 'talabat']);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data.items.map((x: { marketplaceId: string; enabled: boolean; explicit: boolean }) => [x.marketplaceId, x.enabled, x.explicit]))
+      .toEqual([['talabat', true, true], ['snoonu', true, true], ['rafeeq', false, true], ['keeta', false, true]]);
+    expect(r.json().data.revision).not.toBe(before);
+    expect(r.json().data.revision).toBe(await revision(s));
+    expect(await switches(s)).toEqual([['keeta', false], ['rafeeq', false], ['snoonu', true], ['talabat', true]]);
+    const events = await h.fixture.prisma.auditEvent.findMany({ where: { tenantId: s.id, action: 'settings.changed' } });
+    expect(events.map(e => e.details)).toEqual([{ field: 'marketplaces', old: [], new: ['talabat', 'snoonu'] }]);
+    expect(h.recon.calls.at(-1)).toEqual({ tenantId: s.id, reason: 'settings.marketplaces' });
+    expect(await switches(b)).toEqual([]);
+  });
+  it('writes nothing when the same set is saved again', async () => {
+    const calls = h.recon.calls.length, before = await revision(s);
+    const r = await setMarketplaces(s, ['talabat', 'snoonu'], sAdmin);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data.revision).toBe(before);
+    expect(h.recon.calls.length).toBe(calls);
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: s.id, action: 'settings.changed' } })).toBe(1);
+  });
+  it('keeps the data of a switched-off marketplace', async () => {
+    const user = await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: s.id } });
+    await h.fixture.prisma.upload.create({ data: { tenantId: s.id, source: 'snoonu', fileName: 'kept.xlsx', size: 1, storageKey: 'settings-mp-kept', uploadedById: user.id, status: 'applied', appliedAt: new Date() } });
+    const r = await setMarketplaces(s, ['talabat']);
+    expect(r.json().data.items.find((x: { marketplaceId: string }) => x.marketplaceId === 'snoonu')).toMatchObject({ enabled: false, hasData: true });
+    expect(await h.fixture.prisma.upload.count({ where: { tenantId: s.id, source: 'snoonu' } })).toBe(1);
+    expect((await h.fixture.prisma.auditEvent.findFirstOrThrow({ where: { tenantId: s.id, action: 'settings.changed' }, orderBy: { createdAt: 'desc' } })).details)
+      .toEqual({ field: 'marketplaces', old: ['talabat', 'snoonu'], new: ['talabat'] });
+  });
+  it('makes implicit switches explicit without an event or a recompute when the effective set is unchanged', async () => {
+    const legacy = await h.createOwner('settings-mp-legacy');
+    const user = await h.fixture.prisma.user.findFirstOrThrow({ where: { tenantId: legacy.id } });
+    await h.fixture.prisma.upload.create({ data: { tenantId: legacy.id, source: 'keeta', fileName: 'old.xlsx', size: 1, storageKey: 'settings-mp-legacy', uploadedById: user.id, status: 'applied', appliedAt: new Date() } });
+    const calls = h.recon.calls.length;
+    expect((await setMarketplaces(legacy, ['keeta'])).statusCode).toBe(200);
+    expect(await switches(legacy)).toEqual([['keeta', true], ['rafeeq', false], ['snoonu', false], ['talabat', false]]);
+    expect(h.recon.calls.length).toBe(calls);
+    expect(await h.fixture.prisma.auditEvent.count({ where: { tenantId: legacy.id, action: 'settings.changed' } })).toBe(0);
+  });
+  it('validates the body and the revision', async () => {
+    for (const enabled of [[], ['talabat', 'talabat'], ['amazon'], 'talabat', ['talabat', 'snoonu', 'rafeeq', 'keeta', 'talabat']]) {
+      expect((await setMarketplaces(s, enabled)).statusCode).toBe(400);
+    }
+    expect((await h.request('PUT', '/api/settings/marketplaces', s, s.owner, { enabled: ['talabat'] })).statusCode).toBe(400);
+    expect((await h.request('PUT', '/api/settings/marketplaces', s, s.owner, { expectedRevision: await revision(s), enabled: ['talabat'], extra: 1 })).statusCode).toBe(400);
+    expect((await setMarketplaces(s, ['rafeeq'], s.owner, 'a'.repeat(64))).statusCode).toBe(409);
+    expect(await switches(s)).toContainEqual(['rafeeq', false]);
+  });
+  it('is Owner and Admin only, with CSRF', async () => {
+    expect((await setMarketplaces(s, ['rafeeq'], sManager)).statusCode).toBe(403);
+    expect((await setMarketplaces(s, ['rafeeq'], sAnalyst)).statusCode).toBe(403);
+    expect((await setMarketplaces(s, ['rafeeq'], { ...s.owner, csrf: 'wrong' })).statusCode).toBe(403);
+    expect(await switches(s)).toContainEqual(['rafeeq', false]);
+    expect((await setMarketplaces(s, ['rafeeq', 'talabat'], sAdmin)).statusCode).toBe(200);
   });
 });
