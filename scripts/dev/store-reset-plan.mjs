@@ -40,6 +40,8 @@ export const isKeptAuditAction = action => AUDIT_KEEP_PREFIXES.some(p => action.
 export const KEEP_TABLES = Object.freeze([
   'users', 'memberships', 'invitations', 'sessions', 'password_resets', 'recovery_codes', 'stores',
   'tenant_settings', 'pricing_settings', 'email_outbox', 'input_templates', 'tenant_marketplaces',
+  // Sign-in state (migration 202611210001, ADR 021): kept like sessions, so a reset signs nobody out.
+  'trusted_devices', 'login_challenges',
 ]);
 
 /**

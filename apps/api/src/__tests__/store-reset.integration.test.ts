@@ -44,7 +44,9 @@ async function seedStore(prisma: Prisma, slug: string) {
   const analyst = await prisma.user.create({ data: { tenantId: id, email: `analyst@${slug}.test`, name: 'Analyst', passwordHash: 'hash', emailVerifiedAt: new Date() } });
   await prisma.membership.createMany({ data: [{ tenantId: id, userId: owner.id, role: 'owner' }, { tenantId: id, userId: analyst.id, role: 'analyst' }] });
   await prisma.invitation.create({ data: { tenantId: id, email: `new@${slug}.test`, pendingEmail: `new@${slug}.test`, role: 'analyst', tokenHash: randomUUID(), invitedBy: owner.id, expiresAt: future } });
-  await prisma.session.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), csrfHash: 'csrf', assurance: 'full', expiresAt: future } });
+  const device = await prisma.trustedDevice.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), expiresAt: future } });
+  await prisma.session.create({ data: { tenantId: id, userId: owner.id, tokenHash: randomUUID(), csrfHash: 'csrf', assurance: 'full', expiresAt: future, deviceId: device.id } });
+  await prisma.loginChallenge.create({ data: { tenantId: id, userId: analyst.id, purpose: 'login', method: 'email', challengeHash: randomUUID(), expiresAt: future } });
   await prisma.passwordReset.create({ data: { tenantId: id, userId: analyst.id, tokenHash: randomUUID(), expiresAt: future } });
   await prisma.recoveryCode.create({ data: { tenantId: id, userId: owner.id, codeHash: 'code-hash' } });
   await prisma.pricingSettings.create({ data: { tenantId: id, rounding: '0.05' } });
