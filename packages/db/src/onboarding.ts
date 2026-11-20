@@ -43,6 +43,28 @@ export class OnboardingRepository {
   }
 
   /**
+   * The setup summary's own counts (GET /api/onboarding/summary): products in the catalogue, and the newest applied
+   * file per source with its stored row errors. Called once when the summary is opened, not on every checklist read.
+   */
+  async setupSummary() {
+    const tenantId = this.tenantId;
+    const sources = ['erp', ...MARKETPLACES] as const;
+    const [loaded, active, blocked, latest] = await Promise.all([
+      this.tx.product.count({ where: { tenantId } }),
+      this.tx.product.count({ where: { tenantId, status: 'active', blockedAt: null } }),
+      this.tx.product.count({ where: { tenantId, blockedAt: { not: null } } }),
+      Promise.all(sources.map(source => this.tx.upload.findFirst({
+        where: { tenantId, source, status: 'applied', appliedAt: { not: null } }, orderBy: { appliedAt: 'desc' }, select: { id: true, appliedAt: true },
+      }))),
+    ]);
+    const errors = await Promise.all(latest.map(u => u ? this.tx.uploadError.count({ where: { tenantId, uploadId: u.id } }) : Promise.resolve(0)));
+    return {
+      products: { loaded, active, blocked },
+      uploads: sources.map((source, i) => ({ source, uploadId: latest[i]?.id ?? null, appliedAt: latest[i]?.appliedAt ?? null, rowErrors: errors[i]! })),
+    };
+  }
+
+  /**
    * The checklist's further evidence, on top of `facts()`: switches, the newest unfinished upload per source, the
    * price-source choice, a recon failure newer than the last computation (only while no comparison exists, so the audit
    * read stays within a new store's short history), thresholds and the viewer's own authenticator app.

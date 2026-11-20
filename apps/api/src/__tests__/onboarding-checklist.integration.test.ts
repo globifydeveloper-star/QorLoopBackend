@@ -95,3 +95,48 @@ describe('onboarding checklist through the API', () => {
     expect((await h.request('GET', '/api/onboarding', f, s.owner)).statusCode).toBe(401);
   });
 });
+
+describe('GET /api/onboarding/summary (plan step 11)', () => {
+  it('counts products, matches per enabled marketplace and the problems found', async () => {
+    const t = await h.createOwner('oc-summary');
+    const revision = (await h.request('GET', '/api/settings', t, t.owner)).json().data.revision;
+    expect((await h.request('PUT', '/api/settings/marketplaces', t, t.owner, { expectedRevision: revision, enabled: ['talabat', 'rafeeq'] })).statusCode).toBe(200);
+    for (const [i, status, blocked] of [[1, 'active', false], [2, 'active', false], [3, 'new', false], [4, 'active', true]] as const) {
+      const barcode = String(6_286_000_000_000 + i);
+      await h.fixture.prisma.product.create({ data: { tenantId: t.id, nameEn: 'P' + i, barcode, normalizedBarcode: barcode, erpPrice: 1, erpStock: 1, status,
+        ...(blocked ? { blockedAt: new Date(), blockedReason: 'old' } : {}) } });
+    }
+    const erpOld = await upload(t, 'erp', 'applied', new Date(Date.now() - 86_400_000));
+    const erp = await upload(t, 'erp', 'applied', new Date());
+    await upload(t, 'snoonu', 'applied', new Date()); // switched off: not part of the summary
+    await h.fixture.prisma.uploadError.createMany({ data: [
+      { tenantId: t.id, uploadId: erp.id, row: 2, reason: 'Missing barcode' }, { tenantId: t.id, uploadId: erp.id, row: 3, reason: 'Missing price' },
+      { tenantId: t.id, uploadId: erpOld.id, row: 9, reason: 'Older file, not counted' },
+    ] });
+    const computedAt = new Date();
+    await h.fixture.prisma.reconSummary.createMany({ data: [
+      { tenantId: t.id, marketplaceId: 'talabat', hasData: true, total: 3, listed: 2, notListed: 1, missingFromErp: 1, price: 1, stock: 2, newCount: 1, computedAt },
+      { tenantId: t.id, marketplaceId: 'snoonu', hasData: true, total: 3, listed: 3, price: 5, computedAt },
+      { tenantId: t.id, marketplaceId: 'talabat', reference: 'erp', hasData: true, total: 3, listed: 2, price: 99, computedAt },
+    ] });
+
+    const r = await h.request('GET', '/api/onboarding/summary', t, await h.member(t, 'analyst'));
+    expect(r.statusCode).toBe(200);
+    const d = r.json().data;
+    expect(d).toMatchObject({ reference: 'marketplace', products: { loaded: 4, active: 2, blocked: 1 } });
+    expect(d.computedAt).toBe(computedAt.toISOString());
+    expect(d.marketplaces).toEqual([
+      expect.objectContaining({ marketplaceId: 'talabat', hasData: true, compared: 3, matched: 2, notListed: 1, missingFromErp: 1, newProducts: 1, priceMismatches: 1, stockMismatches: 2 }),
+      expect.objectContaining({ marketplaceId: 'rafeeq', hasData: false, compared: 0, matched: 0, lastUploadAt: null }),
+    ]);
+    expect(d.uploads.map((u: { source: string }) => u.source)).toEqual(['erp', 'talabat', 'rafeeq']);
+    expect(d.uploads[0]).toMatchObject({ uploadId: erp.id, rowErrors: 2 });
+    expect(d.problems).toEqual({ priceMismatches: 1, stockMismatches: 2, notListed: 1, missingFromErp: 1, stockConflicts: 0, uploadRowErrors: 2 });
+    expect(r.body).not.toMatch(/Missing barcode|storageKey|fileName/);
+
+    expect((await h.request('GET', '/api/onboarding/summary', t)).statusCode).toBe(401);
+    expect((await h.request('GET', '/api/onboarding/summary', t, s.owner)).statusCode).toBe(401);
+    const other = (await h.request('GET', '/api/onboarding/summary', s, s.owner)).json().data;
+    expect(other.products.loaded).toBe(0);
+  });
+});

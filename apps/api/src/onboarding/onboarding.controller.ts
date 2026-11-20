@@ -59,6 +59,26 @@ export const onboardingSchema = {
   },
 };
 
+const int = { type: 'integer', minimum: 0 };
+const summarySchema = {
+  type: 'object', required: ['reference', 'computedAt', 'products', 'marketplaces', 'uploads', 'problems'], properties: {
+    reference: { type: 'string', enum: ['marketplace', 'erp'] }, computedAt: timestamp,
+    products: { type: 'object', required: ['loaded', 'active', 'blocked'], properties: { loaded: int, active: { ...int, description: 'Active and not blocked' }, blocked: int } },
+    marketplaces: { type: 'array', description: 'Enabled marketplaces, canonical order', items: { type: 'object', properties: {
+      marketplaceId: { type: 'string', enum: [...MARKETPLACES] }, hasData: { type: 'boolean' }, lastUploadAt: timestamp, stale: { type: 'boolean' },
+      compared: int, matched: { ...int, description: 'Products listed on this marketplace' }, notListed: int, missingFromErp: int, newProducts: int,
+      priceMismatches: int, stockMismatches: int,
+    } } },
+    uploads: { type: 'array', description: 'The newest applied file of the ERP and of each enabled marketplace', items: { type: 'object', properties: {
+      source: { type: 'string', enum: ['erp', ...MARKETPLACES] }, uploadId: { type: ['string', 'null'], format: 'uuid' }, appliedAt: timestamp,
+      rowErrors: { ...int, description: 'Stored row errors of that file (capped at the stored maximum)' },
+    } } },
+    problems: { type: 'object', properties: {
+      priceMismatches: int, stockMismatches: int, notListed: int, missingFromErp: int, stockConflicts: int, uploadRowErrors: int,
+    } },
+  },
+};
+
 @ApiTags('Onboarding') @ApiCookieAuth()
 @Controller('api/onboarding')
 export class OnboardingController {
@@ -67,4 +87,8 @@ export class OnboardingController {
   @Get() @Access({ permission: 'settings.view' })
   @Contract('Derived onboarding progress. steps/percent/nextStepId/complete/marketplaces: the ADR 015 wizard (Owner/Admin; other roles empty). checklist/essentials: the guided checklist filtered by role and the Dashboard gate (five essentials) for every role', undefined, onboardingSchema)
   get(@Req() req: AppRequest) { return this.onboarding.get(context(req, this.config)); }
+
+  @Get('summary') @Access({ permission: 'recon.view' })
+  @Contract('Setup summary, also later from Settings: products loaded, products matched per enabled marketplace, and problems found, from the stored comparison (the store\'s default reference)', undefined, summarySchema)
+  summary(@Req() req: AppRequest) { return this.onboarding.summary(context(req, this.config)); }
 }
