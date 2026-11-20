@@ -1,4 +1,5 @@
 import { ERP_FIELDS, MARKETPLACE_FIELDS } from './upload/fields.js';
+import { MARKETPLACES } from './constants.js';
 
 /** Safe presentation of stored events. Never copy arbitrary details into an API response. */
 export const ACTIVITY_GROUPS = ['price', 'stock_uploads', 'catalogue', 'team_security'] as const;
@@ -38,6 +39,8 @@ function rule(v: unknown): SafeValue {
   if (r.mode === 'same') return { mode: 'same' };
   return ['percent', 'amount', 'fixed'].includes(String(r.mode)) && number(r.value) !== null ? { mode: String(r.mode), value: number(r.value) } : null;
 }
+const marketplaceList = (v: unknown): SafeValue => Array.isArray(v)
+  ? (MARKETPLACES as readonly string[]).filter(m => v.includes(m)).join(', ') || 'none' : null;
 const role = (v: unknown) => ['owner', 'admin', 'catalogue_manager', 'analyst'].includes(String(v)) ? String(v) : null;
 const BLOCK_REASON_LABELS: Record<string, string> = { old: 'old product', seasonal: 'seasonal', other: 'other' };
 const MAPPING_FIELDS: ReadonlySet<string> = new Set([...ERP_FIELDS, ...MARKETPLACE_FIELDS].map(f => f.key));
@@ -150,6 +153,8 @@ export function presentActivity(action: string, details: unknown, options: { pro
     const allowed = ['profile.name', 'priceTolerance', 'stockThreshold', 'staleHours', 'mfaRequiredForAll', 'analystCanExport'];
     summary = 'Store settings changed';
     if (typeof d.field === 'string' && allowed.includes(d.field)) change(d.field, scalar(d.old), scalar(d.new));
+    // The enabled marketplaces (Settings or provisioning): known ids only, shown as a list.
+    if (d.field === 'marketplaces') change('marketplaces', marketplaceList(d.old), marketplaceList(d.new));
   } else if (action === 'pricing.settings_changed') {
     summary = 'Pricing settings changed';
     if (d.field === 'defaultRule') change('defaultRule', rule(d.old), rule(d.new));

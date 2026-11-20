@@ -120,6 +120,10 @@ export class Database {
       });
     });
   }
+  /** Operations CLI only (provision-store): the store a slug names, routing coordinates only. */
+  tenantBySlug(slug: string) {
+    return this.client.tenant.findUnique({ where: { slug }, select: { id: true, name: true, slug: true, hostname: true, status: true } });
+  }
   // Control-plane enumeration returns only routing coordinates, never user data.
   async tenantsWithStuckUploads(olderThan: Date) {
     const rows = await this.client.upload.findMany({
@@ -187,6 +191,10 @@ export class TenantData {
   invitationById(id: string) { return this.tx.invitation.findFirst({ where: { tenantId: this.tenantId, id } }); }
   pendingInvitation(email: string) { return this.tx.invitation.findFirst({ where: { tenantId: this.tenantId, pendingEmail: email } }); }
   firstOwnerInvitation() { return this.tx.invitation.findFirst({ where: { tenantId: this.tenantId, role: 'owner' }, orderBy: { createdAt: 'asc' } }); }
+  /** The newest Owner invitation not yet accepted or revoked, expired or not (an expired one keeps its pending email). */
+  openOwnerInvitation() {
+    return this.tx.invitation.findFirst({ where: { tenantId: this.tenantId, role: 'owner', acceptedAt: null, revokedAt: null }, orderBy: { createdAt: 'desc' } });
+  }
   invitations() {
     return this.tx.invitation.findMany({
       where: { tenantId: this.tenantId, acceptedAt: null, revokedAt: null }, orderBy: { createdAt: 'desc' },

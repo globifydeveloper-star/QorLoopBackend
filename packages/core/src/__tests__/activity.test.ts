@@ -14,6 +14,11 @@ describe('safe activity summaries', () => {
     expect(JSON.stringify(product)).not.toMatch(/second|private|99/);
     expect(presentActivity('pricing.bulk_applied', d).summary).toBe('Bulk price change applied to 2 products');
   });
+  it('shows enabled marketplace changes as known ids only', () => {
+    expect(presentActivity('settings.changed', { field: 'marketplaces', old: [], new: ['snoonu', 'talabat', '<script>'] }).beforeAfter)
+      .toEqual([{ field: 'marketplaces', before: 'none', after: 'talabat, snoonu' }]);
+    expect(presentActivity('settings.changed', { field: 'marketplaces', old: 'x', new: 5 }).beforeAfter).toEqual([{ field: 'marketplaces', before: null, after: null }]);
+  });
   it('hides cost before/after values from read-only pricing roles', () => {
     expect(presentActivity('product.field_changed', { field: 'costPrice', old: 1, new: 2 }).beforeAfter).toEqual([]);
     expect(presentActivity('product.field_changed', { field: 'costPrice', old: 1, new: 2 }, { canViewCosts: true }).beforeAfter).toHaveLength(1);
