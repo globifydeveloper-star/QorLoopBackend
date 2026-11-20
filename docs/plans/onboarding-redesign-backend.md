@@ -1,6 +1,6 @@
 # Store creation, onboarding and authentication redesign: backend plan
 
-Date: 20 November 2026. Status: **plan only**. No code, migration or data was changed. Branch `plan/onboarding-redesign`.
+Date: 20 November 2026. Status: **approved** (see "Decisions for the owner"). Steps 1–12 are approved for implementation on `feature/onboarding-redesign`; steps 13–25 wait for the owner to confirm the frontend contract. Branch `plan/onboarding-redesign`.
 
 Scope: this is the **backend** repository (API, database, worker, seed and scripts). The frontend parts (screens, state, API calls, frontend tests, and what `VITE_REAL_ONBOARDING` switches) belong to the frontend session and are **not covered here**. Where the backend depends on a frontend fact, it is marked *(frontend to confirm)*.
 
@@ -157,7 +157,7 @@ The existing fields `steps`, `percent`, `nextStepId`, `complete` and `marketplac
 
 #### `PUT /api/pricing/price-source` (new)
 
-- Permission `pricing.edit`, **step-up required** (store-wide price change, Part 5).
+- Permission `pricing.edit` **and** role owner or admin (D7; others get 403). Step-up in the 30-minute work window once Part 5 lands (store-wide price change).
 - Body (strict, discriminated):
   - `{ "source": "erp_markup", "rule": { "mode": "percent", "value": 15 }, "rounding": "0.25" }`, or
   - `{ "source": "adopt", "sourceMarketplaceId": "talabat", "mode": "fixed", "onlyWithoutRule": true, "previewToken": "<from adopt/preview>" }`
@@ -231,7 +231,7 @@ No table for onboarding progress. `tenant_marketplaces` already exists. `pricing
 | a name | ✓ | ✓ | — | — | `settings.edit` |
 | a marketplaces | ✓ | ✓ | — | — | `marketplaces.edit` (now used) |
 | b, c uploads | ✓ | ✓ | ✓ | — | `uploads.upload/map/apply` |
-| d price source | ✓ | ✓ | ✓ (decision D7) | — | `pricing.edit` + step-up |
+| d price source | ✓ | ✓ | — (D7: owner and admin only) | — | `pricing.edit` + an owner/admin role check in the endpoint + step-up (30-minute work window) |
 | e thresholds | ✓ | ✓ | — | — | `settings.edit` |
 | f invite | ✓ (any role) | ✓ (not owner) | — | — | `team.invite` + step-up |
 | authenticator app | ✓ | ✓ | ✓ | ✓ | own account |
@@ -245,7 +245,7 @@ No table for onboarding progress. `tenant_marketplaces` already exists. `pricing
 | dev resolution | two tenants, TENANT_ID set to one | integration: in `NODE_ENV=test`/development both resolve; production config still pins (unit test with `buildApp` using `NODE_ENV=production`, which needs Redis, so test `resolve` arguments instead) |
 | a | — | integration: PUT marketplaces (empty set 400, stale revision 409, audit, recon enqueued only on change, analyst 403, catalogue manager 403); GET returns disabled ones |
 | b, c | existing fixtures in `packages/core/src/__tests__/fixtures/marketplace-files.ts` | integration: a pending upload appears in `detail.pendingUpload`; an upload to a disabled source is refused once switch rows exist; legacy stores without rows are unaffected |
-| d | 3 products: listed, unlisted, with offer | integration: erp_markup sets the columns and recomputes; adopt binds `previewToken` (a mismatch gives 409); no step-up gives 403 `STEP_UP_REQUIRED`; a catalogue manager is allowed or not according to D7 |
+| d | 3 products: listed, unlisted, with offer | integration: erp_markup sets the columns and recomputes; adopt binds `previewToken` (a mismatch gives 409); no step-up gives 403 `STEP_UP_REQUIRED` (once steps 13–25 land); a catalogue manager and an analyst get 403 (D7) |
 | e | — | existing settings tests plus the `defaults/customised` status |
 | g | recon failure via the inline queue throwing | integration: `waiting` → `failed` with reason → `done` |
 | summary | 2 marketplaces, mismatches, a stock conflict | integration: counts equal the `recon_summaries` numbers; tenant isolation |
@@ -300,22 +300,31 @@ POST /api/auth/otp/resend                   (challenge cookie) → 200 { resendA
 
 ### 5.3 Sensitive actions (fresh OTP)
 
-The window is **10 minutes** after a successful step-up, bound to that one session (`sessions.step_up_at`). Two actions are **single use** (the window is consumed): change owner email, and revoke all store sessions.
+Owner decision (D13/D14 as changed): **two windows**, both measured from the last successful step-up of that one session (`sessions.step_up_at`):
 
-| Action | Endpoint(s) | Notes |
-| --- | --- | --- |
-| Role change | `PATCH /api/team/members/:id/role` | |
-| Invite user, resend invitation | `POST /api/team/invitations`, `POST /api/team/invitations/:id/resend` | Revoking an invitation does **not** need it (it lowers risk) |
-| Remove user | `DELETE /api/team/members/:id` | |
-| Change owner email | **new** `POST /api/account/email` (verify the new address by link) | single use |
-| Bulk price changes | `POST /api/pricing/bulk/apply`, `/api/pricing/adopt/apply`, `/api/pricing/offers/bulk/apply`, `/api/pricing/offers/bulk-remove/apply`, `/api/marketplace-values/bulk/apply`, **new** `PUT /api/pricing/price-source`, pricing part of `PUT /api/settings` and `PUT /api/pricing/settings` (a store-wide rule is a bulk change) | previews do not need it |
-| Generated file downloads | `GET /api/generated-files/:id/download` | Returns 403 `STEP_UP_REQUIRED`; the UI steps up and retries |
-| Security settings | `PUT /api/settings` with `security.*`; new disable-authenticator and regenerate-recovery-codes endpoints | |
-| Sessions | revoke all of my sessions; **owner: revoke all store sessions** (single use) | Revoking **one** device does not need it |
-| Password change (new, B12) | `POST /api/account/password` | current password + step-up |
-| Reset store data | none today (CLI script, B15) | Any future API must use `stepUp` |
+- **Security window: 10 minutes.** Team invite, resend and remove, role change, owner email, password, security settings, revoke all.
+- **Work window: 30 minutes.** Bulk price changes, adoption, price source, generated-file downloads. One step-up covers a normal work session.
+- **Single use** (the step-up is consumed by the action, inside the 10-minute window): owner-email change and store-wide revoke.
 
-Mechanism: add `stepUp?: boolean | 'single'` to the `Access` policy ([security.guard.ts:10](../../apps/api/src/http/security.guard.ts)). The guard checks `session.step_up_at > now − 10 min`. Step-up endpoints: `POST /api/auth/step-up/start` → `{ method: "email"|"totp", resendAvailableAt }`, and `POST /api/auth/step-up/verify {code}` → `{ validUntil }`. Both are CSRF-protected and use the same limits as login OTPs, with `purpose='step_up'`.
+A step-up made for either kind opens both windows. A security action 12 minutes after a step-up asks again; a download at the same moment does not.
+
+| Action | Endpoint(s) | Window | Notes |
+| --- | --- | --- | --- |
+| Role change | `PATCH /api/team/members/:id/role` | security 10 min | |
+| Invite user, resend invitation | `POST /api/team/invitations`, `POST /api/team/invitations/:id/resend` | security 10 min | Revoking an invitation does **not** need it (it lowers risk) |
+| Remove user | `DELETE /api/team/members/:id` | security 10 min | |
+| Change owner email | **new** `POST /api/account/email` (verify the new address by link) | security, **single use** | |
+| Password change (new, B12) | `POST /api/account/password` | security 10 min | current password + step-up |
+| Security settings | `PUT /api/settings` with `security.*`; new disable-authenticator and regenerate-recovery-codes endpoints | security 10 min | |
+| Revoke all my sessions | `POST /api/account/sessions/revoke-all` | security 10 min | Revoking **one** device does not need it |
+| Revoke all store sessions (owner) | `POST /api/team/sessions/revoke-all` | security, **single use** | |
+| Bulk price changes | `POST /api/pricing/bulk/apply`, `/api/pricing/offers/bulk/apply`, `/api/pricing/offers/bulk-remove/apply`, `/api/marketplace-values/bulk/apply`, pricing part of `PUT /api/settings` and `PUT /api/pricing/settings` (a store-wide rule is a bulk change) | work 30 min | previews do not need it |
+| Adoption | `POST /api/pricing/adopt/apply` | work 30 min | |
+| Price source | `PUT /api/pricing/price-source` | work 30 min | |
+| Generated file downloads | `GET /api/generated-files/:id/download` | work 30 min | every role (D14). Returns 403 `STEP_UP_REQUIRED`; the UI steps up and retries |
+| Reset store data | none today (CLI script, B15) | security, single use | Any future API must use `stepUp` |
+
+Mechanism: add `stepUp?: 'security' | 'work' | 'single'` to the `Access` policy ([security.guard.ts:10](../../apps/api/src/http/security.guard.ts)). The guard checks `session.step_up_at > now − 10 min` for `security` and `single`, and `> now − 30 min` for `work`. For `single`, the action sets `step_up_at = null` in its own transaction. The 403 body carries `{ code: "STEP_UP_REQUIRED", window: "security" | "work" }`. The `verify` response returns `{ securityValidUntil, workValidUntil }`. Step-up endpoints: `POST /api/auth/step-up/start` → `{ method: "email"|"totp", resendAvailableAt }`, and `POST /api/auth/step-up/verify {code}` → `{ validUntil }`. Both are CSRF-protected and use the same limits as login OTPs, with `purpose='step_up'`. `verify` returns `{ securityValidUntil, workValidUntil }`.
 
 ### 5.4 Sessions screen (API)
 
@@ -458,7 +467,7 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 | 20-day hard limit despite activity | clock jumps of 6 days, touching each time → refused at day 20 |
 | 7-day idle | clock +7 d → `SESSION_EXPIRED` |
 | Touch throttle | two requests within 5 min → one UPDATE (spy on the repository) |
-| Step-up | every endpoint in 5.3 returns 403 `STEP_UP_REQUIRED` without it, succeeds within 10 min, fails at 10 min + 1 s; single-use endpoints fail on a second call. A table-driven test iterates the route list taken from the controller metadata so that no new sensitive route is missed |
+| Step-up | every endpoint in 5.3 returns 403 `STEP_UP_REQUIRED` without it. Security endpoints succeed at 9 min 59 s and fail at 10 min + 1 s; work endpoints succeed at 29 min 59 s and fail at 30 min + 1 s; a security action at minute 12 is refused while a download at minute 12 succeeds; single-use endpoints fail on a second call. A table-driven test iterates the route list taken from the controller metadata so that no new sensitive route is missed |
 | Sessions screen | list, revoke one, revoke all except current, owner store-wide revoke; an analyst cannot call the store-wide revoke |
 | Revocation on password reset, member removal and role change | the old cookies return 401 |
 | TOTP users | get `totp_required`, not email; email OTP refused for them |
@@ -470,6 +479,8 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 
 ## Decisions for the owner
 
+**Owner's answers (20 November 2026):** D1–D12, D15, D16 and D17 approved as recommended. D7: owner and admin only (role table fixed). D13/D14 changed: a 10-minute security window and a 30-minute work window, as described in 5.3; owner-email change and store-wide revoke stay single use. Steps 1–12 approved to start; steps 13–25 wait for the frontend contract.
+
 | # | Decision | Recommendation | Reason |
 | --- | --- | --- | --- |
 | D1 | What "two-step verification" means in onboarding step 2 now that the authenticator is optional | Email OTP counts. The authenticator app is an optional checklist item, recommended for owners | Follows Part 5 decision 5 and removes the current forced-enrollment wall |
@@ -478,14 +489,14 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 | D4 | Block uploads to a disabled marketplace? | Yes, once the store has switch rows; legacy stores keep implicit enabling | Prevents B4 without breaking old stores |
 | D5 | Should the old `adopt/apply` also set `price_source` when it is null? | Yes | Stores that adopt from the Pricing screen should not be asked again |
 | D6 | Backfill for existing stores | Mark the price source as confirmed (`erp_markup`, or `adopt` if a `pricing.prices_adopted` event exists) when the store already has matched recon data | Existing owners should not see an onboarding wall after deploy |
-| D7 | May a catalogue manager choose the price source? | No, owner and admin only (a new check inside the endpoint) | A store-wide decision; catalogue managers can still adjust prices afterwards |
+| D7 | May a catalogue manager choose the price source? | **Decided:** no, owner and admin only (a role check inside the endpoint) | A store-wide decision; catalogue managers can still adjust prices afterwards |
 | D8 | TENANT_ID in dev | Ignore it outside production | Makes multi-store local work with no code edits; production keeps the pin |
 | D9 | Invalidate all sessions on the auth deploy | Yes, announced | Old sessions have no device binding |
 | D10 | Device trust period | 90 days absolute, renewed by each OTP | Balances "no OTP at every 20-day re-login" against bounded trust |
 | D11 | Store an IP prefix on sessions for the sessions screen | Store only the user agent label, no IP | Less personal data; the label is enough to recognise a device |
 | D12 | "Shared computer" option | Yes: no device trust and a 12 h cap | Covers the shared-PC threat cheaply |
-| D13 | Step-up window | 10 min; single use for owner-email change and store-wide revoke | Short enough to matter; single use for the two irreversible actions |
-| D14 | Should generated-file downloads need step-up for analysts too? | Yes, everyone | The files contain the full price list; exfiltration risk is role-independent |
+| D13 | Step-up window | **Decided (changed):** 10 min for security actions, 30 min for daily work actions; single use for owner-email change and store-wide revoke | Security actions stay short; daily work isn't interrupted every 10 minutes |
+| D14 | Should generated-file downloads need step-up for analysts too? | **Decided (changed):** yes, every role, in the 30-minute work window | The files contain the full price list; the longer window keeps daily downloads usable |
 | D15 | Outbox speed for OTP | Immediate BullMQ trigger + 20 s retry + discard after expiry | Needed for usable OTP (B8) |
 | D16 | Owner recovery without a second owner | The operator CLI `recover-owner` after out-of-band identity checks | The only path without a backdoor code |
 | D17 | Keep the existing `steps` field of `GET /api/onboarding` | Keep until the frontend switches to `checklist`, then remove in one commit | Avoids a lock-step deploy |
@@ -517,7 +528,7 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 16. `feat(config): production SMTP validation; SESSION_MAX_DAYS/IDLE_DAYS/DEVICE_TRUST_DAYS`. Tests: `config.test.ts`.
 17. `feat(auth): login challenge + email OTP + device cookie; TOTP challenge for enrolled users; replace restricted sessions` + migration step `DELETE FROM sessions` (D9). Tests: 5.13 login rows.
 18. `feat(auth): device-bound checkSession, 20 d/7 d limits, touch throttle` (B11). Tests: 5.13 session rows.
-19. `feat(auth): step-up endpoints + Access.stepUp; apply to the 5.3 routes`. Tests: the table-driven route test.
+19. `feat(auth): step-up endpoints + Access.stepUp ('security' 10 min | 'work' 30 min | 'single'); apply to the 5.3 routes`. Tests: the table-driven route test with both windows.
 20. `feat(account): sessions list/revoke/revoke-all; owner store-wide revoke; revoke devices on reset, removal and role change`. Tests.
 21. `feat(account): password change; owner email change with verification` (B12). Tests.
 22. `feat(auth): authenticator optional; mfaRequiredForAll new meaning; disable TOTP`. Tests: migration of enrolled owners.
@@ -538,7 +549,7 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 | Backfill D6 is wrong for a store | It skips or forces step d wrongly | Owner-visible in Settings; can be reconfirmed |
 | Auth deploy logs everyone out (D9) | Support load | Announce; deploy off-hours |
 | Email outage = no new-device logins | Users locked out of new browsers | Trusted devices keep working; TOTP owners unaffected; mail readiness alert |
-| Step-up on downloads and bulk pricing | Slower daily work; scripts in `scripts/dev/*.ps1` (bulk-price-check etc.) stop working without OTP | Update the scripts to read the OTP from Mailpit or the outbox in dev; the 10-minute window covers a work session |
+| Step-up on downloads and bulk pricing | Slower daily work; scripts in `scripts/dev/*.ps1` (bulk-price-check etc.) stop working without OTP | Update the scripts to read the OTP from Mailpit or the outbox in dev; the 30-minute work window covers a normal work session |
 | Removing the `mfa_*` session states | The frontend state machine breaks | Ship behind the coordinated contract (commit 17), with the frontend in the same release |
 | New tables not in the ADR 018 lists | The reset script refuses to run | Intended guard; commit 13 updates the lists |
 | Restricted-session removal touches every login test | Large test churn in `auth-team`, `session-errors` and the harness | Change the harness helpers first (commit 17) so other suites change only via the helpers |
