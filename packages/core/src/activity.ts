@@ -7,7 +7,7 @@ export type ActivityGroup = typeof ACTIVITY_GROUPS[number];
 export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
   price: ['pricing.settings_changed', 'pricing.marketplace_rule_set', 'pricing.marketplace_rule_deleted', 'pricing.category_rule_set',
     'pricing.category_rule_deleted', 'pricing.prices_adopted', 'pricing.bulk_applied', 'product.price_rule_set', 'product.price_rule_deleted', 'product.offer_set', 'product.offer_deleted',
-    'pricing.offers_bulk_set', 'pricing.offers_bulk_removed'],
+    'pricing.offers_bulk_set', 'pricing.offers_bulk_removed', 'pricing.price_source_set'],
   stock_uploads: ['upload.created', 'upload.rejected', 'upload.queued', 'upload.mapping_confirmed', 'upload.apply_requested', 'upload.discarded',
     'upload.needs_mapping', 'upload.reviewed', 'upload.failed', 'upload.applied', 'upload.apply_failed', 'recon.recompute_requested', 'recon.failed', 'file.generated', 'file.generation_failed',
     'template.updated',
@@ -41,6 +41,14 @@ function rule(v: unknown): SafeValue {
 }
 const marketplaceList = (v: unknown): SafeValue => Array.isArray(v)
   ? (MARKETPLACES as readonly string[]).filter(m => v.includes(m)).join(', ') || 'none' : null;
+const MARKETPLACE_NAMES: Record<string, string> = { talabat: 'Talabat', snoonu: 'Snoonu', rafeeq: 'Rafeeq', keeta: 'Keeta' };
+/** {source, marketplaceId} as stored by pricing.price_source_set; anything else shows as null. */
+const priceSourceLabel = (v: unknown): SafeValue => {
+  const s = object(v);
+  if (s.source === 'erp_markup') return 'ERP price plus markup';
+  if (s.source === 'adopt' && typeof s.marketplaceId === 'string' && MARKETPLACE_NAMES[s.marketplaceId]) return 'Prices adopted from ' + MARKETPLACE_NAMES[s.marketplaceId];
+  return null;
+};
 const role = (v: unknown) => ['owner', 'admin', 'catalogue_manager', 'analyst'].includes(String(v)) ? String(v) : null;
 const BLOCK_REASON_LABELS: Record<string, string> = { old: 'old product', seasonal: 'seasonal', other: 'other' };
 const MAPPING_FIELDS: ReadonlySet<string> = new Set([...ERP_FIELDS, ...MARKETPLACE_FIELDS].map(f => f.key));
@@ -155,6 +163,9 @@ export function presentActivity(action: string, details: unknown, options: { pro
     if (typeof d.field === 'string' && allowed.includes(d.field)) change(d.field, scalar(d.old), scalar(d.new));
     // The enabled marketplaces (Settings or provisioning): known ids only, shown as a list.
     if (d.field === 'marketplaces') change('marketplaces', marketplaceList(d.old), marketplaceList(d.new));
+  } else if (action === 'pricing.price_source_set') {
+    summary = 'Price source chosen';
+    change('priceSource', priceSourceLabel(d.old), priceSourceLabel(d.new));
   } else if (action === 'pricing.settings_changed') {
     summary = 'Pricing settings changed';
     if (d.field === 'defaultRule') change('defaultRule', rule(d.old), rule(d.new));

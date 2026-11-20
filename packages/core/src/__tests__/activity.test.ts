@@ -19,6 +19,12 @@ describe('safe activity summaries', () => {
       .toEqual([{ field: 'marketplaces', before: 'none', after: 'talabat, snoonu' }]);
     expect(presentActivity('settings.changed', { field: 'marketplaces', old: 'x', new: 5 }).beforeAfter).toEqual([{ field: 'marketplaces', before: null, after: null }]);
   });
+  it('labels the price source choice, known values only', () => {
+    expect(presentActivity('pricing.price_source_set', { old: null, new: { source: 'adopt', marketplaceId: 'talabat' } })).toMatchObject({
+      group: 'price', summary: 'Price source chosen', beforeAfter: [{ field: 'priceSource', before: null, after: 'Prices adopted from Talabat' }] });
+    expect(presentActivity('pricing.price_source_set', { old: { source: 'adopt', marketplaceId: 'x' }, new: { source: 'erp_markup' } }).beforeAfter)
+      .toEqual([{ field: 'priceSource', before: null, after: 'ERP price plus markup' }]);
+  });
   it('hides cost before/after values from read-only pricing roles', () => {
     expect(presentActivity('product.field_changed', { field: 'costPrice', old: 1, new: 2 }).beforeAfter).toEqual([]);
     expect(presentActivity('product.field_changed', { field: 'costPrice', old: 1, new: 2 }, { canViewCosts: true }).beforeAfter).toHaveLength(1);

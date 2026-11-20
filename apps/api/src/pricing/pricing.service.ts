@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PRODUCT_BLOCKED_MESSAGE } from '../../../../packages/core/src/products/blocking.js';
 import { z } from 'zod';
 import { AuthService, type RequestContext } from '../auth/auth.service.js';
@@ -13,9 +13,18 @@ import { RECON_QUEUE } from '../tokens.js';
 import {
   DEFAULT_PRICING, enabledMarketplaceIds, loadPricing, marketplacePricingView, productInputs, productPricingView, ruleView, type TenantPricing,
 } from './pricing.data.js';
-import { adoptionCounts, adoptionPreview, planAdoption, type AdoptInput } from './price-adoption.js';
+import { adoptionCounts, adoptionPreview, adoptionToken, planAdoption, type AdoptInput } from './price-adoption.js';
 
 type RuleInput = z.infer<typeof contracts.priceRule>;
+const invalidField = (path: string, message: string) => new BadRequestException({ message: 'Validation failed', details: [{ path, message }] });
+/** The store's price source: source null until it is chosen (onboarding step d). */
+export function priceSourceView(row: { priceSource: string | null; priceSourceMarketplaceId: string | null; priceSourceConfirmedAt: Date | null } | null) {
+  return {
+    source: (row?.priceSource ?? null) as 'erp_markup' | 'adopt' | null,
+    marketplaceId: (row?.priceSourceMarketplaceId ?? null) as MarketplaceId | null,
+    confirmedAt: row?.priceSourceConfirmedAt ?? null,
+  };
+}
 type RuleView = ReturnType<typeof ruleView>;
 /** 'same' is stored with value 0. */
 const stored = (r: RuleInput) => ({ mode: r.mode, value: r.mode === 'same' ? 0 : r.value });
@@ -331,19 +340,76 @@ export class PricingService {
     return this.change(ctx, 'pricing.adopt', async (data, actor) => {
       await this.checkAdoptScope(data, input);
       const { products, plan } = await planAdoption(data, input);
-      const counts = adoptionCounts(products, plan);
-      if (plan.adopt.length) {
-        await data.pricing.upsertProductRules(plan.adopt.map(r => ({ productId: r.productId, mode: r.rule.mode, value: r.rule.value })));
-        await data.products.auditEvents(actor, ctx.requestId, plan.adopt.filter(r => r.previousRule).map(r => ({
-          action: 'product.price_rule_set', entityId: r.productId,
-          details: { old: ruleView(r.previousRule!.mode, r.previousRule!.value), new: ruleView(r.rule.mode, r.rule.value), via: 'pricing.adopt' },
-        })));
-        await data.event('pricing.prices_adopted', actor, null, ctx.requestId, {
-          sourceMarketplaceId: input.sourceMarketplaceId, mode: input.mode, onlyWithoutRule: input.onlyWithoutRule, scope: input.scope, ...counts,
-        });
+      const counts = await this.writeAdoption(data, actor, ctx.requestId, input, products, plan);
+      // An Owner or Admin adopting the whole catalogue answers onboarding's price question too (owner decisions D5, D7).
+      if (plan.adopt.length && 'all' in input.scope && !(await data.pricing.priceSource())?.priceSource && await this.choosesPriceSource(data, actor)) {
+        await this.recordPriceSource(data, actor, ctx.requestId, 'adopt', input.sourceMarketplaceId);
       }
       return { result: counts, changed: plan.adopt.length > 0 };
     }, ADOPT_TIMEOUT_MS);
+  }
+
+  private async writeAdoption(data: TenantData, actor: string, requestId: string, input: AdoptInput, products: number, plan: Awaited<ReturnType<typeof planAdoption>>['plan']) {
+    const counts = adoptionCounts(products, plan);
+    if (plan.adopt.length) {
+      await data.pricing.upsertProductRules(plan.adopt.map(r => ({ productId: r.productId, mode: r.rule.mode, value: r.rule.value })));
+      await data.products.auditEvents(actor, requestId, plan.adopt.filter(r => r.previousRule).map(r => ({
+        action: 'product.price_rule_set', entityId: r.productId,
+        details: { old: ruleView(r.previousRule!.mode, r.previousRule!.value), new: ruleView(r.rule.mode, r.rule.value), via: 'pricing.adopt' },
+      })));
+      await data.event('pricing.prices_adopted', actor, null, requestId, {
+        sourceMarketplaceId: input.sourceMarketplaceId, mode: input.mode, onlyWithoutRule: input.onlyWithoutRule, scope: input.scope, ...counts,
+      });
+    }
+    return counts;
+  }
+
+  /** Owner decision D7: only Owners and Admins choose how the store sets prices. */
+  private async choosesPriceSource(data: TenantData, userId: string) {
+    const role = (await data.membership(userId))?.role;
+    return role === 'owner' || role === 'admin';
+  }
+  private async recordPriceSource(data: TenantData, actor: string, requestId: string, source: 'erp_markup' | 'adopt', marketplaceId: MarketplaceId | null) {
+    const before = await data.pricing.priceSource();
+    const old = before?.priceSource ? { source: before.priceSource, marketplaceId: before.priceSourceMarketplaceId } : null;
+    if (old?.source === source && old.marketplaceId === marketplaceId) return;
+    await data.pricing.setPriceSource(source, marketplaceId);
+    await data.event('pricing.price_source_set', actor, null, requestId, { old, new: { source, marketplaceId } });
+  }
+
+  priceSource(ctx: RequestContext) {
+    return this.auth.authenticated(ctx, { permission: 'pricing.view' }, async data => priceSourceView(await data.pricing.priceSource()));
+  }
+
+  /**
+   * Onboarding step d, also Settings > Pricing: choose how the store sets prices, in one transaction.
+   * erp_markup writes the default rule (and rounding); adopt applies exactly the previewed whole-catalogue adoption from an
+   * enabled marketplace with an applied file (409 when the plan changed since the preview). Owner and Admin only (D7).
+   */
+  async setPriceSource(ctx: RequestContext, input: z.infer<typeof contracts.setPriceSource>) {
+    const { result, changed } = await this.auth.authenticated(ctx, { permission: 'pricing.edit', mutation: true, timeout: ADOPT_TIMEOUT_MS }, async (data, p) => {
+      if (p.member.role !== 'owner' && p.member.role !== 'admin') throw new ForbiddenException('Only Owners and Admins choose how prices are set');
+      let changed: boolean, adopted: ReturnType<typeof adoptionCounts> | undefined;
+      if (input.source === 'erp_markup') {
+        changed = (await this.writeSettings(data, p.user.id, ctx.requestId, { defaultRule: input.rule, ...(input.rounding ? { rounding: input.rounding } : {}) })).changed;
+      } else {
+        const label = MARKETPLACE_LABELS[input.sourceMarketplaceId];
+        if (!(await enabledMarketplaceIds(data)).includes(input.sourceMarketplaceId)) throw invalidField('sourceMarketplaceId', `${label} is not enabled for this store`);
+        if (!(await data.recon.lastApplied()).has(input.sourceMarketplaceId)) throw invalidField('sourceMarketplaceId', `Upload and apply a ${label} file first`);
+        const adoptInput: AdoptInput = { sourceMarketplaceId: input.sourceMarketplaceId, mode: input.mode, onlyWithoutRule: input.onlyWithoutRule, scope: { all: true } };
+        const { products, plan } = await planAdoption(data, adoptInput);
+        if (adoptionToken(data.tenantId, adoptInput, products, plan) !== input.previewToken) throw new ConflictException('Prices changed since the preview; preview again');
+        adopted = await this.writeAdoption(data, p.user.id, ctx.requestId, adoptInput, products, plan);
+        changed = plan.adopt.length > 0;
+      }
+      await this.recordPriceSource(data, p.user.id, ctx.requestId, input.source, input.source === 'adopt' ? input.sourceMarketplaceId : null);
+      return {
+        result: { priceSource: priceSourceView(await data.pricing.priceSource()), pricing: settingsView(await loadPricing(data)), adopted: adopted ?? null },
+        changed,
+      };
+    });
+    if (changed) await this.recon.enqueueRecon(ctx.tenantId, input.source === 'adopt' ? 'pricing.adopt' : 'pricing.price_source');
+    return result;
   }
 
   deleteOffer(ctx: RequestContext, id: string) {
