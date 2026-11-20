@@ -237,6 +237,7 @@ model Marketplace {
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
   tenantMarketplaces TenantMarketplace[]
   valueOverrides     MarketplaceValueOverride[]
+  priceSources       PricingSettings[]
 
   @@map("marketplaces")
 }
@@ -373,6 +374,11 @@ model PricingSettings {
   rounding                String   @default("exact")
   perMarketplaceEnabled   Boolean  @default(false) @map("per_marketplace_enabled")
   compareReferenceDefault String   @default("marketplace") @map("compare_reference_default")
+  /// erp_markup | adopt | null (not chosen yet); CHECK pricing_settings_price_source_check (migration 202611200001)
+  priceSource              String?      @map("price_source")
+  priceSourceMarketplaceId String?      @map("price_source_marketplace_id")
+  priceSourceMarketplace   Marketplace? @relation(fields: [priceSourceMarketplaceId], references: [id])
+  priceSourceConfirmedAt   DateTime?    @map("price_source_confirmed_at") @db.Timestamptz
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
