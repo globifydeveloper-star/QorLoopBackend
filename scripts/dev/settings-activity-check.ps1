@@ -1,4 +1,5 @@
 param(
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
     [Guid]$ProductId = [Guid]::Empty,
     [switch]$ReversibleEdit
 )
@@ -6,8 +7,8 @@ param(
 # PowerShell 5.1. Enter credentials only into this local terminal, never into chat.
 # No .env access, credential output, cookie output, real uploads or price-rule edits.
 $ErrorActionPreference = 'Stop'
-$qorloopApi = 'http://qorloop-demo.localhost:4000'
-$qorloopOrigin = 'http://qorloop-demo.localhost:3000'
+$qorloopApi = "http://$Store.localhost:4000"
+$qorloopOrigin = "http://$Store.localhost:3000"
 $qorloopSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $script:qorloopCsrf = $null
 

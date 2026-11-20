@@ -4,8 +4,9 @@
 # for them and, with -Apply, applies it, replays the same idempotency key, and waits for the recompute.
 # Before applying it saves each product's current own rule to -RevertFile (bulk-price-revert.ps1 restores them).
 param(
-    [string]$ApiBase = 'http://qorloop-demo.localhost:4000',
-    [string]$Origin = 'http://qorloop-demo.localhost:3000',
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
+    [string]$ApiBase = "http://$Store.localhost:4000",
+    [string]$Origin = "http://$Store.localhost:3000",
     [ValidateSet('talabat', 'snoonu', 'rafeeq', 'keeta')][string]$Marketplace = 'talabat',
     [ValidateRange(1, 50)][int]$Count = 5,
     [string]$RevertFile = 'D:\Qorloop-test\bulk-price-revert.json',

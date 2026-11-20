@@ -57,6 +57,17 @@ npm run dev
 - OpenAPI Swagger docs: `http://localhost:4000/docs`
 - Health check: `http://localhost:4000/health`
 
+### 5. More than one store locally
+Every store is reached by its own host, `<slug>.localhost`. Outside production `TENANT_ID` is ignored, so no `.env`
+edit is needed:
+```bash
+npm run provision:store -- --name "Second Store" --slug second --owner-email owner@example.test --marketplaces talabat
+# the invitation arrives in Mailpit (http://localhost:8025); the worker must run
+npm run provision:store -- resend-owner-invitation --slug second   # if the 48-hour link expired before activation
+```
+Open `http://second.localhost:3000`. The dev check scripts take `-Store second` (default `qorloop-demo`), for example
+`powershell -File scripts/dev/onboarding-check.ps1 -Store second`.
+
 
 ## Upload API (Task 6)
 

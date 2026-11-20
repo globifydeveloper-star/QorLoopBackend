@@ -1,12 +1,13 @@
 param(
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
     [string]$Marketplace = 'talabat'
 )
 # PowerShell 5.1. READ-ONLY checks of the catalogue product list with marketplace values (docs/products-api.md).
 # Enter credentials only into this local terminal, never into chat. No .env access; no credential, cookie or token output.
 # Only GET requests, apart from signing in and out. No migration needed.
 $ErrorActionPreference = 'Stop'
-$qorloopApi = 'http://qorloop-demo.localhost:4000'
-$qorloopOrigin = 'http://qorloop-demo.localhost:3000'
+$qorloopApi = "http://$Store.localhost:4000"
+$qorloopOrigin = "http://$Store.localhost:3000"
 $qorloopSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $script:qorloopCsrf = $null
 

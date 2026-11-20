@@ -3,8 +3,9 @@
 # written: only POST /api/marketplace-values/bulk/preview is called (it reads only), then the session logs out.
 #   powershell -ExecutionPolicy Bypass -File scripts\dev\copy-from-marketplace-check.ps1 [-Target talabat] [-Source snoonu] [-Fields price,availability]
 param(
-    [string]$ApiBase = 'http://qorloop-demo.localhost:4000',
-    [string]$Origin = 'http://qorloop-demo.localhost:3000',
+    [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo',
+    [string]$ApiBase = "http://$Store.localhost:4000",
+    [string]$Origin = "http://$Store.localhost:3000",
     [ValidateSet('talabat', 'snoonu', 'rafeeq', 'keeta')][string]$Target = 'talabat',
     [ValidateSet('talabat', 'snoonu', 'rafeeq', 'keeta')][string]$Source = 'snoonu',
     [ValidateSet('price', 'availability')][string[]]$Fields = @('price', 'availability')

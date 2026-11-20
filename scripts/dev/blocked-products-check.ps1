@@ -2,9 +2,10 @@
 # PowerShell 5.1. READ-ONLY checks of blocked products (docs/products-api.md, "Blocked products"). Needs migration 202611170001.
 # Enter credentials only into this local terminal, never into chat. No .env access; no credential, cookie or token output.
 # Only GET requests and one block PREVIEW (writes nothing), apart from signing in and out.
+param([ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')][string]$Store = 'qorloop-demo')
 $ErrorActionPreference = 'Stop'
-$qorloopApi = 'http://qorloop-demo.localhost:4000'
-$qorloopOrigin = 'http://qorloop-demo.localhost:3000'
+$qorloopApi = "http://$Store.localhost:4000"
+$qorloopOrigin = "http://$Store.localhost:3000"
 $qorloopSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $script:qorloopCsrf = $null
 
