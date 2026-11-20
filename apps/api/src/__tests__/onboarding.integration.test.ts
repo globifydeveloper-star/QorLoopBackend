@@ -153,7 +153,10 @@ describe('GET /api/onboarding', () => {
     expect((await h.request('GET', '/api/onboarding', { hostname: 'missing.localhost' }, a.owner)).statusCode).toBe(404);
     for (const role of ['catalogue_manager', 'analyst']) {
       const member = await h.member(b, role);
-      expect(await get(b, member)).toEqual({ steps: [], percent: 0, nextStepId: null, complete: false, marketplaces: [] });
+      const { checklist, essentials, ...wizard } = await get(b, member) as OnboardingProgress & { checklist: { id: string }[]; essentials: { complete: boolean } };
+      expect(wizard).toEqual({ steps: [], percent: 0, nextStepId: null, complete: false, marketplaces: [] });
+      expect(checklist.map(i => i.id)).toEqual(role === 'analyst' ? [] : ['erp_upload', 'marketplace_uploads']);
+      expect(essentials.complete).toBe(false);
     }
     const response = await h.request('GET', '/api/onboarding', a, admin);
     expect(response.body).not.toMatch(/password|mfaSecret|pendingMfa|token|csrf|storageKey|sealedMessage|owner@|admin@/i);
@@ -161,7 +164,7 @@ describe('GET /api/onboarding', () => {
     expect(response.body).not.toContain(owner.passwordHash);
     expect(response.body).not.toContain(owner.mfaSecret!);
     expect(Object.keys(response.json())).toEqual(['data']);
-    expect(Object.keys(response.json().data).sort()).toEqual(['complete', 'marketplaces', 'nextStepId', 'percent', 'steps']);
+    expect(Object.keys(response.json().data).sort()).toEqual(['checklist', 'complete', 'essentials', 'marketplaces', 'nextStepId', 'percent', 'steps']);
   });
 
   it('ignores empty/uncomputed summaries and non-applied uploads, and exports the actual GET contract only', async () => {
@@ -180,6 +183,6 @@ describe('GET /api/onboarding', () => {
     expect(h.api.spec.paths['/api/onboarding/skip']).toBeUndefined();
     expect(h.api.spec.paths['/api/onboarding/dismiss']).toBeUndefined();
     const schema = spec!.get!.responses['200'] as { content: { 'application/json': { schema: { properties: { data: { required: string[] } } } } } };
-    expect(schema.content['application/json'].schema.properties.data.required).toEqual(['steps', 'percent', 'nextStepId', 'complete', 'marketplaces']);
+    expect(schema.content['application/json'].schema.properties.data.required).toEqual(['steps', 'percent', 'nextStepId', 'complete', 'marketplaces', 'checklist', 'essentials']);
   });
 });
