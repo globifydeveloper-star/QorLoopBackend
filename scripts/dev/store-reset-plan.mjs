@@ -25,7 +25,8 @@ export const RESET_ACTION = 'store.data_reset';
 // ───────── Audit events (owner decision A1 b) ─────────
 // Kept: security, team and settings events, which describe rows that are kept. Everything else is deleted, including
 // actions this list does not know, so no business event can slip through. 'store.' keeps earlier store.data_reset events.
-export const AUDIT_KEEP_PREFIXES = Object.freeze(['auth.', 'invitation.', 'team.', 'store.']);
+// support.*: operations actions on accounts (ADR 021, owner recovery), a security record like auth.*.
+export const AUDIT_KEEP_PREFIXES = Object.freeze(['auth.', 'invitation.', 'team.', 'store.', 'support.']);
 export const AUDIT_KEEP_ACTIONS = Object.freeze(['settings.changed', 'pricing.settings_changed', 'template.updated']);
 for (const p of AUDIT_KEEP_PREFIXES) if (!/^[a-z.]+$/.test(p)) throw new Error('audit prefix must not contain LIKE wildcards');
 for (const a of AUDIT_KEEP_ACTIONS) if (!/^[a-z_.]+$/.test(a)) throw new Error('invalid audit action');

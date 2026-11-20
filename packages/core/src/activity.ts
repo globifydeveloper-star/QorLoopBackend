@@ -1,6 +1,18 @@
 import { ERP_FIELDS, MARKETPLACE_FIELDS } from './upload/fields.js';
 import { MARKETPLACES } from './constants.js';
 
+/** Sign-in and account events of ADR 021, with their Activity labels. Details never hold codes, addresses or tokens. */
+const AUTH_EVENT_LABELS: Record<string, string> = {
+  'auth.login_succeeded': 'Signed in', 'auth.new_device': 'New device trusted', 'auth.otp_sent': 'Sign-in code emailed',
+  'auth.otp_failed': 'Wrong code entered', 'auth.otp_locked': 'Code entry locked after too many wrong codes',
+  'auth.otp_send_limited': 'Code not sent: too many codes', 'auth.otp_verified': 'Code accepted', 'auth.step_up_verified': 'Identity confirmed with a fresh code',
+  'auth.session_revoked': 'Device signed out', 'auth.sessions_revoked_all': 'Signed out on all devices', 'auth.store_sessions_revoked': 'Whole store signed out',
+  'auth.password_changed': 'Password changed', 'auth.email_change_requested': 'Email change requested', 'auth.email_changed': 'Sign-in email changed',
+  'auth.mfa_disabled': 'Authenticator app removed', 'auth.recovery_codes_regenerated': 'Recovery codes replaced',
+  'support.owner_email_changed': 'Owner account moved by support', 'mail.undeliverable': 'An email could not be delivered',
+};
+const AUTH_EVENTS = Object.keys(AUTH_EVENT_LABELS);
+
 /** Safe presentation of stored events. Never copy arbitrary details into an API response. */
 export const ACTIVITY_GROUPS = ['price', 'stock_uploads', 'catalogue', 'team_security'] as const;
 export type ActivityGroup = typeof ACTIVITY_GROUPS[number];
@@ -19,7 +31,9 @@ export const GROUP_ACTIONS: Record<ActivityGroup, readonly string[]> = {
   catalogue: ['products.activated', 'product.blocked', 'product.unblocked', 'products.blocked', 'products.unblocked', 'category.created', 'category.updated', 'category.deleted', 'category.assigned_from_erp'],
   team_security: ['settings.changed', 'store.provisioned', 'store.data_reset', 'invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked',
     'team.role_changed', 'team.member_deactivated', 'auth.login_failed', 'auth.password_verified', 'auth.logout', 'auth.password_reset_requested',
-    'auth.password_reset', 'auth.mfa_setup_started', 'auth.mfa_failed', 'auth.mfa_enrolled', 'auth.mfa_verified', 'auth.recovery_failed', 'auth.recovery_used'],
+    'auth.password_reset', 'auth.mfa_setup_started', 'auth.mfa_failed', 'auth.mfa_enrolled', 'auth.mfa_verified', 'auth.recovery_failed', 'auth.recovery_used',
+    // ADR 021: email codes, devices, step-up and account changes
+    ...AUTH_EVENTS],
 };
 export const PRICE_FIELDS = ['erpPrice', 'costPrice'] as const;
 export const STOCK_FIELDS = ['erpStock', 'erpActive', 'inLatestErpFile'] as const;
@@ -201,6 +215,7 @@ export function presentActivity(action: string, details: unknown, options: { pro
       'auth.mfa_setup_started': 'Two-step verification setup started', 'auth.mfa_failed': 'Two-step verification failed',
       'auth.mfa_enrolled': 'Two-step verification enabled', 'auth.mfa_verified': 'Two-step verification completed',
       'auth.recovery_failed': 'Recovery-code verification failed', 'auth.recovery_used': 'Recovery code used',
+      ...AUTH_EVENT_LABELS,
       'recon.recompute_requested': 'Reconciliation requested', 'recon.failed': 'Reconciliation failed',
       'file.generated': 'Marketplace file generated', 'file.generation_failed': 'Marketplace file generation failed',
       'product.marketplace_values_set': 'Marketplace export value set', 'product.marketplace_values_cleared': 'Marketplace export value removed (catalogue value used)',

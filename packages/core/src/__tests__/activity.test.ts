@@ -1,6 +1,18 @@
 import { describe, expect, it } from '@jest/globals';
 import { activityGroup, presentActivity } from '../activity.js';
 
+describe('sign-in and account events (ADR 021)', () => {
+  it('labels them in the team and security group and never shows their details', () => {
+    for (const [action, summary] of [['auth.otp_sent', 'Sign-in code emailed'], ['auth.new_device', 'New device trusted'], ['auth.otp_locked', 'Code entry locked after too many wrong codes'],
+      ['auth.step_up_verified', 'Identity confirmed with a fresh code'], ['auth.store_sessions_revoked', 'Whole store signed out'], ['support.owner_email_changed', 'Owner account moved by support']]) {
+      const shown = presentActivity(action, { purpose: 'login', sendNo: 1, label: 'Chrome on Windows', code: '123456' });
+      expect(shown).toMatchObject({ group: 'team_security', summary, beforeAfter: [] });
+      expect(JSON.stringify(shown)).not.toMatch(/123456|Chrome/);
+      expect(activityGroup(action, {})).toBe('team_security');
+    }
+  });
+});
+
 describe('safe activity summaries', () => {
   it('extracts only the requested product from a bulk change, with old/new rules and prices', () => {
     const d = { changeColumns: ['productId', 'oldMode', 'oldValue', 'newMode', 'newValue', 'oldPrice', 'newPrice'],
