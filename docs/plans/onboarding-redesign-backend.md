@@ -366,6 +366,8 @@ New actions (added to the labels in [packages/core/src/activity.ts](../../packag
 
 ### 5.8 Migration of existing owners with the authenticator
 
+Owner-confirmed rule: **the authenticator app is an option next to the email code.** The email code is the default second step for everyone. Any user may add the app in their security settings (an onboarding checklist item for owners, recommended but not required). Once added, the app replaces the email code for that user: at sign-in on a new device and for step-up. Recovery codes cover a lost phone. The email code is not accepted instead, so the app cannot be bypassed through the mailbox.
+
 - `users.mfa_secret` is kept. Those users get a **TOTP challenge** on a new device instead of email OTP (the stronger factor stays active). Step-up also uses TOTP for them.
 - On deploy every existing session is invalidated: they have no `device_id`, and the old `sessions` table semantics change. Everyone signs in once, passes their second factor, and the browser becomes trusted. Announce this beforehand.
 - Owners who never enrolled (currently stuck at `mfa_setup_required`) no longer need to: email OTP applies.
@@ -479,7 +481,7 @@ The new tables need ADR 018's KEEP list updated (`trusted_devices` and `login_ch
 
 ## Decisions for the owner
 
-**Owner's answers (20 November 2026):** D1–D12, D15, D16 and D17 approved as recommended. D7: owner and admin only (role table fixed). D13/D14 changed: a 10-minute security window and a 30-minute work window, as described in 5.3; owner-email change and store-wide revoke stay single use. Steps 1–12 approved to start; steps 13–25 wait for the frontend contract.
+**Owner's answers (20 November 2026):** D1–D12, D15, D16 and D17 approved as recommended. D7: owner and admin only (role table fixed). D13/D14 changed: a 10-minute security window and a 30-minute work window, as described in 5.3; owner-email change and store-wide revoke stay single use. Steps 1–12 approved to start; steps 13–25 wait for the frontend contract. **Confirmed later the same day:** the authenticator app stays as an option next to the email code (section 5.8, unchanged). It is not required for owners, and owners who already use it keep it.
 
 | # | Decision | Recommendation | Reason |
 | --- | --- | --- | --- |
