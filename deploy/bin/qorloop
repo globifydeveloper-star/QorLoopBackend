@@ -228,7 +228,7 @@ cmd_release() {
   local what=$1 sha=$2 tmp s st api web
   [[ $what == api || $what == web ]] || die "release api|web <sha>"
   [[ $sha =~ ^[0-9a-f]{7,40}$ ]] || die "invalid sha"
-  tmp=$(mktemp); trap 'rm -f "$tmp"' RETURN
+  tmp=$(mktemp); trap "rm -f '$tmp'" EXIT
   cat > "$tmp"
   [[ $what == api ]] && cmd_install < "$tmp"
   cmd_build "$what" "$sha" < "$tmp"
