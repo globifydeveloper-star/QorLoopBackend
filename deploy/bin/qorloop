@@ -240,7 +240,20 @@ cmd_release() {
     if [[ $what == api ]]; then api=$sha; else web=$sha; fi
     cmd_deploy "$s" "$api" "$web"
   done
+  prune_images "$what"
   log "release $what $sha done"
+}
+
+# Keep the newest 3 builds of a component plus every image a client runs or would roll back to; drop the rest.
+prune_images() {
+  local what=$1 used img
+  used=$(cat "$CLIENTS"/*/stack.env 2>/dev/null | grep -E '^(PREVIOUS_)?(API|WEB)_IMAGE=' | cut -d= -f2 | sort -u)
+  docker images "qorloop/$what" --format '{{.CreatedAt}}|{{.Repository}}:{{.Tag}}' | sort -r | tail -n +4 | cut -d'|' -f2 |
+    while read -r img; do
+      grep -qxF "$img" <<< "$used" || { docker rmi "$img" >/dev/null 2>&1 && log "removed old image $img"; } || true
+    done
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
 }
 
 # Forced command for the CI key (authorized_keys command="/usr/local/bin/qorloop ci"): only `release api|web <sha>`.

@@ -22,8 +22,8 @@ jobs:
     env:
       NODE_ENV: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -40,7 +40,7 @@ jobs:
     # Add required reviewers to this environment in GitHub to approve each deploy by hand.
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Release the API to the VPS
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
