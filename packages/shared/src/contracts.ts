@@ -199,7 +199,9 @@ export const updateMarketplaces = z.object({
   enabled: z.array(z.enum(MARKETPLACES)).min(1, 'Choose at least one marketplace').max(MARKETPLACES.length)
     .refine(v => new Set(v).size === v.length, 'Each marketplace once'),
 }).strict();
-const categoryKey = { categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
+/** POST /api/store/reset (ADR 022): the Owner types the store's address name (slug) to confirm. */
+export const resetStoreData = z.object({ confirmSlug: z.string().trim().min(1, 'Type the store name to confirm').max(63) }).strict();
+const categoryKey ={ categoryId: z.uuid(), subcategoryId: z.uuid().nullable().optional() };
 export const categoryPriceRule = ruleWith(categoryKey);
 export const categoryPriceRuleKey = z.object(categoryKey).strict();
 export const productOffer = z.object({

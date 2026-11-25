@@ -77,6 +77,13 @@ To recover an Owner who lost the mailbox (after confirming their identity):
 `npm run provision:store -- recover-owner --slug s --current-email old@example.test --new-email new@example.test --confirmed-identity`.
 
 
+### 7. Resetting a store's data (ADR 022)
+The Owner can start again from an empty catalogue under **Settings → Reset store data**. They review the counts, type
+the store's slug and enter a fresh code. Products, uploads, comparisons, generated files, rules and offers are deleted.
+Team, settings and saved layouts stay. The worker deletes the stored files about two minutes later. Nothing can be
+undone except by restoring a database backup. The operations script (`scripts/dev/reset-store-data.mjs`, ADR 018)
+still works the same way.
+
 ## Upload API (Task 6)
 
 All routes live under `/api/uploads`, require a session (cookie + `X-CSRF-Token` on mutations) and are

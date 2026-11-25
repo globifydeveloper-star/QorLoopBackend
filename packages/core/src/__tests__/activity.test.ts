@@ -70,7 +70,9 @@ describe('safe activity summaries', () => {
   });
   it('shows the store data reset (ADR 018) under team and security, without its details', () => {
     const shown = presentActivity('store.data_reset', { deleted: { products: 12 }, kept: { auditEvents: 3 }, storageObjects: 'not deleted' });
-    expect(shown).toEqual({ type: 'store.data_reset', group: 'team_security', summary: 'Store data reset (operations script)', beforeAfter: [] });
+    expect(shown).toEqual({ type: 'store.data_reset', group: 'team_security', summary: 'Store data reset', beforeAfter: [] });
     expect(activityGroup('store.data_reset', {})).toBe('team_security');
+    // ADR 022: the worker's file clean-up after an in-app reset, in the same group
+    expect(presentActivity('store.storage_cleaned', { deleted: 4 })).toMatchObject({ group: 'team_security', summary: 'Store files deleted after the reset' });
   });
 });

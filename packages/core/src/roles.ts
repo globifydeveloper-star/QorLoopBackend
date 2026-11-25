@@ -43,7 +43,9 @@ export type Permission =
   /** Edit the catalogue stock and resolve stock conflicts (ADR 017). */
   | 'catalogue.stock_edit'
   /** Set or remove a product's export values for one marketplace (availability, price; owner decision B). */
-  | 'marketplace.values_edit';
+  | 'marketplace.values_edit'
+  /** Delete all of the store's business data from the app (ADR 022). Owner only. */
+  | 'store.reset';
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   owner: [
@@ -54,7 +56,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'files.view', 'files.preview', 'files.generate', 'files.download',
     'settings.view', 'settings.edit', 'settings.security',
     'team.view', 'team.invite', 'team.manage_roles', 'team.remove',
-    'marketplaces.edit', 'activity.view'
+    'marketplaces.edit', 'activity.view', 'store.reset'
   ],
   admin: [
     'products.view', 'products.edit', 'products.activate', 'products.block', 'categories.manage', 'catalogue.stock_edit', 'marketplace.values_edit',

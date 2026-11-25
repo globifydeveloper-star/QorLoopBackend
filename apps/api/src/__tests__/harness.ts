@@ -9,6 +9,7 @@ import { InlineUploadQueue } from '../../../../packages/shared/src/queue.js';
 import { InlineReconQueue } from '../../../../packages/shared/src/recon.js';
 import { InlineGeneratedFilesQueue } from '../../../../packages/shared/src/generated-files.js';
 import { InlineMailTrigger } from '../../../../packages/shared/src/mail.js';
+import { InlineStoreCleanupQueue } from '../../../../packages/shared/src/store-cleanup.js';
 import { testDatabase } from './database.js';
 
 export const password = 'Correct horse battery staple!';
@@ -19,7 +20,7 @@ type Response = { statusCode: number; cookies: { name: string; value: string }[]
 
 /** In-memory doubles for every external service buildApp would otherwise reach (Redis via BullMQ, S3, the recon job). */
 export function testServices() {
-  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new InlineReconQueue(), generatedFiles: new InlineGeneratedFilesQueue(), mailTrigger: new InlineMailTrigger(), redisHealth: async () => undefined };
+  return { storage: new MemoryStorage(), queue: new InlineUploadQueue(), recon: new InlineReconQueue(), generatedFiles: new InlineGeneratedFilesQueue(), mailTrigger: new InlineMailTrigger(), storeCleanup: new InlineStoreCleanupQueue(), redisHealth: async () => undefined };
 }
 /** Session (and device) cookies from a session response; `device` keeps a device cookie the response did not renew. */
 export function sessionFrom(response: Response, device?: string): Session {
@@ -33,9 +34,9 @@ export const sessionToken = (session: Session) => /qorloop=([^;]+)/.exec(session
 
 export async function createHarness() {
   const fixture = await testDatabase();
-  const { storage, queue, recon, generatedFiles, mailTrigger } = testServices();
+  const { storage, queue, recon, generatedFiles, mailTrigger, storeCleanup } = testServices();
   const config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: 'postgresql://test:test@localhost/test', AUTH_SECRET: 'test-only-secret-at-least-thirty-two-characters', APP_ORIGIN: 'http://dohafresh.localhost:3000' });
-  const api = await buildApp(config, { database: fixture.database, logger: false, storage, queue, recon, generatedFiles, mailTrigger, rateLimitMax: 100000 });
+  const api = await buildApp(config, { database: fixture.database, logger: false, storage, queue, recon, generatedFiles, mailTrigger, storeCleanup, rateLimitMax: 100000 });
   let counter = 0;
 
   function request(method: HTTPMethods, url: string, store: Pick<Store, 'hostname'>, session?: Session, payload?: Record<string, unknown>) {
@@ -91,7 +92,7 @@ export async function createHarness() {
     return stepUp(sessionFrom(accepted));
   }
   return {
-    fixture, api, config, storage, queue, recon, generatedFiles, mailTrigger, request, sessionFrom, createOwner, member, codeFor, stepUp, login, tokenFor,
+    fixture, api, config, storage, queue, recon, generatedFiles, mailTrigger, storeCleanup, request, sessionFrom, createOwner, member, codeFor, stepUp, login, tokenFor,
     // App first (no request can queue another recompute), then every queued/in-flight recompute, then the database:
     // a recompute still running after teardown fails on the closed database and touches modules Jest has torn down.
     close: async () => { await api.app.close(); await recon.drain(); await fixture.close(); },

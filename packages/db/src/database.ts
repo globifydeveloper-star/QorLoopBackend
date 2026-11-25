@@ -12,6 +12,7 @@ import { ActivityRepository } from './activity.js';
 import { OnboardingRepository } from './onboarding.js';
 import { CatalogueStockRepository } from './catalogue-stock.js';
 import { MarketplaceValuesRepository } from './marketplace-values.js';
+import * as storeReset from './store-reset.js';
 
 export { UploadRepository, ProductRepository, CategoryRepository, PricingRepository, ReconRepository, CatalogueStockRepository };
 export type { ReconMarketplaceState, ReconRowsQuery, ReconRowType } from './recon.js';
@@ -107,6 +108,8 @@ export class Database {
     await this.client.$executeRawUnsafe(`ANALYZE (SKIP_LOCKED) ${names.map(t => `"${t}"`).join(', ')}`);
     return Date.now() - t0;
   }
+  /** After an in-app reset has committed (ADR 022): planner statistics of the emptied tables. Outside any transaction. */
+  analyzeAfterReset() { return storeReset.analyzeAfterReset(this.client); }
   async initialize(input: { name: string; slug: string; hostname: string }) {
     return this.client.$transaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.slug}))`;
@@ -176,6 +179,20 @@ export class TenantData {
     this.marketplaceValues = new MarketplaceValuesRepository(tenantId, tx);
   }
   tenant() { return this.tx.tenant.findUniqueOrThrow({ where: { id: this.tenantId }, include: { settings: true } }); }
+  /** ADR 022: what an in-app reset would delete, and the uploads it would wait for. */
+  resetPreview() { return storeReset.resetPreview(this.tx, this.tenantId); }
+  /** ADR 022: deletes the store's business data in this transaction (the plan of ADR 018); throws ResetRefused. */
+  resetStoreData(input: { actorId: string; requestId: string }) { return storeReset.resetStoreData(this.tx, this.tenantId, input); }
+  /** Which of these storage keys an upload or generated-file row still points at (the storage clean-up keeps those). */
+  async referencedStorageKeys(keys: string[]) {
+    if (!keys.length) return new Set<string>();
+    const where = { tenantId: this.tenantId, storageKey: { in: keys } };
+    const [uploads, files] = await Promise.all([
+      this.tx.upload.findMany({ where, select: { storageKey: true } }),
+      this.tx.generatedFile.findMany({ where, select: { storageKey: true } }),
+    ]);
+    return new Set([...uploads, ...files].map(r => r.storageKey));
+  }
   userByEmail(email: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, email } }); }
   userById(id: string) { return this.tx.user.findFirst({ where: { tenantId: this.tenantId, id } }); }
   createUser(data: Omit<Prisma.UserUncheckedCreateInput, 'tenantId'>) {

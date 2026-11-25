@@ -219,14 +219,17 @@ export function verifyCounts(before, after, deleted) {
 /**
  * Deletes the store's business data. Must run inside ONE transaction that the caller opens and commits (inTransaction);
  * any refusal or error rolls everything back. Takes the same tenant row lock as Database.run (every app write for the
- * store waits) and the recon job's advisory lock (refuses while a recompute runs).
+ * store waits) and the recon job's advisory lock (refuses while a recompute runs). The in-app reset (ADR 022) passes the
+ * Owner as actor, its request id, source 'app' and its own message for a running recompute.
+ * @param {(text: string, params: unknown[]) => Promise<any[]>} q
+ * @param {{ tenantId: string, eventId: string, actorId?: string | null, requestId?: string, source?: 'script' | 'app', busyMessage?: string }} options
  */
-export async function resetTenantInTransaction(q, { tenantId, eventId }) {
+export async function resetTenantInTransaction(q, { tenantId, eventId, actorId = null, requestId = 'operations', source = 'script', busyMessage }) {
   await q(`SELECT set_config('lock_timeout', '5s', true) AS a, set_config('statement_timeout', '30min', true) AS b`, []);
   const [tenant] = await q('SELECT id::text AS id, name, slug FROM tenants WHERE id = $1::uuid FOR NO KEY UPDATE', [tenantId]);
   if (!tenant) refuse('The store no longer exists.');
   const [{ locked }] = await q('SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0)) AS locked', [reconLockKey(tenantId)]);
-  if (!locked) refuse('The reconciliation is running for this store. Stop the worker and try again. Nothing was changed.');
+  if (!locked) refuse(busyMessage ?? 'The reconciliation is running for this store. Stop the worker and try again. Nothing was changed.');
   const problems = classificationProblems(classify(await schemaTables(q)));
   if (problems.length) refuse(`The database does not match the reset plan: ${problems.join('; ')}. Nothing was changed.`);
 
@@ -242,11 +245,29 @@ export async function resetTenantInTransaction(q, { tenantId, eventId }) {
   if (differences.length) refuse(`Verification failed, so everything was rolled back: ${differences.join('; ')}.`);
 
   const kept = { auditEvents: after.tables.audit_events.keep, storeWideMarketplaceRules: after.tables.marketplace_price_rules.keep };
-  const details = { deleted, kept, storageObjects: 'not deleted by this run (scripts/dev/reset-store-storage.mjs)' };
+  // source 'app' (ADR 022): the worker deletes the files after a short delay; the script leaves them to reset-store-storage.mjs.
+  const storageObjects = source === 'app' ? 'queued for deletion by the worker' : 'not deleted by this run (scripts/dev/reset-store-storage.mjs)';
+  const details = { source, deleted, kept, storageObjects };
   await q(`INSERT INTO audit_events (id, tenant_id, actor_id, action, entity_id, request_id, details)
-           VALUES ($1::uuid, $2::uuid, NULL, '${RESET_ACTION}', $2::uuid, 'operations', $3::jsonb) RETURNING id::text AS id`,
-  [eventId, tenantId, JSON.stringify(details)]);
+           VALUES ($1::uuid, $2::uuid, $4::uuid, '${RESET_ACTION}', $2::uuid, $5, $3::jsonb) RETURNING id::text AS id`,
+  [eventId, tenantId, JSON.stringify(details), actorId, requestId]);
   return { tenant, before, deleted, kept, eventId };
+}
+
+/** Upload states a worker job is about to act on or is acting on: the in-app reset waits for them (ADR 022). */
+export const IN_FLIGHT_UPLOAD_STATUSES = Object.freeze(['uploaded', 'processing', 'applying']);
+export async function inFlightUploads(q, tenantId) {
+  const [r] = await q(`SELECT count(*)::int AS n FROM uploads WHERE tenant_id = $1::uuid AND status IN (${IN_FLIGHT_UPLOAD_STATUSES.map(s => `'${s}'`).join(', ')})`, [tenantId]);
+  return r.n;
+}
+
+/** This store's rows that the reset would delete, per DELETE_STEPS table (the same `where` as the reset). Read only. */
+export async function deleteCounts(q, tenantId) {
+  const out = {};
+  for (const s of DELETE_STEPS) {
+    out[s.table] = (await q(`SELECT count(*)::int AS n FROM ${ident(s.table)} WHERE tenant_id = $1::uuid${s.where ? ` AND (${s.where})` : ''}`, [tenantId]))[0].n;
+  }
+  return out;
 }
 
 /**
