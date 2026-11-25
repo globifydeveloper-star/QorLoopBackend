@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Qorloop server operations. Installed at /usr/local/bin/qorloop; state lives in /opt/qorloop.
+#
+#   qorloop install                          read a backend `git archive` on stdin; install deploy/ files + this script
+#   qorloop build api|web <sha>              read a `git archive` on stdin; build qorloop/<api|web>:<sha>
+#   qorloop edge-up                          start or reload the HTTPS edge proxy
+#   qorloop client-add <slug> <hostname>     create an isolated stack (secrets, site route); does not start it
+#   qorloop provision <slug> --name N --owner-email E [--marketplaces a,b]
+#                                            create the store, pin TENANT_ID, send the Owner invitation
+#   qorloop deploy <slug> <api-sha> <web-sha> backup, migrate, swap, health-check; rolls back on failure
+#   qorloop deploy-all <api-sha> <web-sha>   deploy every client in turn; stops at the first failure
+#   qorloop backup <slug>|all                database dump + storage archive, with retention
+#   qorloop status | clients | logs <slug> [service] | dc <slug> <compose args...>
+set -euo pipefail
+
+ROOT=/opt/qorloop
+DEPLOY=$ROOT/deploy
+CLIENTS=$ROOT/clients
+BACKUPS=$ROOT/backups
+SECRETS=$ROOT/secrets
+DB_KEEP_DAYS=14
+FILES_KEEP_DAYS=7
+
+die() { echo "error: $*" >&2; exit 1; }
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+lock() { exec 9>"$ROOT/.lock"; flock -w 1800 9 || die "another operation holds the lock"; }
+valid_slug() { [[ $1 =~ ^[a-z][a-z0-9-]{1,61}[a-z0-9]$ ]] || die "invalid slug: $1"; }
+need_client() { valid_slug "$1"; [[ -f $CLIENTS/$1/stack.env ]] || die "no client $1"; }
+dc() {
+  local s=$1; shift
+  docker compose -p "qorloop-$s" --project-directory "$CLIENTS/$s" --env-file "$CLIENTS/$s/stack.env" \
+    -f "$DEPLOY/client/compose.yml" "$@"
+}
+getvar() { grep -E "^$2=" "$1" | tail -1 | cut -d= -f2-; }
+setvar() { # file key value: replace or append, file stays 0600
+  local f=$1 k=$2 v=$3 tmp; tmp=$(mktemp "$f.XXXX")
+  grep -vE "^$k=" "$f" > "$tmp" || true
+  printf '%s=%s\n' "$k" "$v" >> "$tmp"
+  chmod 600 "$tmp"; mv "$tmp" "$f"
+}
+rand_hex() { openssl rand -hex "$1"; }
+
+cmd_install() {
+  local tmp; tmp=$(mktemp -d)
+  tar -x -C "$tmp" deploy
+  [[ -f $tmp/deploy/bin/qorloop ]] || die "archive has no deploy/"
+  rm -rf "$DEPLOY.new"; mv "$tmp/deploy" "$DEPLOY.new"; rm -rf "$tmp"
+  rm -rf "$DEPLOY.old"; [[ -d $DEPLOY ]] && mv "$DEPLOY" "$DEPLOY.old"; mv "$DEPLOY.new" "$DEPLOY"
+  install -m 0755 "$DEPLOY/bin/qorloop" /usr/local/bin/qorloop
+  install -m 0644 "$DEPLOY/cron/qorloop" /etc/cron.d/qorloop
+  mkdir -p "$ROOT/edge/sites" "$CLIENTS" "$BACKUPS" "$SECRETS"; chmod 700 "$SECRETS" "$CLIENTS" "$BACKUPS"
+  log "installed deploy files"
+}
+
+cmd_build() {
+  local what=$1 sha=$2 file
+  [[ $sha =~ ^[0-9a-f]{7,40}$ ]] || die "invalid sha"
+  case $what in api) file=deploy/api.Dockerfile ;; web) file=deploy/web.Dockerfile ;; *) die "build api|web" ;; esac
+  log "building qorloop/$what:$sha"
+  docker build -q -f "$file" --build-arg "GIT_SHA=$sha" -t "qorloop/$what:$sha" - >/dev/null
+  log "built qorloop/$what:$sha"
+}
+
+cmd_edge_up() {
+  mkdir -p "$ROOT/edge/sites"
+  install -m 0644 "$DEPLOY/edge/compose.yml" "$ROOT/edge/compose.yml"
+  install -m 0644 "$DEPLOY/edge/Caddyfile" "$ROOT/edge/Caddyfile"
+  docker compose -p qorloop-edge --project-directory "$ROOT/edge" -f "$ROOT/edge/compose.yml" up -d --remove-orphans
+  docker compose -p qorloop-edge --project-directory "$ROOT/edge" -f "$ROOT/edge/compose.yml" \
+    exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || true
+  log "edge up"
+}
+
+cmd_client_add() {
+  local slug=$1 host=$2 dir bucket=qorloop-files
+  valid_slug "$slug"
+  [[ $host =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] || die "invalid hostname"
+  dir=$CLIENTS/$slug
+  [[ -e $dir ]] && die "client $slug already exists"
+  [[ -f $SECRETS/smtp.env ]] || die "missing $SECRETS/smtp.env (SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASSWORD, MAIL_FROM, MAIL_FROM_NAME)"
+  mkdir -p "$dir"; chmod 700 "$dir"
+  local pg s3u s3p; pg=$(rand_hex 24); s3u=qorloop$(rand_hex 6); s3p=$(rand_hex 24)
+  umask 077
+  cat > "$dir/stack.env" <<EOF
+SLUG=$slug
+PUBLIC_HOST=$host
+API_IMAGE=
+WEB_IMAGE=
+STORAGE_IMAGE=$(getvar "$DEPLOY/images.env" STORAGE_IMAGE)
+POSTGRES_PASSWORD=$pg
+S3_ACCESS_KEY_ID=$s3u
+S3_SECRET_ACCESS_KEY=$s3p
+S3_BUCKET=$bucket
+EOF
+  {
+    cat <<EOF
+NODE_ENV=production
+PORT=4000
+HOST=0.0.0.0
+DATABASE_URL=postgresql://qorloop:$pg@postgres:5432/qorloop
+REDIS_URL=redis://redis:6379
+AUTH_SECRET=$(rand_hex 32)
+BASE_DOMAIN=${host#*.}
+APP_ORIGIN=https://$host
+S3_BUCKET=$bucket
+S3_REGION=us-east-1
+S3_ENDPOINT=https://$host
+S3_FORCE_PATH_STYLE=true
+S3_ACCESS_KEY_ID=$s3u
+S3_SECRET_ACCESS_KEY=$s3p
+UPLOAD_URL_TTL_SECONDS=600
+UPLOAD_CONCURRENCY=1
+EOF
+    grep -E '^(SMTP_HOST|SMTP_PORT|SMTP_SECURE|SMTP_USER|SMTP_PASSWORD|MAIL_FROM|MAIL_FROM_NAME)=' "$SECRETS/smtp.env"
+  } > "$dir/app.env"
+  # Storage: one identity, limited to this client's bucket. Readable by the storage container; the folder is 0700.
+  printf '{"identities":[{"name":"qorloop","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Read:%s","Write:%s","List:%s","Tagging:%s"]}]}\n' \
+    "$s3u" "$s3p" "$bucket" "$bucket" "$bucket" "$bucket" > "$dir/s3.json"
+  chmod 644 "$dir/s3.json"
+  sed -e "s/__SLUG__/$slug/g" -e "s/__HOST__/$host/g" -e "s/__BUCKET__/$bucket/g" \
+    "$DEPLOY/edge/site.caddy.template" > "$ROOT/edge/sites/$slug.caddy"
+  chmod 644 "$ROOT/edge/sites/$slug.caddy"
+  cmd_edge_up
+  log "client $slug created for https://$host (not started: run provision, then deploy)"
+}
+
+infra_up() {
+  dc "$1" up -d --wait postgres redis storage
+}
+
+cmd_provision() {
+  local slug=$1; shift; need_client "$slug"
+  local f=$CLIENTS/$slug/app.env st=$CLIENTS/$slug/stack.env host out id
+  [[ -n $(getvar "$f" TENANT_ID) ]] && die "$slug is already provisioned"
+  [[ -n $(getvar "$st" API_IMAGE) ]] || die "choose the versions first: qorloop set-images $slug <api-sha> <web-sha>"
+  host=$(getvar "$st" PUBLIC_HOST)
+  infra_up "$slug"
+  out=$(dc "$slug" run --rm -T ops node dist/infra/provision-store.js --slug "$slug" --hostname "$host" "$@")
+  echo "$out" | grep -vE 'token|password' || true
+  id=$(echo "$out" | grep -oE '"tenantId": *"[0-9a-f-]{36}"' | grep -oE '[0-9a-f-]{36}' | head -1)
+  [[ -n $id ]] || die "could not read tenantId from provision output"
+  setvar "$f" TENANT_ID "$id"
+  log "provisioned $slug as tenant $id"
+}
+
+wait_healthy() { # slug: api container healthy and reachable through the edge
+  local slug=$1 host cid status i
+  host=$(getvar "$CLIENTS/$slug/stack.env" PUBLIC_HOST)
+  for i in $(seq 1 36); do
+    cid=$(dc "$slug" ps -q api)
+    status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)
+    if [[ $status == healthy ]] && curl -fsS -m 5 --resolve "$host:443:127.0.0.1" "https://$host/health" >/dev/null 2>&1 \
+       && curl -fsS -m 5 --resolve "$host:443:127.0.0.1" "https://$host/" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+cmd_deploy() {
+  local slug=$1 api=$2 web=$3; need_client "$slug"
+  local st=$CLIENTS/$slug/stack.env prev_api prev_web
+  [[ -n $(getvar "$CLIENTS/$slug/app.env" TENANT_ID) ]] || die "$slug is not provisioned yet"
+  docker image inspect "qorloop/api:$api" >/dev/null 2>&1 || die "image qorloop/api:$api not built"
+  docker image inspect "qorloop/web:$web" >/dev/null 2>&1 || die "image qorloop/web:$web not built"
+  prev_api=$(getvar "$st" API_IMAGE); prev_web=$(getvar "$st" WEB_IMAGE)
+  log "deploy $slug: api ${prev_api:-none} -> qorloop/api:$api, web ${prev_web:-none} -> qorloop/web:$web"
+  infra_up "$slug"
+  [[ -n $prev_api ]] && cmd_backup_one "$slug"
+  setvar "$st" API_IMAGE "qorloop/api:$api"; setvar "$st" WEB_IMAGE "qorloop/web:$web"
+  if ! dc "$slug" run --rm -T ops; then
+    log "migration failed; keeping the running version"
+    [[ -n $prev_api ]] && { setvar "$st" API_IMAGE "$prev_api"; setvar "$st" WEB_IMAGE "$prev_web"; }
+    die "deploy $slug aborted (database unchanged by the failed migration or restore from $BACKUPS/$slug)"
+  fi
+  dc "$slug" up -d --remove-orphans api worker web
+  if wait_healthy "$slug"; then
+    setvar "$st" PREVIOUS_API_IMAGE "$prev_api"; setvar "$st" PREVIOUS_WEB_IMAGE "$prev_web"
+    log "deploy $slug healthy"
+    return 0
+  fi
+  log "health check failed for $slug"
+  if [[ -n $prev_api ]]; then
+    setvar "$st" API_IMAGE "$prev_api"; setvar "$st" WEB_IMAGE "$prev_web"
+    dc "$slug" up -d api worker web
+    wait_healthy "$slug" && log "rolled back $slug to $prev_api" || log "ROLLBACK OF $slug IS ALSO UNHEALTHY"
+  fi
+  die "deploy $slug failed"
+}
+
+cmd_deploy_all() {
+  local api=$1 web=$2 s
+  for s in $(ls "$CLIENTS"); do
+    [[ -n $(getvar "$CLIENTS/$s/app.env" TENANT_ID) ]] || { log "skip $s (not provisioned)"; continue; }
+    cmd_deploy "$s" "$api" "$web"
+  done
+}
+
+cmd_backup_one() {
+  local slug=$1 dir=$BACKUPS/$1 ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+  mkdir -p "$dir"; chmod 700 "$dir"
+  dc "$slug" exec -T postgres pg_dump -U qorloop -d qorloop -Fc > "$dir/db-$ts.dump.part"
+  mv "$dir/db-$ts.dump.part" "$dir/db-$ts.dump"
+  find "$dir" -name 'db-*.dump' -mtime +$DB_KEEP_DAYS -delete
+  log "backup $slug: $dir/db-$ts.dump ($(du -h "$dir/db-$ts.dump" | cut -f1))"
+}
+
+cmd_backup() {
+  local target=$1 s ts list
+  if [[ $target == all ]]; then list=$(ls "$CLIENTS"); else need_client "$target"; list=$target; fi
+  for s in $list; do
+    cmd_backup_one "$s"
+    ts=$(date -u +%Y%m%d)
+    # Stored files: archive the storage volume.
+    docker run --rm -v "qorloop-${s}_storagedata:/data:ro" -v "$BACKUPS/$s:/out" alpine \
+      tar -czf "/out/files-$ts.tar.gz" -C /data . 2>/dev/null || log "files backup of $s failed"
+    cp "$CLIENTS/$s/stack.env" "$CLIENTS/$s/app.env" "$CLIENTS/$s/s3.json" "$BACKUPS/$s/" 2>/dev/null || true
+    chmod 600 "$BACKUPS/$s"/*.env "$BACKUPS/$s/s3.json" 2>/dev/null || true
+    find "$BACKUPS/$s" -name 'files-*.tar.gz' -mtime +$FILES_KEEP_DAYS -delete
+  done
+}
+
+cmd_status() {
+  docker ps --filter 'name=qorloop' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+  echo; df -h / | tail -1; free -h | sed -n 2p
+}
+
+main() {
+  local c=${1:-}; shift || true
+  case $c in
+    install) lock; cmd_install ;;
+    build) [[ $# -eq 2 ]] || die "build api|web <sha>"; lock; cmd_build "$@" ;;
+    edge-up) lock; cmd_edge_up ;;
+    client-add) [[ $# -eq 2 ]] || die "client-add <slug> <hostname>"; lock; cmd_client_add "$@" ;;
+    provision) [[ $# -ge 1 ]] || die "provision <slug> --name N --owner-email E"; lock; cmd_provision "$@" ;;
+    set-images) need_client "$1"; setvar "$CLIENTS/$1/stack.env" API_IMAGE "qorloop/api:$2"; setvar "$CLIENTS/$1/stack.env" WEB_IMAGE "qorloop/web:$3" ;;
+    deploy) [[ $# -eq 3 ]] || die "deploy <slug> <api-sha> <web-sha>"; lock; cmd_deploy "$@" ;;
+    deploy-all) [[ $# -eq 2 ]] || die "deploy-all <api-sha> <web-sha>"; lock; cmd_deploy_all "$@" ;;
+    backup) [[ $# -eq 1 ]] || die "backup <slug>|all"; lock; cmd_backup "$1" ;;
+    status) cmd_status ;;
+    clients) ls "$CLIENTS" ;;
+    logs) need_client "$1"; dc "$1" logs --tail 200 "${@:2}" ;;
+    dc) need_client "$1"; dc "$@" ;;
+    *) sed -n '2,15p' "$0"; exit 1 ;;
+  esac
+}
+main "$@"

@@ -1,0 +1,4 @@
+# Nightly backups of every client (database dump + stored files), 02:30 server time.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 2 * * * root /usr/local/bin/qorloop backup all >> /var/log/qorloop-backup.log 2>&1

@@ -1,0 +1,26 @@
+# The only service reachable from the internet. Terminates HTTPS (automatic certificates) and routes each client's
+# hostname to that client's own stack over the shared qorloop-edge network. One site file per client in sites/.
+name: qorloop-edge
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [edge]
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+    name: qorloop-edge
