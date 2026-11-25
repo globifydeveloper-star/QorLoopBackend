@@ -17,7 +17,7 @@ import { TeamController } from './team/team.controller.js';
 import { TeamService } from './team/team.service.js';
 import { Access, SecurityGuard, cookieName, context, hostname, originsForHost, type AppRequest } from './http/security.guard.js';
 import { Contract } from './http/contracts.js';
-import { CONFIG, GENERATED_FILES_QUEUE, MAIL_TRIGGER, READINESS, RECON_QUEUE, STORAGE, UPLOAD_QUEUE } from './tokens.js';
+import { CONFIG, GENERATED_FILES_QUEUE, MAIL_TRIGGER, READINESS, RECON_QUEUE, STORAGE, STORE_CLEANUP_QUEUE, UPLOAD_QUEUE } from './tokens.js';
 import { AccountController } from './auth/account.controller.js';
 import { BullMailTrigger, type MailTrigger } from '../../../packages/shared/src/mail.js';
 import { checkReadiness } from './http/readiness.js';
@@ -53,6 +53,9 @@ import { CatalogueStockService } from './catalogue/catalogue-stock.service.js';
 import { MarketplaceValuesController } from './marketplace-values/marketplace-values.controller.js';
 import { MarketplaceValuesService } from './marketplace-values/marketplace-values.service.js';
 import { BullGeneratedFilesQueue, type GeneratedFilesQueue } from '../../../packages/shared/src/generated-files.js';
+import { BullStoreCleanupQueue, type StoreCleanupQueue } from '../../../packages/shared/src/store-cleanup.js';
+import { StoreResetController } from './store/store-reset.controller.js';
+import { StoreResetService } from './store/store-reset.service.js';
 
 /** Every route keeps the 32 KB body limit except these: a 500-row bulk offer with both dates is about 68 KB. */
 export const DEFAULT_BODY_LIMIT = 32 * 1024;
@@ -87,7 +90,7 @@ class ErrorFilter implements ExceptionFilter {
   }
 }
 
-export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; logStream?: { write: (chunk: string) => void }; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue; mailTrigger?: MailTrigger; redisHealth?: () => Promise<unknown> } = {}) {
+export async function buildApp(config: Config, options: { database?: Database; connect?: boolean; logger?: boolean; logStream?: { write: (chunk: string) => void }; rateLimitMax?: number; storage?: ObjectStorage; queue?: UploadQueue; recon?: ReconQueue; generatedFiles?: GeneratedFilesQueue; mailTrigger?: MailTrigger; storeCleanup?: StoreCleanupQueue; redisHealth?: () => Promise<unknown> } = {}) {
   const database = options.database ?? new Database(config.DATABASE_URL);
   if (options.connect !== false) await database.connect();
   const storage = options.storage ?? new S3Storage({
@@ -95,7 +98,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY,
   });
   let queueRedis: import('ioredis').Redis | undefined;
-  if (!options.queue || !options.recon || !options.generatedFiles || !options.mailTrigger) {
+  if (!options.queue || !options.recon || !options.generatedFiles || !options.mailTrigger || !options.storeCleanup) {
     const { Redis } = await import('ioredis');
     queueRedis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
   }
@@ -103,19 +106,21 @@ export async function buildApp(config: Config, options: { database?: Database; c
   const recon = options.recon ?? new BullReconQueue(queueRedis!);
   const generatedFiles = options.generatedFiles ?? new BullGeneratedFilesQueue(queueRedis!);
   const mailTrigger = options.mailTrigger ?? new BullMailTrigger(queueRedis!);
+  const storeCleanup = options.storeCleanup ?? new BullStoreCleanupQueue(queueRedis!);
   @Module({
-    controllers: [SystemController, AuthController, AccountController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController, MarketplaceValuesController],
+    controllers: [SystemController, AuthController, AccountController, TeamController, UploadsController, ProductsController, CategoriesController, PricingController, ReconController, GeneratedFilesController, SettingsController, ActivityController, OnboardingController, TemplatesController, CatalogueStockController, MarketplaceValuesController, StoreResetController],
     providers: [
       { provide: Database, useValue: database }, { provide: CONFIG, useValue: config },
       { provide: READINESS, useValue: () => checkReadiness(() => database.ping(), options.redisHealth ?? (() => {
         if (!queueRedis) return Promise.reject(new Error('Redis unavailable'));
         return queueRedis.ping();
       }), () => storage.check()) },
-      AuthService, TeamService, UploadsService, ProductsService, ProductBlocksService, CategoriesService, PricingService, BulkPricingService, BulkOffersService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService,
+      AuthService, TeamService, UploadsService, ProductsService, ProductBlocksService, CategoriesService, PricingService, BulkPricingService, BulkOffersService, ReconService, GeneratedFilesService, SettingsService, ActivityService, OnboardingService, TemplatesService, CatalogueStockService, MarketplaceValuesService, StoreResetService,
       { provide: STORAGE, useValue: storage }, { provide: UPLOAD_QUEUE, useValue: queue },
       { provide: RECON_QUEUE, useValue: recon },
       { provide: GENERATED_FILES_QUEUE, useValue: generatedFiles },
       { provide: MAIL_TRIGGER, useValue: mailTrigger },
+      { provide: STORE_CLEANUP_QUEUE, useValue: storeCleanup },
       { provide: APP_GUARD, useClass: SecurityGuard },
     ],
   })
@@ -182,6 +187,7 @@ export async function buildApp(config: Config, options: { database?: Database; c
     if (!options.recon) await (recon as BullReconQueue).close();
     if (!options.generatedFiles) await (generatedFiles as BullGeneratedFilesQueue).close();
     if (!options.mailTrigger) await (mailTrigger as BullMailTrigger).close();
+    if (!options.storeCleanup) await (storeCleanup as BullStoreCleanupQueue).close();
     await queueRedis?.quit();
     if (!options.database) await database.close();
   });
