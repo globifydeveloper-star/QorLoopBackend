@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export interface SignedUpload {
@@ -23,7 +23,12 @@ export interface ObjectStorage {
   downloadTo(key: string, path: string): Promise<void>;
   delete(key: string): Promise<void>;
   put(key: string, data: Buffer, contentType: string): Promise<void>;
+  /** Every object under `prefix` (all pages). Only for the store clean-up after a reset (ADR 022). */
+  list(prefix: string): Promise<StoredObject[]>;
+  /** Deletes the keys in batches of 1,000; one request per key where multi-object delete is not implemented. */
+  deleteMany(keys: string[]): Promise<{ deleted: number; failed: number }>;
 }
+export interface StoredObject { key: string; size: number; lastModified: Date }
 
 /** Keys are always built here, never from client input, and always carry the tenant prefix. */
 export const storageKeys = {
@@ -85,6 +90,34 @@ export class S3Storage implements ObjectStorage {
   async put(key: string, data: Buffer, contentType: string) {
     await this.client.send(new PutObjectCommand({ Bucket: this.opts.bucket, Key: key, Body: data, ContentType: contentType, ServerSideEncryption: 'AES256' }));
   }
+  async list(prefix: string) {
+    const out: StoredObject[] = [];
+    let token: string | undefined;
+    do {
+      const r = await this.client.send(new ListObjectsV2Command({ Bucket: this.opts.bucket, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000 }));
+      for (const o of r.Contents ?? []) if (o.Key) out.push({ key: o.Key, size: o.Size ?? 0, lastModified: o.LastModified ?? new Date(0) });
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+    return out;
+  }
+  async deleteMany(keys: string[]) {
+    let deleted = 0, failed = 0;
+    for (let i = 0; i < keys.length; i += 1000) {
+      const batch = keys.slice(i, i + 1000);
+      try {
+        const r = await this.client.send(new DeleteObjectsCommand({ Bucket: this.opts.bucket, Delete: { Objects: batch.map(Key => ({ Key })), Quiet: true } }));
+        failed += r.Errors?.length ?? 0;
+        deleted += batch.length - (r.Errors?.length ?? 0);
+      } catch (e) {
+        const status = (e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+        if (status && status !== 501 && (e as { name?: string }).name !== 'NotImplemented') throw e;
+        for (const key of batch) {
+          try { await this.delete(key); deleted++; } catch { failed++; }
+        }
+      }
+    }
+    return { deleted, failed };
+  }
 }
 
 /** In-memory storage for tests and local development without an object store. Never use in production. */
@@ -100,12 +133,23 @@ export class MemoryStorage implements ObjectStorage {
     this.downloads.set(url, { key, expiresAt: Date.now() + opts.ttlSeconds * 1000 });
     return url;
   }
-  async put(key: string, data: Buffer) { this.objects.set(key, data); }
+  async put(key: string, data: Buffer) { this.objects.set(key, data); this.modified.set(key, new Date()); }
   async head(key: string) { const o = this.objects.get(key); return o ? { size: o.length } : null; }
   async downloadTo(key: string, path: string) {
     const o = this.objects.get(key);
     if (!o) throw new Error('Object not found');
     await writeFile(path, o);
   }
-  async delete(key: string) { this.objects.delete(key); }
+  async delete(key: string) { this.objects.delete(key); this.modified.delete(key); }
+  /** Last-modified times; put() stamps now, tests may backdate. */
+  readonly modified = new Map<string, Date>();
+  async list(prefix: string) {
+    return [...this.objects].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, data]) => ({ key, size: data.length, lastModified: this.modified.get(key) ?? new Date(0) }));
+  }
+  async deleteMany(keys: string[]) {
+    let deleted = 0;
+    for (const k of keys) if (this.objects.delete(k)) { this.modified.delete(k); deleted++; }
+    return { deleted, failed: keys.length - deleted };
+  }
 }

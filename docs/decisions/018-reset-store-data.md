@@ -113,7 +113,8 @@ Exit codes: 0 done, 2 refused (nothing changed), 1 failed.
 
 ## Not included
 
-- No HTTP endpoint and no app UI: this is a developer operations script.
+- No HTTP endpoint and no app UI: this is a developer operations script. Superseded on 21 November 2026 by
+  [ADR 022](022-in-app-store-reset.md): the Owner can now reset from Settings, using this same plan.
 - No schema change, no migration, no new dependency.
 - Files are not deleted by the database script.
 - No retention cleanup job (G7).

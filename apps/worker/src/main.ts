@@ -14,6 +14,8 @@ import { BullReconQueue, RECON_QUEUE_NAME, type ReconJob } from '../../../packag
 import { recomputeRecon } from './recompute-recon.js';
 import { GENERATED_FILES_QUEUE, type GenerateFileJob } from '../../../packages/shared/src/generated-files.js';
 import { generateFile } from './generate-file.js';
+import { STORE_CLEANUP_QUEUE, type StoreCleanupJob } from '../../../packages/shared/src/store-cleanup.js';
+import { cleanStoreStorage } from './clean-store-storage.js';
 
 const config = loadConfig();
 const log = pino();
@@ -68,6 +70,11 @@ const generationWorker = new Worker<GenerateFileJob>(GENERATED_FILES_QUEUE, job 
 generationWorker.on('failed', job => log.error({ jobId: job?.id }, 'Marketplace file generation attempt failed'));
 generationWorker.on('error', () => log.error('Marketplace file generation worker failed'));
 
+// After an in-app store reset (ADR 022): delete the store's files that no row points at any more.
+const cleanupWorker = new Worker<StoreCleanupJob>(STORE_CLEANUP_QUEUE, job => cleanStoreStorage(deps, job.data), { connection, concurrency: 1, lockDuration: 120_000 });
+cleanupWorker.on('failed', job => log.error({ jobId: job?.id }, 'Store file clean-up attempt failed'));
+cleanupWorker.on('error', () => log.error('Store file clean-up worker failed'));
+
 const sweep = setInterval(() => {
   recoverStuckUploads(deps, async (j, kind) => {
     if (kind === 'apply') await applyQueue.add('apply-upload', j, { jobId: applyJobId(j) });
@@ -82,9 +89,9 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   clearInterval(sweep);
-  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await reconWorker.close(); await generationWorker.close(); await uploadQueue.close(); await applyQueue.close(); await reconQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
+  await worker.close(); await uploadWorker.close(); await applyWorker.close(); await reconWorker.close(); await generationWorker.close(); await cleanupWorker.close(); await uploadQueue.close(); await applyQueue.close(); await reconQueue.close(); await queue.close(); await connection.quit(); transport.close(); await database.close();
 }
 process.once('SIGINT', () => void stop());
 process.once('SIGTERM', () => void stop());
-log.info('Email, upload, recon and generated-file workers ready');
+log.info('Email, upload, recon, generated-file and store clean-up workers ready');
 

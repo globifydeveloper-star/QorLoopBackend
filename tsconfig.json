@@ -12,9 +12,10 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    "allowJs": true
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts", "infra/**/*.ts", "scripts/**/*.ts", "prisma.config.ts"],
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "infra/**/*.ts", "scripts/**/*.ts", "scripts/dev/store-reset-plan.mjs", "prisma.config.ts"],
   "exclude": ["node_modules", "dist", "**/__tests__/**"]
 }
 
