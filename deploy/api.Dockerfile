@@ -2,12 +2,14 @@
 # Build context: the repository root at the commit being deployed (git archive), never a working copy.
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN npm ci --no-audit --no-fund && npx prisma generate && npx tsc
 
 FROM node:24-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 # Dev dependencies stay: the Prisma CLI runs migrations and provision:store from this image.
 COPY --from=build --chown=node:node /app /app
 ARG GIT_SHA=unknown
