@@ -1,0 +1,54 @@
+name: Deploy (prod)
+
+# A push to `prod` tests the commit, then builds and rolls it out to every client on the VPS, one client at a time.
+# On the server each client is backed up, migrated, switched and health-checked; an unhealthy client is rolled back
+# and the rollout stops. The CI key can only run `release api|web <sha>` (forced command), nothing else.
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Add required reviewers to this environment in GitHub to approve each deploy by hand.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release the API to the VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          sha=$(git rev-parse --short=12 HEAD)
+          git archive HEAD | ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$VPS_HOST" "release api $sha"

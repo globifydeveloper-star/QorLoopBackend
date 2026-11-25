@@ -9,6 +9,7 @@
 #                                            create the store, pin TENANT_ID, send the Owner invitation
 #   qorloop deploy <slug> <api-sha> <web-sha> backup, migrate, swap, health-check; rolls back on failure
 #   qorloop deploy-all <api-sha> <web-sha>   deploy every client in turn; stops at the first failure
+#   qorloop release api|web <sha>            stdin: git archive; build and deploy one component to every client
 #   qorloop backup <slug>|all                database dump + storage archive, with retention
 #   qorloop status | clients | logs <slug> [service] | dc <slug> <compose args...>
 set -euo pipefail
@@ -221,6 +222,34 @@ cmd_backup() {
   done
 }
 
+# Release one component to every provisioned client, keeping each client's other component as it is.
+# stdin: `git archive` of that repository at <sha>. Backend releases also install their deploy/ files first.
+cmd_release() {
+  local what=$1 sha=$2 tmp s st api web
+  [[ $what == api || $what == web ]] || die "release api|web <sha>"
+  [[ $sha =~ ^[0-9a-f]{7,40}$ ]] || die "invalid sha"
+  tmp=$(mktemp); trap 'rm -f "$tmp"' RETURN
+  cat > "$tmp"
+  [[ $what == api ]] && cmd_install < "$tmp"
+  cmd_build "$what" "$sha" < "$tmp"
+  for s in $(ls "$CLIENTS"); do
+    st=$CLIENTS/$s/stack.env
+    [[ -n $(getvar "$CLIENTS/$s/app.env" TENANT_ID) ]] || { log "skip $s (not provisioned)"; continue; }
+    api=$(getvar "$st" API_IMAGE); api=${api#qorloop/api:}
+    web=$(getvar "$st" WEB_IMAGE); web=${web#qorloop/web:}
+    if [[ $what == api ]]; then api=$sha; else web=$sha; fi
+    cmd_deploy "$s" "$api" "$web"
+  done
+  log "release $what $sha done"
+}
+
+# Forced command for the CI key (authorized_keys command="/usr/local/bin/qorloop ci"): only `release api|web <sha>`.
+cmd_ci() {
+  local -a a; read -r -a a <<< "${SSH_ORIGINAL_COMMAND:-}"
+  [[ ${#a[@]} -eq 3 && ${a[0]} == release ]] || die "CI may only run: release api|web <sha>"
+  lock; cmd_release "${a[1]}" "${a[2]}"
+}
+
 cmd_status() {
   docker ps --filter 'name=qorloop' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
   echo; df -h / | tail -1; free -h | sed -n 2p
@@ -238,11 +267,13 @@ main() {
     deploy) [[ $# -eq 3 ]] || die "deploy <slug> <api-sha> <web-sha>"; lock; cmd_deploy "$@" ;;
     deploy-all) [[ $# -eq 2 ]] || die "deploy-all <api-sha> <web-sha>"; lock; cmd_deploy_all "$@" ;;
     backup) [[ $# -eq 1 ]] || die "backup <slug>|all"; lock; cmd_backup "$1" ;;
+    release) [[ $# -eq 2 ]] || die "release api|web <sha>"; lock; cmd_release "$@" ;;
+    ci) cmd_ci ;;
     status) cmd_status ;;
     clients) ls "$CLIENTS" ;;
     logs) need_client "$1"; dc "$1" logs --tail 200 "${@:2}" ;;
     dc) need_client "$1"; dc "$@" ;;
-    *) sed -n '2,15p' "$0"; exit 1 ;;
+    *) sed -n '2,17p' "$0"; exit 1 ;;
   esac
 }
 main "$@"
